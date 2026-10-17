@@ -30,6 +30,12 @@ layout(push_constant) uniform FilterPushConstants {
     float texelsPerUnit;
     // tan(half the sun's angular diameter).
     float tanSunRadius;
+    // Radius pass only: 1 when the temporal pass ran, so the visibility to
+    // filter is the accumulated mean in uHistory rather than this frame's ray.
+    uint temporal;
+    // Radius pass only: 1 to put each texel's history length in place of its
+    // visibility, unblurred -- the history-length debug view.
+    uint debugHistoryLength;
 } pc;
 
 // A texel the filter may read: traced this frame, from a surface facing the sun.

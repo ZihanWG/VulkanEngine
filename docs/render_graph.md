@@ -516,7 +516,7 @@ sequenced by the graph from end to end.
 | `recordVolumetricFogPass` | `VolumetricFogPass` |
 | `recordIrradianceProbePasses` | `ProbeCapture` |
 | `recordRayTracingSceneBuild` | `RayTracingSceneBuild` |
-| `recordMainPassGeometry` | `MainHDRPass`; it also records `DepthPrepass`, `RayTracedShadowTrace`, the filter's `RayTracedShadowRadius`, `RayTracedShadowBlurH` and `RayTracedShadowBlurV`, and `RayTracedShadowResolve` ahead of it |
+| `recordMainPassGeometry` | `MainHDRPass`; it also records `DepthPrepass`, `RayTracedShadowTrace`, `RayTracedShadowTemporal`, the filter's `RayTracedShadowRadius`, `RayTracedShadowBlurH` and `RayTracedShadowBlurV`, and `RayTracedShadowResolve` ahead of it |
 | the seven post-process recorders | `DepthPyramidPass` … `CompositePass` |
 | screenshot copies and the ImGui overlay | `ImGuiPass` |
 

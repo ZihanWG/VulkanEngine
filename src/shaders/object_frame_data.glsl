@@ -112,6 +112,10 @@ const uint kRtShadowFlagDebugHitDistance = 32u;
 // kRtFilterMaxRadius, and the main pass shows the term on its own: black where
 // the filter left the texel alone.
 const uint kRtShadowFlagDebugPenumbraRadius = 64u;
+// The mask carries each texel's temporal history length, as a fraction of
+// kRtTemporalMaxFrames, and the main pass shows the term on its own: black where
+// the history just started over.
+const uint kRtShadowFlagDebugHistoryLength = 128u;
 
 layout(buffer_reference, std430) readonly buffer FrameConstantsBuffer {
     FrameConstants values;

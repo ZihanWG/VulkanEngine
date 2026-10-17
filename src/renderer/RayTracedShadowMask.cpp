@@ -71,6 +71,7 @@ void RayTracedShadowMask::createPipelines(const std::filesystem::path& traceShad
                                           const std::filesystem::path& resolveShaderPath,
                                           const std::filesystem::path& radiusShaderPath,
                                           const std::filesystem::path& blurShaderPath,
+                                          const std::filesystem::path& temporalShaderPath,
                                           VkDescriptorSetLayout bindlessSetLayout)
 {
     if (bindlessSetLayout == VK_NULL_HANDLE) {
@@ -120,6 +121,16 @@ void RayTracedShadowMask::createPipelines(const std::filesystem::path& traceShad
     radiusPipeline_ = pipelineStore_.get(context_.vkDevice(), filterInfo, "RayTracedShadowRadiusPipeline");
     filterInfo.shaderPath = blurShaderPath;
     blurPipeline_ = pipelineStore_.get(context_.vkDevice(), filterInfo, "RayTracedShadowBlurPipeline");
+
+    const VkDescriptorSetLayout temporalLayout = temporalSetLayout_.handle();
+    const VkPushConstantRange temporalPush{
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(RayTracedShadowTemporalPushConstants))};
+    rhi::VulkanComputePipelineCreateInfo temporalInfo{};
+    temporalInfo.shaderPath = temporalShaderPath;
+    temporalInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&temporalLayout, 1);
+    temporalInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&temporalPush, 1);
+    temporalInfo.pipelineCache = context_.pipelineCache();
+    temporalPipeline_ = pipelineStore_.get(context_.vkDevice(), temporalInfo, "RayTracedShadowTemporalPipeline");
 }
 
 void RayTracedShadowMask::createDescriptorSetLayouts()
@@ -149,9 +160,12 @@ void RayTracedShadowMask::createDescriptorSetLayouts()
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
                               "RayTracedShadowResolveSetLayout");
 
-    const std::array<VkDescriptorSetLayoutBinding, 2> filterBindings{
+    // Binding 2 is the radius pass's history; the blur does not declare it, and
+    // its sets leave it unwritten.
+    const std::array<VkDescriptorSetLayoutBinding, 3> filterBindings{
         computeBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
         computeBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),
+        computeBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
     };
     filterSetLayout_.create(
         context_.vkDevice(),
@@ -160,6 +174,20 @@ void RayTracedShadowMask::createDescriptorSetLayouts()
                               filterSetLayout_.handle(),
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
                               "RayTracedShadowFilterSetLayout");
+
+    const std::array<VkDescriptorSetLayoutBinding, 4> temporalBindings{
+        computeBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
+        computeBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
+        computeBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
+        computeBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),
+    };
+    temporalSetLayout_.create(
+        context_.vkDevice(),
+        std::span<const VkDescriptorSetLayoutBinding>(temporalBindings.data(), temporalBindings.size()));
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              temporalSetLayout_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                              "RayTracedShadowTemporalSetLayout");
 }
 
 void RayTracedShadowMask::destroyPipelines()
@@ -169,9 +197,11 @@ void RayTracedShadowMask::destroyPipelines()
     resolvePipeline_.reset();
     radiusPipeline_.reset();
     blurPipeline_.reset();
+    temporalPipeline_.reset();
     traceSetLayout_.reset();
     resolveSetLayout_.reset();
     filterSetLayout_.reset();
+    temporalSetLayout_.reset();
 }
 
 void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
@@ -207,7 +237,8 @@ void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
         // binding 17, which is why a failure from here on leaves it in place.
         if (tracePipeline_.pipeline() == VK_NULL_HANDLE || resolvePipeline_.pipeline() == VK_NULL_HANDLE ||
             radiusPipeline_.pipeline() == VK_NULL_HANDLE || blurPipeline_.pipeline() == VK_NULL_HANDLE ||
-            traceSetLayout_.handle() == VK_NULL_HANDLE || topLevel == VK_NULL_HANDLE) {
+            temporalPipeline_.pipeline() == VK_NULL_HANDLE || traceSetLayout_.handle() == VK_NULL_HANDLE ||
+            topLevel == VK_NULL_HANDLE) {
             return;
         }
         if (!swapchain_.depthSupportsSampling()) {
@@ -232,27 +263,43 @@ void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
         traceInfo.debugName = "RayTracedShadowFilter";
         filter_.create(context_, traceInfo);
         filterLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+        // The same for the histories: allocated whether or not frames
+        // accumulate, and holding nothing until a frame that does writes one.
+        for (uint32_t index = 0; index < history_.size(); ++index) {
+            traceInfo.debugName = index == 0 ? "RayTracedShadowHistory0" : "RayTracedShadowHistory1";
+            history_[index].create(context_, traceInfo);
+            historyLayout_[index] = VK_IMAGE_LAYOUT_UNDEFINED;
+        }
+        historyParity_ = 0;
+        historyFresh_ = true;
 
-        // Five sets: trace; resolve from the trace image and from the filter
-        // image; the filter's two directions between the images.
+        // Nine sets: trace; resolve from the trace image and from the filter
+        // image; the blur's two directions between the images; and, per
+        // history parity, the radius pass and the temporal pass. A set counts
+        // every binding of its layout, written or not, so the blur's two sets
+        // take the filter layout's history sampler too: 1 + 2x2 + 4x2 + 2x3.
         const std::array<VkDescriptorPoolSize, 3> poolSizes{{
-            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 19},
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 9},
         }};
         descriptorPool_.create(
-            context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), 5);
+            context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), 9);
         rhi::debug::setObjectName(context_.vkDevice(),
                                   descriptorPool_.handle(),
                                   VK_OBJECT_TYPE_DESCRIPTOR_POOL,
                                   "RayTracedShadowMaskDescriptorPool");
 
-        const std::array<VkDescriptorSetLayout, 5> setLayouts{traceSetLayout_.handle(),
+        const std::array<VkDescriptorSetLayout, 9> setLayouts{traceSetLayout_.handle(),
                                                               resolveSetLayout_.handle(),
                                                               resolveSetLayout_.handle(),
                                                               filterSetLayout_.handle(),
-                                                              filterSetLayout_.handle()};
-        std::array<VkDescriptorSet, 5> sets{};
+                                                              filterSetLayout_.handle(),
+                                                              filterSetLayout_.handle(),
+                                                              filterSetLayout_.handle(),
+                                                              temporalSetLayout_.handle(),
+                                                              temporalSetLayout_.handle()};
+        std::array<VkDescriptorSet, 9> sets{};
         VkDescriptorSetAllocateInfo allocateInfo{};
         allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocateInfo.descriptorPool = descriptorPool_.handle();
@@ -264,6 +311,8 @@ void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
         resolveFilteredSet_ = sets[2];
         traceToFilterSet_ = sets[3];
         filterToTraceSet_ = sets[4];
+        radiusSets_ = {sets[5], sets[6]};
+        temporalSets_ = {sets[7], sets[8]};
 
         VkDescriptorImageInfo depthInfo{};
         depthInfo.sampler = sampler_;
@@ -297,9 +346,19 @@ void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
         maskStorageInfo.imageView = mask_.imageView();
         maskStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
+        std::array<VkDescriptorImageInfo, 2> historySampledInfo{};
+        std::array<VkDescriptorImageInfo, 2> historyStorageInfo{};
+        for (uint32_t index = 0; index < history_.size(); ++index) {
+            historySampledInfo[index].sampler = sampler_;
+            historySampledInfo[index].imageView = history_[index].imageView();
+            historySampledInfo[index].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            historyStorageInfo[index].imageView = history_[index].imageView();
+            historyStorageInfo[index].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        }
+
         constexpr VkDescriptorType kSampled = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         constexpr VkDescriptorType kStorage = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        std::array<VkWriteDescriptorSet, 13> writes{
+        std::array<VkWriteDescriptorSet, 27> writes{
             imageWrite(traceSet_, 0, kSampled, &depthInfo),
             imageWrite(traceSet_, 1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, nullptr),
             imageWrite(traceSet_, 2, kStorage, &traceStorageInfo),
@@ -313,6 +372,22 @@ void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
             imageWrite(traceToFilterSet_, 1, kStorage, &filterStorageInfo),
             imageWrite(filterToTraceSet_, 0, kSampled, &filterSampledInfo),
             imageWrite(filterToTraceSet_, 1, kStorage, &traceStorageInfo),
+            // Parity p writes history p: the radius pass reads it, and the
+            // temporal pass reads the other one.
+            imageWrite(radiusSets_[0], 0, kSampled, &traceSampledInfo),
+            imageWrite(radiusSets_[0], 1, kStorage, &filterStorageInfo),
+            imageWrite(radiusSets_[0], 2, kSampled, &historySampledInfo[0]),
+            imageWrite(radiusSets_[1], 0, kSampled, &traceSampledInfo),
+            imageWrite(radiusSets_[1], 1, kStorage, &filterStorageInfo),
+            imageWrite(radiusSets_[1], 2, kSampled, &historySampledInfo[1]),
+            imageWrite(temporalSets_[0], 0, kSampled, &depthInfo),
+            imageWrite(temporalSets_[0], 1, kSampled, &traceSampledInfo),
+            imageWrite(temporalSets_[0], 2, kSampled, &historySampledInfo[1]),
+            imageWrite(temporalSets_[0], 3, kStorage, &historyStorageInfo[0]),
+            imageWrite(temporalSets_[1], 0, kSampled, &depthInfo),
+            imageWrite(temporalSets_[1], 1, kSampled, &traceSampledInfo),
+            imageWrite(temporalSets_[1], 2, kSampled, &historySampledInfo[0]),
+            imageWrite(temporalSets_[1], 3, kStorage, &historyStorageInfo[1]),
         };
         writes[1].pNext = &topLevelInfo;
         vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -332,11 +407,18 @@ void RayTracedShadowMask::destroyResources()
     resolveFilteredSet_ = VK_NULL_HANDLE;
     traceToFilterSet_ = VK_NULL_HANDLE;
     filterToTraceSet_ = VK_NULL_HANDLE;
+    radiusSets_ = {};
+    temporalSets_ = {};
     descriptorPool_.reset();
     if (sampler_ != VK_NULL_HANDLE) {
         vkDestroySampler(context_.vkDevice(), sampler_, nullptr);
         sampler_ = VK_NULL_HANDLE;
     }
+    for (uint32_t index = 0; index < history_.size(); ++index) {
+        history_[index].reset();
+        historyLayout_[index] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    historyFresh_ = true;
     filter_.reset();
     filterLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     trace_.reset();
@@ -499,14 +581,34 @@ void RayTracedShadowMask::recordTrace(VkCommandBuffer commandBuffer,
                   1);
 }
 
+void RayTracedShadowMask::recordTemporal(VkCommandBuffer commandBuffer,
+                                         const RayTracedShadowTemporalPushConstants& push) const
+{
+    const VkDescriptorSet set = temporalSets_[historyParity_];
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, temporalPipeline_.pipeline());
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, temporalPipeline_.layout(), 0, 1, &set, 0, nullptr);
+    vkCmdPushConstants(commandBuffer,
+                       temporalPipeline_.layout(),
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(push)),
+                       &push);
+    vkCmdDispatch(commandBuffer,
+                  rayTracedShadowMaskGroupCount(push.traceExtent.x),
+                  rayTracedShadowMaskGroupCount(push.traceExtent.y),
+                  1);
+}
+
 void RayTracedShadowMask::recordFilter(VkCommandBuffer commandBuffer,
                                        RayTracedShadowFilterStage stage,
                                        const RayTracedShadowFilterPushConstants& push) const
 {
     const rhi::ComputePipelineRef& pipeline =
         stage == RayTracedShadowFilterStage::Radius ? radiusPipeline_ : blurPipeline_;
-    const VkDescriptorSet set =
-        stage == RayTracedShadowFilterStage::BlurHorizontal ? filterToTraceSet_ : traceToFilterSet_;
+    const VkDescriptorSet set = stage == RayTracedShadowFilterStage::Radius           ? radiusSets_[historyParity_]
+                                : stage == RayTracedShadowFilterStage::BlurHorizontal ? filterToTraceSet_
+                                                                                      : traceToFilterSet_;
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline());
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(), 0, 1, &set, 0, nullptr);
     vkCmdPushConstants(

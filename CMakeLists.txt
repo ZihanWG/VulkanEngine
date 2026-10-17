@@ -482,6 +482,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/simple_bindless.frag"
     "${SHADER_SOURCE_DIR}/skin_positions.comp"
     "${SHADER_SOURCE_DIR}/ray_traced_shadow_trace.comp"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_temporal.comp"
     "${SHADER_SOURCE_DIR}/ray_traced_shadow_radius.comp"
     "${SHADER_SOURCE_DIR}/ray_traced_shadow_blur.comp"
     "${SHADER_SOURCE_DIR}/ray_traced_shadow_resolve.comp"

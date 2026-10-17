@@ -56,6 +56,19 @@ const float kRtResolveMinWeight = 0.05;
 // for a fragment, and only when the sun has an extent.
 const uint kRtInlineSoftGridSide = 2u;
 
+// Temporal accumulation, ray_traced_shadow_temporal.comp. The ceiling on the
+// frames a history texel may average, and the clamp on
+// RayTracedShadowSettings::temporalMaxFrames. Mirrors
+// renderer::kRtTemporalMaxFrames.
+const uint kRtTemporalMaxFrames = 64u;
+// How far the view depth a history texel recorded may differ from the depth the
+// reprojected surface had last frame, as a fraction of it, and still be that
+// surface.
+const float kRtTemporalDepthTolerance = 0.02;
+// The neighbourhood the history is clamped to: the 3x3 trace texels around
+// it whose camera distance is within this fraction of its own.
+const float kRtTemporalNeighbourTolerance = 0.05;
+
 // The soft shadow filter, ray_traced_shadow_radius.comp and
 // ray_traced_shadow_blur.comp. Most trace texels the blur reaches either side of
 // a texel, and the clamp on the radius. Mirrors renderer::kRtFilterMaxRadius.

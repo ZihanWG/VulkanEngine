@@ -397,6 +397,7 @@ jobs:
           ray-traced-shadows-mask|--settings config/ci/ray-traced-shadows-mask.json
           ray-traced-shadows-soft|--settings config/ci/ray-traced-shadows-soft.json
           ray-traced-shadows-soft-unfiltered|--settings config/ci/ray-traced-shadows-soft-unfiltered.json
+          ray-traced-shadows-temporal|--settings config/ci/ray-traced-shadows-temporal.json
           ray-traced-shadows-frozen|--settings config/ci/ray-traced-shadows.json --freeze-animation
           scene-sunlit|--scene sunlit
           scene-cornell|--scene cornell

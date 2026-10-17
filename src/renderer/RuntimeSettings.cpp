@@ -58,6 +58,7 @@ void clampRayTracedShadowSettings(RayTracedShadowSettings& settings)
                                              ? std::clamp(settings.sunAngularDiameterDegrees, 0.0f, 5.0f)
                                              : 0.0f;
     settings.debugReferenceSamples = std::min(settings.debugReferenceSamples, renderer::kRtReferenceMaxSamples);
+    settings.temporalMaxFrames = std::clamp(settings.temporalMaxFrames, 1u, renderer::kRtTemporalMaxFrames);
 }
 
 uint32_t clampFramesInFlight(uint32_t requested)
@@ -563,6 +564,8 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*rayTraced, "sunAngularDiameterDegrees", settings.rayTracedShadows.sunAngularDiameterDegrees);
         readBool(*rayTraced, "halfResolutionMask", settings.rayTracedShadows.halfResolutionMask);
         readBool(*rayTraced, "filter", settings.rayTracedShadows.filter);
+        readBool(*rayTraced, "temporalAccumulation", settings.rayTracedShadows.temporalAccumulation);
+        readUint32(*rayTraced, "temporalMaxFrames", settings.rayTracedShadows.temporalMaxFrames);
         readFloat(*rayTraced, "normalOffset", settings.rayTracedShadows.normalOffset);
         readFloat(*rayTraced, "pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset);
         readBool(*rayTraced, "debugVisibility", settings.rayTracedShadows.debugVisibility);
@@ -571,6 +574,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readUint32(*rayTraced, "debugReferenceSamples", settings.rayTracedShadows.debugReferenceSamples);
         readBool(*rayTraced, "debugHitDistance", settings.rayTracedShadows.debugHitDistance);
         readBool(*rayTraced, "debugPenumbraRadius", settings.rayTracedShadows.debugPenumbraRadius);
+        readBool(*rayTraced, "debugHistoryLength", settings.rayTracedShadows.debugHistoryLength);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -753,6 +757,8 @@ Json toJson(const RuntimeSettings& settings)
               {"sunAngularDiameterDegrees", settings.rayTracedShadows.sunAngularDiameterDegrees},
               {"halfResolutionMask", settings.rayTracedShadows.halfResolutionMask},
               {"filter", settings.rayTracedShadows.filter},
+              {"temporalAccumulation", settings.rayTracedShadows.temporalAccumulation},
+              {"temporalMaxFrames", settings.rayTracedShadows.temporalMaxFrames},
               {"normalOffset", settings.rayTracedShadows.normalOffset},
               {"pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset},
               {"debugVisibility", settings.rayTracedShadows.debugVisibility},
@@ -760,7 +766,8 @@ Json toJson(const RuntimeSettings& settings)
               {"debugMaskSource", settings.rayTracedShadows.debugMaskSource},
               {"debugReferenceSamples", settings.rayTracedShadows.debugReferenceSamples},
               {"debugHitDistance", settings.rayTracedShadows.debugHitDistance},
-              {"debugPenumbraRadius", settings.rayTracedShadows.debugPenumbraRadius}}},
+              {"debugPenumbraRadius", settings.rayTracedShadows.debugPenumbraRadius},
+              {"debugHistoryLength", settings.rayTracedShadows.debugHistoryLength}}},
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},

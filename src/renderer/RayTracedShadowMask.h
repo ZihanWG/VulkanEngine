@@ -19,6 +19,13 @@
 // back into the trace image, and the vertical axis writes it again, which the
 // resolve then reads instead of the trace image.
 //
+// Temporal accumulation runs between the trace and the filter: two history
+// images, in the trace image's format and extent, alternate as last frame's and
+// this frame's. RayTracedShadowTemporal reads the trace image and last frame's
+// history and writes this frame's, which the radius pass reads in place of the
+// single ray. The histories are the one thing here that outlives a frame by
+// design: history lifetime, reset by rayTracedShadowHistoryUsable.
+//
 // Ownership. All three images are written and read within one frame, so none is
 // frame-indexed or history. They persist across frames only so their layouts
 // can be tracked: the render graph imports them with those layouts, which is
@@ -70,6 +77,7 @@ public:
                          const std::filesystem::path& resolveShaderPath,
                          const std::filesystem::path& radiusShaderPath,
                          const std::filesystem::path& blurShaderPath,
+                         const std::filesystem::path& temporalShaderPath,
                          VkDescriptorSetLayout bindlessSetLayout);
     void destroyPipelines();
 
@@ -84,6 +92,10 @@ public:
     void recordTrace(VkCommandBuffer commandBuffer,
                      const RayTracedShadowTracePushConstants& push,
                      VkDescriptorSet bindlessSet) const;
+    // The temporal pass over push.traceExtent. The graph pass put depth in
+    // DEPTH_READ_ONLY_OPTIMAL, the trace image and last frame's history in
+    // SHADER_READ_ONLY_OPTIMAL, and this frame's history in GENERAL.
+    void recordTemporal(VkCommandBuffer commandBuffer, const RayTracedShadowTemporalPushConstants& push) const;
     // One of the filter's dispatches over push.traceExtent. The graph pass put
     // the image it reads in SHADER_READ_ONLY_OPTIMAL and the one it writes in
     // GENERAL: see RayTracedShadowFilterStage for which is which.
@@ -117,7 +129,7 @@ public:
         // again.
         return available_ && tracePipeline_.pipeline() != VK_NULL_HANDLE &&
                resolvePipeline_.pipeline() != VK_NULL_HANDLE && radiusPipeline_.pipeline() != VK_NULL_HANDLE &&
-               blurPipeline_.pipeline() != VK_NULL_HANDLE;
+               blurPipeline_.pipeline() != VK_NULL_HANDLE && temporalPipeline_.pipeline() != VK_NULL_HANDLE;
     }
 
     [[nodiscard]] const rhi::VulkanImage& image() const
@@ -144,6 +156,33 @@ public:
     {
         return &filterLayout_;
     }
+
+    // The history this frame writes is historyImage(historyParity()); last
+    // frame's is the other. advanceHistory swaps them, once per frame that
+    // accumulates, before anything is recorded.
+    [[nodiscard]] uint32_t historyParity() const
+    {
+        return historyParity_;
+    }
+    void advanceHistory()
+    {
+        historyParity_ ^= 1u;
+    }
+    // True once after the history images are created: they hold nothing yet.
+    [[nodiscard]] bool consumeHistoryFresh()
+    {
+        const bool fresh = historyFresh_;
+        historyFresh_ = false;
+        return fresh;
+    }
+    [[nodiscard]] const rhi::VulkanImage& historyImage(uint32_t index) const
+    {
+        return history_.at(index);
+    }
+    [[nodiscard]] VkImageLayout* historyLayoutPtr(uint32_t index)
+    {
+        return &historyLayout_.at(index);
+    }
     [[nodiscard]] VkSampler sampler() const
     {
         return sampler_;
@@ -162,14 +201,18 @@ private:
 
     // Trace: depth, TLAS, trace image (storage). Resolve: depth, trace or
     // filter image (sampled), mask (storage). Filter: one image sampled, the
-    // other storage.
+    // other storage, and for the radius pass this frame's history (sampled).
+    // Temporal: depth, trace image and last frame's history (sampled), this
+    // frame's history (storage).
     rhi::VulkanDescriptorSetLayout traceSetLayout_;
     rhi::VulkanDescriptorSetLayout resolveSetLayout_;
     rhi::VulkanDescriptorSetLayout filterSetLayout_;
+    rhi::VulkanDescriptorSetLayout temporalSetLayout_;
     rhi::ComputePipelineRef tracePipeline_;
     rhi::ComputePipelineRef resolvePipeline_;
     rhi::ComputePipelineRef radiusPipeline_;
     rhi::ComputePipelineRef blurPipeline_;
+    rhi::ComputePipelineRef temporalPipeline_;
     rhi::VulkanDescriptorPool descriptorPool_;
     VkDescriptorSet traceSet_ = VK_NULL_HANDLE;
     VkDescriptorSet resolveSet_ = VK_NULL_HANDLE;
@@ -178,10 +221,17 @@ private:
     // filter image; the horizontal axis the other way round.
     VkDescriptorSet traceToFilterSet_ = VK_NULL_HANDLE;
     VkDescriptorSet filterToTraceSet_ = VK_NULL_HANDLE;
+    // Indexed by the parity of the history this frame writes.
+    std::array<VkDescriptorSet, 2> radiusSets_{};
+    std::array<VkDescriptorSet, 2> temporalSets_{};
     rhi::VulkanImage trace_;
     VkImageLayout traceLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     rhi::VulkanImage filter_;
     VkImageLayout filterLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    std::array<rhi::VulkanImage, 2> history_;
+    std::array<VkImageLayout, 2> historyLayout_{VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
+    uint32_t historyParity_ = 0;
+    bool historyFresh_ = true;
     rhi::VulkanImage mask_;
     VkImageLayout maskLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     // Nearest, clamped. Everything here is read with texelFetch, and the mask is

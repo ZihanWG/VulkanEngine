@@ -473,9 +473,10 @@ caster faces the sun.
 | Shadow mask image, `R32G32_UINT` at the render-resolution allocation extent | renderer, one image, written and read within a frame; its layout is tracked across frames | `RayTracedShadowMask::createResources`, from `recreatePostProcessResources`, whenever the ray-query variant draws (the TLAS and the bindless path); without bindless nothing declares binding 17 and the image is not allocated | every resize, and the destructor |
 | Trace image, `R16G16B16A16_SFLOAT` at the same extent; half resolution fills a quarter of it | same | same, when the passes can run | same |
 | Filter image, the trace image's format and extent, allocated with it whether or not the filter runs | same | same | same |
+| Two history images, the same format and extent, alternating as last frame's and this frame's | **history**: they carry a mean from frame to frame; reset by `rayTracedShadowHistoryUsable`, and fresh after every resize | same | same |
 | Its nearest sampler and the passes' five descriptor sets (trace: depth, TLAS, trace image; resolve, twice: depth, trace or filter image, mask; filter, twice: one image sampled, the other storage) | same | same | same |
 | Set 0 binding 17, `COMBINED_IMAGE_SAMPLER` (`usampler2D`) | in the layout whenever the TLAS exists, written whenever the mask image does | `createMaterialDescriptorSet`; rewritten by `refreshMaterialRayTracedShadowMaskDescriptors` on resize | with the pool |
-| Trace, resolve, radius and blur pipelines (`ray_traced_shadow_trace.comp`, set 0 its own and set 1 the bindless heap; `ray_traced_shadow_resolve.comp`, its own set; `ray_traced_shadow_radius.comp` and `ray_traced_shadow_blur.comp`, one set layout and one push block between them, the blur running both axes) | renderer | `createRayTracedShadowMaskPipeline`, on every pipeline rebuild; their set layouts once | the pipeline store |
+| Trace, resolve, radius, blur and temporal pipelines (`ray_traced_shadow_trace.comp`, set 0 its own and set 1 the bindless heap; `ray_traced_shadow_resolve.comp`, its own set; `ray_traced_shadow_radius.comp` and `ray_traced_shadow_blur.comp`, one set layout and one push block between them, the blur running both axes; `ray_traced_shadow_temporal.comp`, its own set, two of them by history parity) | renderer | `createRayTracedShadowMaskPipeline`, on every pipeline rebuild; their set layouts once | the pipeline store |
 | Readback buffer and one-time command buffer for `--rt-shadow-dump` | the dump | `RayTracedShadowMask::dumpVisibility`, after the capture frame presents, behind `vkDeviceWaitIdle` | the same call, after `vkQueueWaitIdle` |
 
 The mesh set is fixed after construction -- every scene preset draws the
@@ -512,6 +513,8 @@ KiB of BLAS, Sponza's 105 primitives (264487 triangles) into 18350 KiB, in
 | an earlier frame's build -> the ray queries of a frame that keeps the TLAS | the graph's barriers on the frame that built it, whose second scopes reach every later command in the stages they name: the fragment stage, and the compute stage when the mask traced that frame. The frame the mask turns on rebuilds (`rayTracedShadowMaskNeedsFreshBuild`), so a keeping frame never reads in a stage its build's barriers did not name. The keeping frame declares the reads alone, which with no write before them in the frame emit nothing, and the next build's entry barrier waits for them |
 | depth prepass writes -> the trace's and resolve's depth reads -> the main pass's depth test | the graph: `DepthPrepass` writes main depth, `RayTracedShadowTrace` and `RayTracedShadowResolve` read it (`DEPTH_READ_ONLY_OPTIMAL`), `MainHDRPass` takes it back as an attachment |
 | the trace's storage writes -> the resolve's reads | the graph: `GENERAL` to `SHADER_READ_ONLY_OPTIMAL`, compute to compute |
+| with frames accumulating: trace -> temporal -> radius | the graph: the temporal pass reads the trace image and last frame's history (`SHADER_READ_ONLY_OPTIMAL`) and writes this frame's (`GENERAL`); the radius pass reads it. The radius pass's set samples this frame's history whether or not frames accumulate, so the image is imported and read on every filtered frame |
+| last frame's history writes -> this frame's reads | the graph's first-use barrier, from the layout the image ended last frame in; the two images alternate, so each is written one frame and read the next |
 | with the filter: trace -> radius -> horizontal blur -> vertical blur -> resolve | the graph, one pass each: every pass reads one of the two images (`SHADER_READ_ONLY_OPTIMAL`) and writes the other (`GENERAL`), so each edge is a write followed by a read or a read followed by a write, compute to compute, and none is a read after a read |
 | the resolve's and the main pass's reads -> the readback's copy, and the copy -> the next frame's writes | `dumpVisibility` waits for the device to idle, takes the mask from its tracked layout to `TRANSFER_SRC_OPTIMAL` and back, and waits for the queue: a debug capture outside the frame |
 | the resolve's storage writes to the mask -> the main shader's reads | the graph: `GENERAL` to `SHADER_READ_ONLY_OPTIMAL`, compute to fragment |
@@ -620,12 +623,18 @@ read the TLAS, so no queue-family ownership is involved.
   `RayTracedShadowResolvePushConstants`, 96, whose former padding word is now
   `filtered`, set when it reads the filter image), offsets pinned by
   `static_assert` and by the shader interface golden. The filter's three
-  dispatches share `RayTracedShadowFilterPushConstants` (24 bytes): the trace
-  grid's extent, the blur axis, trace texels per world unit at unit distance and
-  tan(half the sun's angular diameter).
+  dispatches share `RayTracedShadowFilterPushConstants` (32 bytes): the trace
+  grid's extent, the blur axis, trace texels per world unit at unit distance,
+  tan(half the sun's angular diameter), and for the radius pass whether frames
+  accumulate and the history-length view. The temporal pass pushes
+  `RayTracedShadowTemporalPushConstants`, 128 bytes so it fits the smallest
+  range a device may have: the reprojection matrix, the inverse view-projection's
+  row 3, the extents, the frame cap and whether the history is usable.
+  `kRtShadowFlagDebugHistoryLength` is flag bit 128, and `kRtTemporalMaxFrames`
+  is paired with C++ by the checker.
 - **The sun's disc** is `rayTracedShadowParams.w`, tan(half the angular
   diameter), and the frame index for moving the sampling pattern is
-  `rayTracedShadow.w` (zero until temporal accumulation exists): both were spare,
+  `rayTracedShadow.w` (zero unless frames accumulate): both were spare,
   so `FrameConstants` did not change size.
 - **The trace itself** lives once, in `ray_traced_shadow_trace.glsl`, with the
   disc sampling beside it, and takes the frame-constants and object-data
@@ -861,6 +870,91 @@ rather than half: sunlit 0.070 to 0.090, with more leaks. A floor of one texel
 under sigma: default 0.172 to 0.143 and stress 0.204 to 0.173, but light leaking
 at contacts went from 8 to 124 and from 16 to 130 pixels. Both rejected.
 
+## Temporal accumulation
+
+The filter smooths one frame's rays. `rayTracedShadows.temporalAccumulation`
+(off by default until P4.3b measures its cost) adds a pass ahead of it,
+`RayTracedShadowTemporal`, that keeps each trace texel's running mean over the
+frames its surface has been seen; the radius pass reads that mean in place of
+the single ray, and the filter blurs what noise is left. The sampling noise
+moves every frame it runs: the frame index the trace and the inline fallback
+already offset their interleaved gradient noise by, `rayTracedShadow.w`, counts
+frames modulo `kRtNoiseFrameCycle` (64). Off, it stays zero, so a still frame is
+the same frame to frame and the filter-only image is unchanged.
+
+**Reprojection.** The pass runs before the main pass, so this frame has no
+velocity yet. Each texel's surface is unprojected through the prepass depth and
+the inverse jittered view-projection and projected with last frame's
+view-projection, which covers the camera's motion. One matrix, last frame's
+times the inverse of this frame's, takes the texel's NDC straight to last
+frame's clip space. Its `w` comes out scaled by the homogeneous `w` the inverse
+left on the world point, one over the view depth -- harmless to the position,
+fatal to a depth comparison, and the first version compared it unscaled and
+rejected every history it read. The history is read bilinearly from the four
+trace texels around the reprojected point, each counting only if the view depth
+it recorded is within 2% of the depth this surface had last frame
+(`kRtTemporalDepthTolerance`), so a surface that moved or was hidden starts over.
+
+**The clamp.** What survives is clamped to the range of this frame's own rays in
+the 3x3 trace texels around the texel on the same surface, as TAA clamps colour.
+Each ray is 0 or 1, so the clamp does nothing inside a penumbra, where they
+disagree, and pins the mean wherever they agree: a lit wall cannot keep a shadow
+its rays no longer find. Without it, an orbiting camera on `--scene stress`
+left 22707 lit pixels in shadow -- stale history the depth test passed on
+surfaces whose depth hardly changes across the screen -- and the whole-frame
+error rose from 0.0025 to 0.0325; with it, 830 and 0.0059. It also answers the
+moving occluder, a shadow sweeping across a receiver that has not moved: the
+animated scenes below keep no trailing shadow.
+
+**History.** Two `R16G16B16A16_SFLOAT` images in the trace image's extent
+alternate as last frame's and this frame's: mean, frame count, view depth. A
+texel keeps at most `temporalMaxFrames` frames (16, clamped to [1, 64]). The
+whole history starts over when the frame before did not accumulate, or did under
+a different trace grid, sun size or sub-rect, when the view was reset (whatever
+resets the TAA history: a camera cut, a scene change), and when the images were
+just created; `rayTracedShadowHistoryUsable` is that rule, tested on the CPU.
+
+**Error against the reference**, as for the filter: frame N of a fixed-step run,
+a two-degree sun, against the 64-ray reference of the same frame, Debug with
+validation and `--sync-validation`, zero errors and hazards in all 75 runs.
+Penumbra MAE, full resolution and half:
+
+| Scene | Filter only | Temporal, frame 1 | frame 4 | frame 16 | frame 32 |
+| --- | --- | --- | --- | --- | --- |
+| sunlit, still | 0.070 / 0.102 | 0.070 / 0.101 | 0.063 / 0.074 | 0.059 / 0.070 | **0.059 / 0.070** |
+| default, still | 0.178 / 0.216 | 0.182 / 0.215 | 0.102 / 0.164 | 0.093 / 0.157 | **0.091 / 0.157** |
+| stress, still | 0.205 / 0.225 | 0.209 / 0.230 | 0.111 / 0.187 | 0.108 / 0.186 | **0.112 / 0.187** |
+| Sponza, still | 0.092 / 0.146 | 0.094 / 0.145 | 0.070 / 0.092 | 0.064 / 0.087 | **0.062 / 0.091** |
+
+Still means `--freeze-animation` and the preset camera. On the scenes whose
+penumbrae are contact shadows a texel or two wide -- default and stress, where
+the filter alone could not reach -- full resolution halves the error, and it
+gets there by the fourth frame: past that, what is left is the blur's own bias,
+which the history-length radius in P4.3b is for. Half resolution gains less; its
+upsample at shadow edges stays.
+
+Moving, at frame 30 (penumbra MAE / whole-frame MAE / light leaks, full
+resolution):
+
+| Scene | Filter only | Temporal |
+| --- | --- | --- |
+| sunlit, animated | 0.070 / 0.0020 / 1 | 0.062 / 0.0019 / 34 |
+| default, animated | 0.172 / 0.0009 / 8 | **0.109 / 0.0008 / 3** |
+| stress, animated | 0.204 / 0.0012 / 16 | **0.117 / 0.0012 / 8** |
+| Sponza, animated | 0.092 / 0.0001 / 1 | 0.063 / 0.0001 / 1 |
+| sunlit, orbiting | 0.063 / 0.0030 / 4 | 0.051 / 0.0027 / 19 |
+| default, orbiting | 0.109 / 0.0022 / 6 | 0.098 / 0.0040 / 1113 |
+| stress, orbiting | 0.141 / 0.0025 / 10 | 0.108 / 0.0059 / 1084 |
+
+Animated is the presets' own animation with the camera still: casters move over
+receivers that do not, and the clamp keeps it clean. Orbiting is `--camera-orbit
+0.05` with animation frozen, 0.05 radians (about 2.9 degrees) a frame -- the
+near wall on stress moves more than 190 pixels a frame. Penumbrae
+still improve, but thin shadows wash out: the leaks are one- and two-pixel
+features, rows of slits and a contact line under a cylinder, whose history is
+resampled bilinearly every frame and whose 3x3 always holds a lit ray for the
+clamp. That is TAA's blur under motion, and it is P4.3b's.
+
 ## Debug views and settings
 
 | Setting | Default | |
@@ -872,6 +966,8 @@ at contacts went from 8 to 124 and from 16 to 130 pixels. Both rejected.
 | `rayTracedShadows.sunAngularDiameterDegrees` | 0 | degrees, clamped to [0, 5]; zero is the hard shadow, above zero samples the sun's disc and turns the mask on. The real sun is about 0.53 |
 | `rayTracedShadows.halfResolutionMask` | true | trace one pixel per 2x2 block and upsample |
 | `rayTracedShadows.filter` | true | filter a soft shadow's mask: a penumbra radius per screen axis from the hit distances around each texel, then a separable bilateral blur. Never the hard shadow or the reference |
+| `rayTracedShadows.temporalAccumulation` | false | accumulate the mask over frames ahead of the filter, reprojected through the camera's motion and clamped to this frame's rays; the sampling noise moves while it is on. Only with the filter |
+| `rayTracedShadows.temporalMaxFrames` | 16 | the longest history a texel keeps, clamped to [1, 64] |
 | `rayTracedShadows.normalOffset` | 0.02 | world units, clamped to [0, 1] |
 | `rayTracedShadows.pixelFootprintOffset` | 1.0 | pixels, clamped to [0, 16] |
 | `rayTracedShadows.debugVisibility` | false | the traced term alone, white lit |
@@ -880,13 +976,15 @@ at contacts went from 8 to 124 and from 16 to 130 pixels. Both rejected.
 | `rayTracedShadows.debugReferenceSamples` | 0 | rays per pixel for the reference, clamped to [0, 64]; turns the mask on, at full resolution |
 | `rayTracedShadows.debugHitDistance` | false | the mask carries how far each ray went, shown as the visibility term: dark near, white where nothing was hit. Turns the filter off, which writes over the hit distance |
 | `rayTracedShadows.debugPenumbraRadius` | false | the mask carries the filter's radius, the larger of its two axes, shown as the visibility term: black where the filter left a texel alone, white at 16 texels. Only while the filter runs |
+| `rayTracedShadows.debugHistoryLength` | false | the mask carries each texel's history length, unblurred: black where it just started over, white at 64 frames. Only while frames accumulate |
 
 The CI sweep renders it enabled (cascades skipped), enabled with both debug
 views, `renderCascades` and `rebuildEveryFrame`, enabled on a still scene
 (`--freeze-animation`, which keeps the TLAS), enabled with the mask at full
 resolution and its source view, the hit-distance view and a four-ray reference
 on, enabled with a one-degree sun at half resolution under the penumbra-radius
-view, the same sun with the filter off, and enabled with `--disable-ray-query`
+view, the same sun with the filter off, the same sun accumulating under the
+history-length view, and enabled with `--disable-ray-query`
 (`config/ci/`). Mesa's lavapipe exposes all three extensions, so the first two
 run the traced path in CI, under validation.
 
@@ -1045,10 +1143,18 @@ under that isolation differ from the traced image on 1000 pixels rather than
   normal instead, at the price of the fragment work it exists to avoid.
 - **The mask needs a 32-bit float depth format,** the depth prepass and the
   bindless heap; without any of them every fragment traces inline.
-- **The filter is spatial only.** A contact shadow's penumbra is a texel or two
-  wide, too narrow to blur without bending it, so there the one ray per texel
-  stays noise (the default and stress rows of the error table); temporal
-  accumulation is what reaches it.
+- **Without temporal accumulation the filter is spatial only.** A contact
+  shadow's penumbra is a texel or two wide, too narrow to blur without bending
+  it, so there the one ray per texel stays noise; accumulating halves it (the
+  temporal tables).
+- **Thin shadows wash out under fast camera motion** while frames accumulate:
+  the history is resampled bilinearly every frame, and a one-pixel shadow's 3x3
+  always holds a lit ray, so the clamp cannot hold it (the orbiting rows).
+- **Reprojection follows the camera only.** The history is reprojected before
+  the main pass has velocity, so a moving surface's own history is rejected by
+  depth and starts over rather than following it; and under TAA the history,
+  written at last frame's jitter, is read through last frame's unjittered
+  matrix, up to half a pixel off.
 - **The radius is the narrowest the penumbra can be,** so a penumbra stretched
   along the sun's direction on a slanted receiver is blurred less than it could
   be and keeps more noise.
@@ -1056,8 +1162,6 @@ under that isolation differ from the traced image on 1000 pixels rather than
   these scenes, from its upsample rather than the filter.
 - **What traces inline is soft but unfiltered:** four rays, a five-level
   penumbra, on the skinned mesh, blended surfaces and phase-two draws.
-- **The sampling pattern is fixed to the screen** until temporal accumulation
-  moves it, so it swims when the camera does. How much the filter calms that is
-  not measured: comparing two frames of a moving camera needs the reprojection
-  temporal accumulation brings.
+- **Without temporal accumulation the sampling pattern is fixed to the
+  screen,** so it swims when the camera does.
 - **Synchronization validation is blind to it,** as above.

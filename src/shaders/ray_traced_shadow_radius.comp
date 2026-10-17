@@ -20,6 +20,10 @@
 #include "ray_traced_shadows.glsl"
 #include "ray_traced_shadow_filter.glsl"
 
+// This frame's temporal history (ray_traced_shadow_temporal.comp), read only
+// when pc.temporal is set: x = mean visibility, y = frames accumulated.
+layout(set = 0, binding = 2) uniform sampler2D uHistory;
+
 // The smaller of the camera-distance steps to this texel's two neighbours along
 // one axis, from a traced neighbour only: across a depth edge one side steps far
 // and the other does not, and the near side is the surface this texel is on.
@@ -46,8 +50,19 @@ void main()
         return;
     }
     vec4 centre = texelFetch(uFilterSource, texel, 0);
+    // The visibility the blur smooths: this frame's ray, or with the temporal
+    // pass the mean of every frame's, carrying this frame's back-facing mark.
+    float visibility = centre.x;
+    if (pc.temporal != 0u && centre.x >= 0.0) {
+        vec4 history = texelFetch(uHistory, texel, 0);
+        bool marked = centre.x >= kRtMaskBackFacingBias;
+        visibility = pc.debugHistoryLength != 0u
+                         ? history.y / float(kRtTemporalMaxFrames)
+                         : history.x + (marked ? kRtMaskBackFacingBias : 0.0);
+    }
     vec2 radius = vec2(0.0);
-    if (rtFilterUsable(centre)) {
+    // The debug view is the history length itself, so nothing may blur it.
+    if (rtFilterUsable(centre) && pc.debugHistoryLength == 0u) {
         float hitSum = 0.0;
         float hits = 0.0;
         for (int y = -kRtFilterSearchRadius; y <= kRtFilterSearchRadius; y += kRtFilterSearchStride) {
@@ -76,5 +91,5 @@ void main()
                           rtPenumbraRadius(occluderDistance, pc.tanSunRadius, acrossY));
         }
     }
-    imageStore(uFilterDestination, texel, vec4(centre.x, radius.y, radius.x, centre.w));
+    imageStore(uFilterDestination, texel, vec4(visibility, radius.y, radius.x, centre.w));
 }

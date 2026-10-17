@@ -1058,7 +1058,7 @@ void main()
         bool rayTracedDebug =
             (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades |
                                kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance |
-                               kRtShadowFlagDebugPenumbraRadius)) != 0u;
+                               kRtShadowFlagDebugPenumbraRadius | kRtShadowFlagDebugHistoryLength)) != 0u;
         if ((normalLight > 0.0 || rayTracedDebug) && !gl_HelperInvocation) {
             // Half of a LOD cross-fade never reads the mask. The prepass writes
             // its dithered depth when renderer.enablePrepassEarlyDepthTest is on,
@@ -1300,7 +1300,7 @@ void main()
     if ((rayTracedFlags & kRtShadowFlagEnabled) != 0u &&
         (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades |
                            kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance |
-                           kRtShadowFlagDebugPenumbraRadius)) != 0u) {
+                           kRtShadowFlagDebugPenumbraRadius | kRtShadowFlagDebugHistoryLength)) != 0u) {
         vec3 debugColor = vec3(shadowFactor);
 #ifdef VE_RAY_QUERY
         if ((rayTracedFlags & kRtShadowFlagDebugMaskSource) != 0u) {
