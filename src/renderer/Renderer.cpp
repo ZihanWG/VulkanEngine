@@ -2301,6 +2301,9 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     // Outside the startup/runtime split: it owns no resource, so toggling it
     // mid-run just starts or stops the poll.
     shaderHotReloadEnabled_ = settings.enableShaderHotReload;
+    // Likewise: its pipelines are built whatever it says, so it only chooses
+    // between them, frame by frame.
+    usePrepassEarlyDepthTest_ = settings.enablePrepassEarlyDepthTest;
 
     if (mode == RuntimeSettingsApplyMode::Startup) {
         useTransientAliasing_ = settings.enableTransientAliasing;
@@ -2386,6 +2389,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.enableLayeredCascades = useLayeredCascades_;
     settings.enableBackfaceCulling = useBackfaceCulling_;
     settings.enableDepthPrepass = useDepthPrepass_;
+    settings.enablePrepassEarlyDepthTest = usePrepassEarlyDepthTest_;
     settings.enableAdaptiveOcclusion = useAdaptiveOcclusion_;
     settings.useClusteredLighting = useClusteredLighting_;
     settings.enableAsyncCompute = useAsyncCompute_;
@@ -2955,6 +2959,13 @@ bool Renderer::isMainPassMultiDrawIndirectActive() const
 bool Renderer::isDepthPrepassSupported() const
 {
     return useDepthPrepass_ && isMainPassMultiDrawIndirectActive();
+}
+
+bool Renderer::isPrepassEarlyDepthTestAvailable() const
+{
+    return earlyDepthTestPipeline_.valid() && earlyDepthTestPipelineDoubleSided_.valid() &&
+           fadeDepthPrepassPipeline_.valid() && fadeDepthPrepassDoubleSidedPipeline_.valid() &&
+           bindlessTextureHeap_.descriptorSet() != VK_NULL_HANDLE;
 }
 
 bool Renderer::isMainPassIndirectCountSupported() const

@@ -358,6 +358,11 @@ private:
     // cannot happen today, but binding VK_NULL_HANDLE is a validation error and
     // drawing one panel with the wrong cull mode is not.
     [[nodiscard]] VkPipeline mainPipelineFor(bool doubleSided) const;
+    // The early-tested, non-writing variant of mainPipelineFor, for a batch the
+    // depth prepass already wrote. No single-sided fallback: a double-sided batch
+    // culled here would leave its back faces with depth from the prepass and
+    // nobody's colour. framePrepassEarlyDepthTestActive_ requires both refs.
+    [[nodiscard]] VkPipeline earlyDepthTestPipelineFor(bool doubleSided) const;
     [[nodiscard]] static const char* renderBucketName(RenderBucket bucket);
 
     using DrawItem = renderer::DrawItem;
@@ -575,6 +580,16 @@ private:
     // Replays the opaque bucket depth-only, before MainHDRPass. No-op unless
     // frameDepthPrepassActive_.
     void recordDepthPrepass(VkCommandBuffer commandBuffer);
+    // The prepass pipeline that replays this batch, or nullptr when the prepass
+    // leaves the batch out. Both passes ask, so the main pass can only stop
+    // writing a batch's depth when the prepass really did write it -- with the
+    // batch's own cull mode, since a culled back face is depth nobody wrote.
+    [[nodiscard]] const rhi::PipelineRef* depthPrepassPipelineFor(const MeshDrawBatch& batch) const;
+    [[nodiscard]] bool isMaskedDepthPrepassAvailable() const;
+    // Whether every pipeline RuntimeSettings::enablePrepassEarlyDepthTest needs
+    // exists: the main pass's early-tested pair, the prepass's fade replay pair,
+    // and the bindless set that replay binds.
+    [[nodiscard]] bool isPrepassEarlyDepthTestAvailable() const;
     [[nodiscard]] VkDeviceSize mainBatchCommandOffset(const MeshDrawBatch& batch) const;
     [[nodiscard]] uint32_t mainBatchCommandCapacity(const MeshDrawBatch& batch) const;
     // Casters for the skinned mesh: cascades and VSM pages. Both read the same
@@ -924,8 +939,10 @@ private:
         return rayTracingScene_.hasTopLevel() && isBindlessMaterialTextureActive();
     }
     // The bindless fragment shader, or its ray-query variant when the pipelines
-    // can trace. Both main pipelines and the transparent one share it.
-    [[nodiscard]] std::filesystem::path bindlessFragmentShaderPath() const;
+    // can trace. Both main pipelines and the transparent one share it; the
+    // early-fragment-tests build is for createMainGraphicsPipeline's
+    // prepass-covered pair only.
+    [[nodiscard]] std::filesystem::path bindlessFragmentShaderPath(bool earlyFragmentTests = false) const;
     // Whether this frame traces sun shadow rays. Latched in frame prep, where
     // the instances are written, and read by the FrameConstants upload, the
     // graph declaration and the recorder, which must all agree.
@@ -1224,6 +1241,12 @@ private:
     // hashes the two requests the same, and the store hands back one pipeline for
     // both refs -- the split costs nothing until culling is actually on.
     rhi::PipelineRef pipelineDoubleSided_;
+    // The main pipeline pair again with depth writes off and the
+    // early-fragment-tests shader, for batches the depth prepass wrote. Exists
+    // whenever the prepass and the bindless heap do; whether a frame binds it is
+    // framePrepassEarlyDepthTestActive_.
+    rhi::PipelineRef earlyDepthTestPipeline_;
+    rhi::PipelineRef earlyDepthTestPipelineDoubleSided_;
     rhi::PipelineRef skinnedPipeline_;
     rhi::PipelineRef skyboxPipeline_;
     // Immutable in the material set layout; see createShadowCompareSampler.
@@ -1245,6 +1268,12 @@ private:
     // before the masked variant was added and is still correct.
     rhi::PipelineRef maskedDepthPrepassPipeline_;
     rhi::PipelineRef maskedDepthPrepassDoubleSidedPipeline_;
+    // The prepass's second replay: LOD cross-fades only, dithered as the main
+    // pass dithers them, so the prepass leaves final depth for every batch it
+    // covers. Built with the masked pair, on the same layout; replayed only on
+    // frames that use earlyDepthTestPipeline_.
+    rhi::PipelineRef fadeDepthPrepassPipeline_;
+    rhi::PipelineRef fadeDepthPrepassDoubleSidedPipeline_;
     // Depth-only pipeline for the punctual shadow atlas. Separate from
     // shadowPipeline_ because its push-constant layout carries the slot's
     // view-projection instead of a cascade index.
@@ -1788,6 +1817,9 @@ private:
     // See RuntimeSettings::enableDepthPrepass. Startup-only: it selects the main
     // pipeline's depth compare op.
     bool useDepthPrepass_ = true;
+    // See RuntimeSettings::enablePrepassEarlyDepthTest. Not startup-only: it
+    // picks between pipelines that both exist, once per frame.
+    bool usePrepassEarlyDepthTest_ = true;
     bool useAdaptiveOcclusion_ = true;
     renderer::OcclusionYieldController occlusionYield_;
     // Per frame slot: was occlusion culling running when this slot's cull
@@ -1807,6 +1839,15 @@ private:
     // indirect path and a pipeline, so a device that falls back to per-draw
     // recording simply does not get the prepass.
     bool frameDepthPrepassActive_ = false;
+    // Per-frame resolution of usePrepassEarlyDepthTest_: the prepass runs this
+    // frame and every pipeline the path needs exists. Read by both the prepass,
+    // which replays the LOD fades only when this is set, and the main pass,
+    // which stops writing depth for prepassed batches only when this is set --
+    // one value, so the two can never disagree within a frame.
+    bool framePrepassEarlyDepthTestActive_ = false;
+    // Last state logged, so a change is reported once rather than every frame;
+    // -1 until the first frame.
+    int prepassEarlyDepthTestReported_ = -1;
     // How many batches the prepass actually replayed, for the debug UI and for
     // the log line that proves the pass did something.
     uint32_t depthPrepassBatchesDrawn_ = 0;

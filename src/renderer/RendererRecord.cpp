@@ -147,6 +147,55 @@ VkPipeline Renderer::mainPipelineFor(bool doubleSided) const
     return twoSided != VK_NULL_HANDLE ? twoSided : pipeline_.pipeline();
 }
 
+VkPipeline Renderer::earlyDepthTestPipelineFor(bool doubleSided) const
+{
+    return doubleSided ? earlyDepthTestPipelineDoubleSided_.pipeline() : earlyDepthTestPipeline_.pipeline();
+}
+
+bool Renderer::isMaskedDepthPrepassAvailable() const
+{
+    return maskedDepthPrepassPipeline_.pipeline() != VK_NULL_HANDLE &&
+           bindlessTextureHeap_.descriptorSet() != VK_NULL_HANDLE;
+}
+
+const rhi::PipelineRef* Renderer::depthPrepassPipelineFor(const MeshDrawBatch& batch) const
+{
+    if (!batch.mesh || batch.drawItemCount == 0) {
+        return nullptr;
+    }
+    // Blend is never prepassed: it is composited later, and depth from a
+    // transparent surface would occlude what is meant to show through it.
+    if (batch.bucket == RenderBucket::Blend) {
+        return nullptr;
+    }
+    // Mask needs the alpha-tested variant. Without it -- no bindless heap --
+    // the bucket stays out of the prepass rather than being replayed
+    // depth-only, because a cutout leaf with no alpha test writes the depth
+    // of its whole quad and the main pass then rejects everything behind it:
+    // the "leaves cast a rectangle" artifact, moved from shadow into depth.
+    // Skipping is correct, just less effective -- depth from a subset is
+    // still true depth, and what is left out draws in the main pass exactly
+    // as it always did.
+    const bool masked = batch.bucket == RenderBucket::Mask;
+    if (masked && !isMaskedDepthPrepassAvailable()) {
+        return nullptr;
+    }
+
+    // Must match the main pass's choice for this batch exactly. Culling a
+    // double-sided batch here would leave holes in the prepass depth, which
+    // costs a saving while the main pass writes depth and leaves the holes in
+    // the frame once it does not; failing to cull a single-sided one would
+    // write a back face in front of its own front face, and the main pass
+    // would reject the front face and the surface would disappear. So a
+    // missing pipeline leaves the batch out rather than substituting the other
+    // cull mode.
+    const rhi::PipelineRef& singleSidedRef = masked ? maskedDepthPrepassPipeline_ : depthPrepassPipeline_;
+    const rhi::PipelineRef& doubleSidedRef =
+        masked ? maskedDepthPrepassDoubleSidedPipeline_ : depthPrepassDoubleSidedPipeline_;
+    const rhi::PipelineRef& selectedRef = batch.doubleSided ? doubleSidedRef : singleSidedRef;
+    return selectedRef.pipeline() != VK_NULL_HANDLE ? &selectedRef : nullptr;
+}
+
 bool Renderer::willRecordMainGpuCull() const
 {
     return gpuCulling_.willRecordMainCull(
@@ -2120,8 +2169,7 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
     // pushing through a layout the bound pipeline does not use is undefined, and
     // this is the pass where that is easy to get wrong because the two pipelines
     // are otherwise so alike.
-    const bool maskedPrepassAvailable = maskedDepthPrepassPipeline_.pipeline() != VK_NULL_HANDLE &&
-                                        bindlessTextureHeap_.descriptorSet() != VK_NULL_HANDLE;
+    const bool maskedPrepassAvailable = isMaskedDepthPrepassAvailable();
     VkPipelineLayout boundLayout = VK_NULL_HANDLE;
     const auto bindLayoutState = [&](VkPipelineLayout layout, bool masked) {
         if (boundLayout == layout) {
@@ -2148,48 +2196,16 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
 
     VkPipeline boundPipeline = VK_NULL_HANDLE;
     const renderer::Mesh* boundMesh = nullptr;
-    uint32_t drawnBatches = 0;
-    for (const MeshDrawBatch& batch : meshDrawBatches_) {
-        if (!batch.mesh || batch.drawItemCount == 0) {
-            continue;
-        }
-        // Blend is never prepassed: it is composited later, and depth from a
-        // transparent surface would occlude what is meant to show through it.
-        if (batch.bucket == RenderBucket::Blend) {
-            continue;
-        }
-        // Mask needs the alpha-tested variant. Without it -- no bindless heap --
-        // the bucket stays out of the prepass rather than being replayed
-        // depth-only, because a cutout leaf with no alpha test writes the depth
-        // of its whole quad and the main pass then rejects everything behind it:
-        // the "leaves cast a rectangle" artifact, moved from shadow into depth.
-        // Skipping is correct, just less effective -- depth from a subset is
-        // still true depth, and what is left out draws in the main pass exactly
-        // as it always did.
-        const bool masked = batch.bucket == RenderBucket::Mask;
-        if (masked && !maskedPrepassAvailable) {
-            continue;
-        }
-
-        // Must match the main pass's choice for this batch exactly. Culling a
-        // double-sided batch here would leave holes in the prepass depth, which
-        // costs a saving; failing to cull a single-sided one would write a back
-        // face in front of its own front face, and the main pass would reject
-        // the front face and the surface would disappear.
-        const rhi::PipelineRef& singleSidedRef = masked ? maskedDepthPrepassPipeline_ : depthPrepassPipeline_;
-        const rhi::PipelineRef& doubleSidedRef =
-            masked ? maskedDepthPrepassDoubleSidedPipeline_ : depthPrepassDoubleSidedPipeline_;
-        const rhi::PipelineRef& selectedRef =
-            batch.doubleSided && doubleSidedRef.pipeline() != VK_NULL_HANDLE ? doubleSidedRef : singleSidedRef;
-        const VkPipeline batchPipeline = selectedRef.pipeline();
-        if (batchPipeline == VK_NULL_HANDLE) {
-            continue;
-        }
+    // The same compacted buffer and the same offsets the main pass replays, so
+    // the passes draw the same geometry by construction rather than by two lists
+    // agreeing.
+    const auto replayBatch = [&](const MeshDrawBatch& batch, const rhi::PipelineRef& ref, bool bindlessLayout) {
+        const VkPipeline batchPipeline = ref.pipeline();
         if (boundPipeline != batchPipeline) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, batchPipeline);
             boundPipeline = batchPipeline;
         }
-        bindLayoutState(selectedRef.layout(), masked);
+        bindLayoutState(ref.layout(), bindlessLayout);
 
         if (boundMesh != batch.mesh) {
             const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
@@ -2199,9 +2215,6 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
             boundMesh = batch.mesh;
         }
 
-        // The same compacted buffer and the same offsets the main pass replays,
-        // so the two passes draw the same geometry by construction rather than by
-        // two lists agreeing.
         const VkDeviceSize indirectOffset = mainBatchCommandOffset(batch);
         if (indirectCountPathActive && batchVisibleCountBuffer != VK_NULL_HANDLE) {
             vkCmdDrawIndexedIndirectCount(commandBuffer,
@@ -2218,7 +2231,35 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
                                      mainBatchCommandCapacity(batch),
                                      sizeof(VkDrawIndexedIndirectCommand));
         }
+    };
+
+    uint32_t drawnBatches = 0;
+    for (const MeshDrawBatch& batch : meshDrawBatches_) {
+        const rhi::PipelineRef* prepassRef = depthPrepassPipelineFor(batch);
+        if (prepassRef == nullptr) {
+            continue;
+        }
+        replayBatch(batch, *prepassRef, batch.bucket == RenderBucket::Mask);
         ++drawnBatches;
+    }
+
+    // The LOD cross-fades the replay above leaves out, so that the prepass
+    // leaves final depth for every batch it covers and the main pass can draw
+    // those batches without writing any. Only on frames that do: otherwise the
+    // main pass writes the fades' depth itself, as it always has, and this
+    // would be work for nothing. depth_prepass_fade keeps only the fading
+    // instances in its vertex stage and only the half of each fade the main
+    // pass will show in its fragment stage, so on a frame where nothing fades
+    // it rasterizes nothing. It binds the bindless set like the masked
+    // pipelines, opaque batches included: it runs their alpha test as well.
+    if (framePrepassEarlyDepthTestActive_) {
+        for (const MeshDrawBatch& batch : meshDrawBatches_) {
+            if (depthPrepassPipelineFor(batch) == nullptr) {
+                continue;
+            }
+            replayBatch(
+                batch, batch.doubleSided ? fadeDepthPrepassDoubleSidedPipeline_ : fadeDepthPrepassPipeline_, true);
+        }
     }
     // Logged once, because "the prepass is enabled" and "the prepass is drawing
     // most of the scene" are different claims and only the second one makes a
@@ -2437,7 +2478,14 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
                     continue;
                 }
 
-                const VkPipeline batchPipeline = mainPipelineFor(batch.doubleSided);
+                // A batch the prepass wrote, on a frame that wrote its fades too,
+                // has nothing left to write: it draws early-tested and
+                // write-free, and fragments the prepass hid are never shaded.
+                // Same layout as the main pair, so the descriptor sets and push
+                // constants bound through pipeline_ stay valid across the switch.
+                const bool prepassed = framePrepassEarlyDepthTestActive_ && depthPrepassPipelineFor(batch) != nullptr;
+                const VkPipeline batchPipeline =
+                    prepassed ? earlyDepthTestPipelineFor(batch.doubleSided) : mainPipelineFor(batch.doubleSided);
                 if (boundMainPipeline != batchPipeline) {
                     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, batchPipeline);
                     boundMainPipeline = batchPipeline;

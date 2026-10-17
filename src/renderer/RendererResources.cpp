@@ -485,11 +485,15 @@ void Renderer::logPipelineStoreContents() const
     }
 }
 
-std::filesystem::path Renderer::bindlessFragmentShaderPath() const
+std::filesystem::path Renderer::bindlessFragmentShaderPath(bool earlyFragmentTests) const
 {
     // The ray-query variant whenever the pipelines can trace, whether or not
     // this frame does: tracing is gated by a uniform branch on a FrameConstants
     // flag, so turning ray-traced shadows on or off never rebuilds a pipeline.
+    if (earlyFragmentTests) {
+        return rayQueryShadingAvailable() ? shaderPath("simple_bindless_rq_early.frag.spv")
+                                          : shaderPath("simple_bindless_early.frag.spv");
+    }
     return rayQueryShadingAvailable() ? shaderPath("simple_bindless_rq.frag.spv")
                                       : shaderPath("simple_bindless.frag.spv");
 }
@@ -620,6 +624,39 @@ void Renderer::createMainGraphicsPipeline()
     // stay valid across a switch between them.
     pipelineInfo.cullMode = VK_CULL_MODE_NONE;
     pipelineDoubleSided_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "MainGraphicsPipelineDoubleSided");
+
+    // For batches the depth prepass already wrote: the same pair with depth
+    // writes off and the early-fragment-tests shader. simple_bindless.frag can
+    // discard, and a shader that can discard while depth writes are on lets the
+    // driver run the depth test after shading -- so every fragment the prepass
+    // had already hidden was shaded in full and then rejected. Once the prepass
+    // has left final depth (see recordDepthPrepass for the LOD fades) these draws
+    // have nothing left to write, and with nothing to write the test can go
+    // first. docs/design_decisions.md has the measurement.
+    //
+    // Built whenever the prepass and the bindless heap exist, whatever
+    // RuntimeSettings::enablePrepassEarlyDepthTest says, so the setting picks a
+    // pipeline per frame and flips without a rebuild. The non-bindless fallback
+    // keeps the pair above for everything: simple.frag has no early variant.
+    // A failed build costs the saving, never the frame.
+    earlyDepthTestPipeline_.reset();
+    earlyDepthTestPipelineDoubleSided_.reset();
+    if (isDepthPrepassSupported() && bindlessMaterialTexturesActive) {
+        pipelineInfo.fragmentShaderPath = bindlessFragmentShaderPath(true);
+        pipelineInfo.depthWriteEnable = false;
+        try {
+            pipelineInfo.cullMode = useBackfaceCulling_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+            earlyDepthTestPipeline_ =
+                pipelineStore_.get(context_.vkDevice(), pipelineInfo, "MainEarlyDepthTestPipeline");
+            pipelineInfo.cullMode = VK_CULL_MODE_NONE;
+            earlyDepthTestPipelineDoubleSided_ =
+                pipelineStore_.get(context_.vkDevice(), pipelineInfo, "MainEarlyDepthTestPipelineDoubleSided");
+        } catch (const std::exception& error) {
+            earlyDepthTestPipeline_.reset();
+            earlyDepthTestPipelineDoubleSided_.reset();
+            Logger::warn(std::string("Early depth test after the prepass is unavailable: ") + error.what());
+        }
+    }
 }
 
 void Renderer::createDepthPrepassPipelines()
@@ -628,6 +665,8 @@ void Renderer::createDepthPrepassPipelines()
     depthPrepassDoubleSidedPipeline_.reset();
     maskedDepthPrepassPipeline_.reset();
     maskedDepthPrepassDoubleSidedPipeline_.reset();
+    fadeDepthPrepassPipeline_.reset();
+    fadeDepthPrepassDoubleSidedPipeline_.reset();
     if (!isDepthPrepassSupported()) {
         // Not built when off or unsupported, so the feature costs nothing it
         // does not use -- including two pipeline compilations at startup. The
@@ -686,6 +725,8 @@ void Renderer::createMaskedDepthPrepassPipeline(const VkVertexInputBindingDescri
     if (!isBindlessMaterialTextureActive() || bindlessTextureHeap_.descriptorSetLayout() == VK_NULL_HANDLE) {
         maskedDepthPrepassPipeline_.reset();
         maskedDepthPrepassDoubleSidedPipeline_.reset();
+        fadeDepthPrepassPipeline_.reset();
+        fadeDepthPrepassDoubleSidedPipeline_.reset();
         return;
     }
 
@@ -727,6 +768,30 @@ void Renderer::createMaskedDepthPrepassPipeline(const VkVertexInputBindingDescri
     maskedInfo.cullMode = VK_CULL_MODE_NONE;
     maskedDepthPrepassDoubleSidedPipeline_ =
         pipelineStore_.get(context_.vkDevice(), maskedInfo, "MaskedDepthPrepassPipelineDoubleSided");
+
+    // The LOD cross-fades both replays above leave out, dithered exactly as the
+    // main pass dithers them, so that once the prepass is done every batch it
+    // covers has its final depth, fades included. Only the early-tested main
+    // pipelines need that -- otherwise the main pass writes the fades' depth
+    // itself -- but it is built with the masked pair whenever that is, for the
+    // same reason those are built whatever the setting says. Opaque batches
+    // replay through it too: OPAQUE carries a negative cutoff, so the alpha
+    // test it shares with this pair never clips them. Same attributes, same
+    // layout, same cull-mode pairing as the masked pipelines.
+    maskedInfo.vertexShaderPath = shaderPath("depth_prepass_fade.vert.spv");
+    maskedInfo.fragmentShaderPath = shaderPath("depth_prepass_fade.frag.spv");
+    try {
+        maskedInfo.cullMode = useBackfaceCulling_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+        fadeDepthPrepassPipeline_ = pipelineStore_.get(context_.vkDevice(), maskedInfo, "FadeDepthPrepassPipeline");
+        maskedInfo.cullMode = VK_CULL_MODE_NONE;
+        fadeDepthPrepassDoubleSidedPipeline_ =
+            pipelineStore_.get(context_.vkDevice(), maskedInfo, "FadeDepthPrepassPipelineDoubleSided");
+    } catch (const std::exception& error) {
+        fadeDepthPrepassPipeline_.reset();
+        fadeDepthPrepassDoubleSidedPipeline_.reset();
+        Logger::warn(std::string("Early depth test after the prepass is unavailable; the fade replay failed: ") +
+                     error.what());
+    }
 }
 
 void Renderer::createProbeCapturePipeline()

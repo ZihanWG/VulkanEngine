@@ -9,6 +9,18 @@
 #ifdef VE_RAY_QUERY
 #extension GL_EXT_ray_query : require
 #endif
+// The _early variants test depth before this shader runs. They are bound only
+// for geometry the depth prepass already wrote, and with depth writes off: the
+// prepass left exactly the depth these fragments would write, so the only thing
+// a write could still do is the wrong thing -- write the depth of a fragment
+// this shader goes on to discard. Without the mode, the discards below are
+// enough for a driver to run the test after shading, and every fragment the
+// prepass already hid is shaded in full and then thrown away. Nothing here has
+// a side effect beyond its attachment writes, so testing first changes which
+// fragments run, never what a surviving one computes.
+#ifdef VE_EARLY_FRAGMENT_TESTS
+layout(early_fragment_tests) in;
+#endif
 
 // FrameConstants and its buffer reference, needed by the push block below and by
 // the virtual shadow map lookup. The fragment stage reads the same block the

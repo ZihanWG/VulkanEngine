@@ -582,23 +582,35 @@ if(GLSLC_EXECUTABLE)
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT}")
     endforeach()
 
-    # Sources compiled a second time under a define, as "source|output|define".
+    # Sources compiled again under defines, as "source|output|define[,define]".
     # The ray-query variant of the main fragment shader declares binding 16 and
     # GL_EXT_ray_query, neither of which a device without ray query can load, so
     # it is its own module rather than a branch; the renderer picks it only on a
     # device that has ray query (Renderer::bindlessFragmentShaderPath).
+    #
+    # The _early pair tests depth before shading, for geometry the depth prepass
+    # already wrote, and depth_prepass_fade writes the LOD cross-fades that the
+    # prepass otherwise leaves to the main pass. Execution modes and interface
+    # blocks, so variants rather than branches; see
+    # Renderer::createMainGraphicsPipeline.
     set(SHADER_VARIANTS
         "simple_bindless.frag|simple_bindless_rq.frag|VE_RAY_QUERY=1"
+        "simple_bindless.frag|simple_bindless_early.frag|VE_EARLY_FRAGMENT_TESTS=1"
+        "simple_bindless.frag|simple_bindless_rq_early.frag|VE_RAY_QUERY=1,VE_EARLY_FRAGMENT_TESTS=1"
+        "depth_prepass_masked.vert|depth_prepass_fade.vert|VE_LOD_FADES_ONLY=1"
+        "shadow_masked.frag|depth_prepass_fade.frag|VE_LOD_FADES_ONLY=1"
     )
     foreach(SHADER_VARIANT ${SHADER_VARIANTS})
         string(REPLACE "|" ";" SHADER_VARIANT_FIELDS "${SHADER_VARIANT}")
         list(GET SHADER_VARIANT_FIELDS 0 SHADER_VARIANT_SOURCE)
         list(GET SHADER_VARIANT_FIELDS 1 SHADER_VARIANT_NAME)
         list(GET SHADER_VARIANT_FIELDS 2 SHADER_VARIANT_DEFINE)
+        string(REPLACE "," ";" SHADER_VARIANT_DEFINE_LIST "${SHADER_VARIANT_DEFINE}")
+        list(TRANSFORM SHADER_VARIANT_DEFINE_LIST PREPEND "-D")
         set(SHADER_OUTPUT "${SHADER_BINARY_DIR}/${SHADER_VARIANT_NAME}.spv")
         add_custom_command(
             OUTPUT "${SHADER_OUTPUT}"
-            COMMAND "${GLSLC_EXECUTABLE}" "${SHADER_SOURCE_DIR}/${SHADER_VARIANT_SOURCE}" "-D${SHADER_VARIANT_DEFINE}"
+            COMMAND "${GLSLC_EXECUTABLE}" "${SHADER_SOURCE_DIR}/${SHADER_VARIANT_SOURCE}" ${SHADER_VARIANT_DEFINE_LIST}
                     -o "${SHADER_OUTPUT}" --target-env=vulkan1.3
             DEPENDS "${SHADER_SOURCE_DIR}/${SHADER_VARIANT_SOURCE}" ${SHADER_INCLUDES}
             COMMENT "Compiling shader variant ${SHADER_VARIANT_NAME}"

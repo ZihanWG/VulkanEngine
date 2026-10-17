@@ -364,6 +364,7 @@ jobs:
           layered-cascades|--settings config/ci/layered-cascades.json
           backface-culling-off|--settings config/ci/backface-culling-off.json
           depth-prepass-off|--settings config/ci/depth-prepass-off.json
+          prepass-early-depth-off|--settings config/ci/prepass-early-depth-off.json
           frames-in-flight-1|--settings config/ci/frames-in-flight-1.json
           transient-aliasing|--settings config/ci/transient-aliasing.json
           render-scale-half|--settings config/ci/render-scale-half.json

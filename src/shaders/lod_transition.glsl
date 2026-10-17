@@ -1,6 +1,6 @@
 // Cross-faded LOD transitions, shared by cull.comp (the state machine), the main
 // fragment shader (the dither) and the depth prepass (which leaves fading draws
-// out). Mirrors src/renderer/LodTransition.h function for function;
+// out, except in the replay that writes their dithered depth). Mirrors src/renderer/LodTransition.h function for function;
 // tools/check_shader_constants.py compares the constants. The reasoning lives
 // with the C++ half, next to its unit tests.
 

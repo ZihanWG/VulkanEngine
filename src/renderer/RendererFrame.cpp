@@ -2277,11 +2277,31 @@ void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Fr
             frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Mask)].count();
         frameDepthPrepassActive_ =
             isDepthPrepassSupported() && depthPrepassPipeline_.pipeline() != VK_NULL_HANDLE && prepassableDrawItems > 0;
+        // On the prepass running THIS frame, not merely being supported: the
+        // main pass may stop writing only depth the prepass actually wrote.
+        framePrepassEarlyDepthTestActive_ =
+            frameDepthPrepassActive_ && usePrepassEarlyDepthTest_ && isPrepassEarlyDepthTestAvailable();
         updateGpuCullInputBuffer(frameIndex);
     } else {
         frameTwoPhaseOcclusionActive_ = false;
         frameDepthPrepassActive_ = false;
+        framePrepassEarlyDepthTestActive_ = false;
         updateIndirectDrawBuffer(frameIndex);
+    }
+
+    // Logged on change, because a frame-cost comparison of this setting means
+    // nothing unless the side that claims it was on can show it was.
+    if (prepassEarlyDepthTestReported_ != static_cast<int>(framePrepassEarlyDepthTestActive_)) {
+        prepassEarlyDepthTestReported_ = static_cast<int>(framePrepassEarlyDepthTestActive_);
+        if (framePrepassEarlyDepthTestActive_) {
+            Logger::info("Early depth test after the prepass: on. Prepassed batches draw with depth writes off "
+                         "and early fragment tests; the prepass also writes their LOD cross-fades.");
+        } else {
+            const char* reason = !usePrepassEarlyDepthTest_  ? "renderer.enablePrepassEarlyDepthTest is false"
+                                 : !frameDepthPrepassActive_ ? "the depth prepass is not running"
+                                                             : "a pipeline it needs is unavailable";
+            Logger::info(std::string("Early depth test after the prepass: off (") + reason + ").");
+        }
     }
 }
 

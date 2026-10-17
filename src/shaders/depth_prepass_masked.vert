@@ -37,6 +37,10 @@ layout(location = 0) out vec2 vUV;
 layout(location = 1) flat out uint vBaseColorTextureIndex;
 layout(location = 2) flat out float vAlphaCutoff;
 layout(location = 3) flat out float vBaseColorAlpha;
+#ifdef VE_LOD_FADES_ONLY
+// The fade half and progress, for depth_prepass_fade.frag's dither.
+layout(location = 4) flat out uint vLodIndex;
+#endif
 
 // Same depth as simple.vert, bit for bit; see depth_prepass.vert.
 invariant gl_Position;
@@ -49,7 +53,19 @@ void main()
     // geometry's depth and nobody's colour. Every vertex lands at the same
     // point outside the clip volume, so the triangles are culled before
     // rasterization. The main pass writes these draws' depth itself.
+    //
+    // depth_prepass_fade.vert is the inverse: it keeps ONLY the fades, and its
+    // fragment stage dithers them exactly as the main pass does, so the depth
+    // it writes is the depth of the half that survives. Replayed over the same
+    // batches after the ordinary prepass, the two together write the depth of
+    // everything those batches draw -- which is what lets the main pass stop
+    // writing depth for them; see Renderer::recordDepthPrepass.
+#ifdef VE_LOD_FADES_ONLY
+    vLodIndex = gl_InstanceIndex >> 16;
+    if (((gl_InstanceIndex >> 16) & kLodInstanceFading) == 0u) {
+#else
     if (((gl_InstanceIndex >> 16) & kLodInstanceFading) != 0u) {
+#endif
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
         vUV = vec2(0.0);
         vBaseColorTextureIndex = 0u;

@@ -163,6 +163,7 @@
         "enableLayeredCascades": false,
         "enableBackfaceCulling": true,
         "enableDepthPrepass": true,
+        "enablePrepassEarlyDepthTest": true,
         "enableAdaptiveOcclusion": true,
         "useClusteredLighting": true,
         "enableAsyncCompute": true,
