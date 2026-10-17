@@ -1,0 +1,133 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// The ray-traced shadow mask's trace: the sun's visibility for the pixels the
+// depth prepass covered, at full resolution or one pixel per 2x2 block, written
+// with what the passes after it need -- the visibility, how far the ray went,
+// and the camera distance of the surface it left from. RayTracedShadowResolve
+// turns that into the full-resolution mask the main pass reads. See
+// docs/ray_traced_shadows.md#the-screen-space-mask and
+// renderer/RayTracedShadowMask.h.
+
+#include "ray_traced_shadows.glsl"
+
+layout(local_size_x = kRtMaskLocalSize, local_size_y = kRtMaskLocalSize, local_size_z = 1) in;
+
+// Main depth as the prepass left it, through a nearest sampler.
+layout(set = 0, binding = 0) uniform sampler2D uSceneDepth;
+layout(set = 0, binding = 1) uniform accelerationStructureEXT uSceneTopLevel;
+// x = visibility (kRtMaskNotTraced where nothing was traced, plus
+// kRtMaskBackFacingBias where the surface faces away from the sun), y = hit
+// distance (negative where the ray hit nothing), z unused, w = the surface's
+// distance from the camera, which the filter and the resolve compare.
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D uShadowTrace;
+// The bindless base colour heap, at the set the main pass also binds it at, for
+// the cutout test.
+layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
+
+#include "ray_traced_shadow_reconstruct.glsl"
+#include "ray_traced_shadow_trace.glsl"
+
+// Mirrors ve::renderer::RayTracedShadowTracePushConstants.
+layout(push_constant) uniform TracePushConstants {
+    FrameConstantsBuffer frameConstants;
+    ObjectFrameDataBuffer objectFrameData;
+    // Inverse of the jittered view-projection the prepass rasterised with.
+    mat4 inverseViewProjection;
+    // The full-resolution sub-rect the prepass drew, and its reciprocal.
+    uvec2 fullExtent;
+    vec2 inverseFullExtent;
+    // The trace grid: ceil(fullExtent / traceScale) texels, texel t standing for
+    // full-resolution pixel t * traceScale.
+    uvec2 traceExtent;
+    uint traceScale;
+    // Zero, or the reference mode's rays per pixel (always at traceScale 1).
+    uint referenceSamples;
+} pc;
+
+void main()
+{
+    ivec2 tracePixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(gl_GlobalInvocationID.xy, pc.traceExtent))) {
+        return;
+    }
+    ivec2 pixel = tracePixel * int(pc.traceScale);
+
+    RtDepthGrid grid;
+    grid.inverseViewProjection = pc.inverseViewProjection;
+    grid.inverseExtent = pc.inverseFullExtent;
+    grid.extent = ivec2(pc.fullExtent);
+
+    // Every texel is rewritten, including the ones nothing covered: the image
+    // persists across frames, and the resolve must not mistake another frame's
+    // sample for one of this frame's.
+    vec4 texel = vec4(kRtMaskNotTraced, -1.0, 0.0, 0.0);
+    float depth = texelFetch(uSceneDepth, pixel, 0).r;
+    vec3 cameraPosition = pc.frameConstants.values.cameraPosition.xyz;
+    vec3 position = rtWorldPositionAt(grid, pixel, depth);
+    vec3 normal;
+    if (depth < 1.0 && rtSurfaceNormal(grid, pixel, depth, position, cameraPosition, normal)) {
+        vec3 towardLight = normalize(-pc.frameConstants.values.lightDirection.xyz);
+        float tanRadius = pc.frameConstants.values.rayTracedShadowParams.w;
+        float visibility;
+        float hitDistance;
+        if (pc.referenceSamples > 0u) {
+            // The reference: stratified points on the disc (a golden-angle
+            // spiral, rotated per pixel so neighbours do not share a pattern),
+            // averaged with no filter. What a filtered single ray is judged
+            // against, not something to ship.
+            vec3 tangent;
+            vec3 bitangent;
+            rtOrthonormalBasis(towardLight, tangent, bitangent);
+            float rotation = 6.2831853 * rtInterleavedGradientNoise(vec2(pixel));
+            uint samples = min(pc.referenceSamples, kRtReferenceMaxSamples);
+            float lit = 0.0;
+            float hitSum = 0.0;
+            float hits = 0.0;
+            for (uint index = 0u; index < samples; ++index) {
+                float radius = sqrt((float(index) + 0.5) / float(samples)) * tanRadius;
+                float angle = float(index) * kRtGoldenAngle + rotation;
+                vec3 direction = normalize(towardLight + radius * (cos(angle) * tangent + sin(angle) * bitangent));
+                float sampleHit;
+                lit += rayTracedSunVisibilityAlong(
+                    pc.frameConstants, pc.objectFrameData, position, normal, towardLight, direction, sampleHit);
+                if (sampleHit >= 0.0) {
+                    hitSum += sampleHit;
+                    hits += 1.0;
+                }
+            }
+            visibility = lit / float(samples);
+            hitDistance = hits > 0.0 ? hitSum / hits : -1.0;
+        } else {
+            // One point on the disc, picked by two decorrelated interleaved-
+            // gradient-noise values, so the samples of neighbouring pixels cover
+            // the disc between them. The frame index (zero until temporal
+            // accumulation exists) moves the pattern. With no disc, the centre.
+            vec2 noisePixel = vec2(pixel) + 5.588238 * float(pc.frameConstants.values.rayTracedShadow.w);
+            vec2 u = vec2(rtInterleavedGradientNoise(noisePixel),
+                          rtInterleavedGradientNoise(noisePixel + vec2(47.0, 17.0)));
+            vec3 direction = tanRadius > 0.0 ? rtSunConeDirection(towardLight, tanRadius, u) : towardLight;
+            visibility = rayTracedSunVisibilityAlong(
+                pc.frameConstants, pc.objectFrameData, position, normal, towardLight, direction, hitDistance);
+        }
+        // Traced whichever way the surface faces, with the offset turned
+        // towards the sun inside rayTracedSunVisibilityAlong, exactly as the
+        // inline ray does. A surface facing away from the sun is not
+        // necessarily dark in the main pass: a normal map can tilt its shading
+        // normal past the sun's horizon, and on Sponza leaving such pixels
+        // untraced sent a third of every lit fragment to the inline fallback.
+        //
+        // Marked when the surface faces away, because one case of it is not
+        // this ray's to answer: the terminator of a smooth-shaded surface,
+        // where the fragment's vertex normal still faces the sun. See
+        // rayTracedShadowFromMask in simple_bindless.frag.
+        if (dot(normal, towardLight) < 0.0) {
+            visibility += kRtMaskBackFacingBias;
+        }
+        texel = vec4(visibility, hitDistance, 0.0, distance(position, cameraPosition));
+    }
+    imageStore(uShadowTrace, tracePixel, texel);
+}

@@ -6,6 +6,7 @@
 #include "renderer/CascadeMath.h"
 #include "renderer/DynamicResolution.h"
 #include "renderer/IrradianceProbes.h"
+#include "renderer/RayTracedShadows.h"
 #include "renderer/RenderScale.h"
 #include "renderer/VirtualShadowMap.h"
 #include "renderer/VolumetricFog.h"
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <exception>
 #include <fstream>
 #include <sstream>
@@ -51,6 +53,11 @@ void clampRayTracedShadowSettings(RayTracedShadowSettings& settings)
     // hand-edited file from pushing every ray origin out of the scene.
     settings.normalOffset = std::clamp(settings.normalOffset, 0.0f, 1.0f);
     settings.pixelFootprintOffset = std::clamp(settings.pixelFootprintOffset, 0.0f, 16.0f);
+    // A NaN would otherwise survive std::clamp and reach tan().
+    settings.sunAngularDiameterDegrees = std::isfinite(settings.sunAngularDiameterDegrees)
+                                             ? std::clamp(settings.sunAngularDiameterDegrees, 0.0f, 5.0f)
+                                             : 0.0f;
+    settings.debugReferenceSamples = std::min(settings.debugReferenceSamples, renderer::kRtReferenceMaxSamples);
 }
 
 uint32_t clampFramesInFlight(uint32_t requested)
@@ -552,10 +559,18 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*rayTraced, "enabled", settings.rayTracedShadows.enabled);
         readBool(*rayTraced, "renderCascades", settings.rayTracedShadows.renderCascades);
         readBool(*rayTraced, "rebuildEveryFrame", settings.rayTracedShadows.rebuildEveryFrame);
+        readBool(*rayTraced, "screenSpaceMask", settings.rayTracedShadows.screenSpaceMask);
+        readFloat(*rayTraced, "sunAngularDiameterDegrees", settings.rayTracedShadows.sunAngularDiameterDegrees);
+        readBool(*rayTraced, "halfResolutionMask", settings.rayTracedShadows.halfResolutionMask);
+        readBool(*rayTraced, "filter", settings.rayTracedShadows.filter);
         readFloat(*rayTraced, "normalOffset", settings.rayTracedShadows.normalOffset);
         readFloat(*rayTraced, "pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset);
         readBool(*rayTraced, "debugVisibility", settings.rayTracedShadows.debugVisibility);
         readBool(*rayTraced, "debugCompareCascades", settings.rayTracedShadows.debugCompareCascades);
+        readBool(*rayTraced, "debugMaskSource", settings.rayTracedShadows.debugMaskSource);
+        readUint32(*rayTraced, "debugReferenceSamples", settings.rayTracedShadows.debugReferenceSamples);
+        readBool(*rayTraced, "debugHitDistance", settings.rayTracedShadows.debugHitDistance);
+        readBool(*rayTraced, "debugPenumbraRadius", settings.rayTracedShadows.debugPenumbraRadius);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -733,10 +748,18 @@ Json toJson(const RuntimeSettings& settings)
          Json{{"enabled", settings.rayTracedShadows.enabled},
               {"renderCascades", settings.rayTracedShadows.renderCascades},
               {"rebuildEveryFrame", settings.rayTracedShadows.rebuildEveryFrame},
+              {"screenSpaceMask", settings.rayTracedShadows.screenSpaceMask},
+              {"sunAngularDiameterDegrees", settings.rayTracedShadows.sunAngularDiameterDegrees},
+              {"halfResolutionMask", settings.rayTracedShadows.halfResolutionMask},
+              {"filter", settings.rayTracedShadows.filter},
               {"normalOffset", settings.rayTracedShadows.normalOffset},
               {"pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset},
               {"debugVisibility", settings.rayTracedShadows.debugVisibility},
-              {"debugCompareCascades", settings.rayTracedShadows.debugCompareCascades}}},
+              {"debugCompareCascades", settings.rayTracedShadows.debugCompareCascades},
+              {"debugMaskSource", settings.rayTracedShadows.debugMaskSource},
+              {"debugReferenceSamples", settings.rayTracedShadows.debugReferenceSamples},
+              {"debugHitDistance", settings.rayTracedShadows.debugHitDistance},
+              {"debugPenumbraRadius", settings.rayTracedShadows.debugPenumbraRadius}}},
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},

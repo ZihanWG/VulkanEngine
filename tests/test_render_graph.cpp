@@ -470,6 +470,32 @@ TEST_CASE("A build followed by a trace emits a barrier", "[rendergraph][barriers
     CHECK_FALSE(bufferBarrierRequired(true, RGAccess::AccelerationStructureRead, trace.access, trace.access));
 }
 
+TEST_CASE("The shadow mask's rays read the structure from the compute stage", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferAccessState;
+    using ve::renderer::bufferBarrierRequired;
+    using ve::renderer::RGAccess;
+
+    const auto maskTrace = bufferAccessState(RGAccess::AccelerationStructureComputeRead);
+    CHECK((maskTrace.stage & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) != 0);
+    CHECK(maskTrace.access == VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+
+    // The build is followed by the mask first, so the barrier in front of the
+    // mask is the one that orders the build against every ray of the frame.
+    const auto build = bufferAccessState(RGAccess::AccelerationStructureBuild);
+    CHECK(bufferBarrierRequired(true, RGAccess::AccelerationStructureBuild, build.access, maskTrace.access));
+
+    // The main pass's inline rays come next, and a read after a read gets no
+    // barrier of its own whatever its stage. So the fragment stage has to be in
+    // the mask's scope already: an api_dump of the first version showed the
+    // barrier naming the compute stage alone, leaving the main pass's rays
+    // unordered against the build.
+    const auto fragmentTrace = bufferAccessState(RGAccess::AccelerationStructureRead);
+    CHECK_FALSE(bufferBarrierRequired(
+        true, RGAccess::AccelerationStructureComputeRead, maskTrace.access, fragmentTrace.access));
+    CHECK((maskTrace.stage & fragmentTrace.stage) == fragmentTrace.stage);
+}
+
 TEST_CASE("A frame that keeps the acceleration structure records no barrier for it", "[rendergraph][barriers]")
 {
     using ve::renderer::bufferAccessState;

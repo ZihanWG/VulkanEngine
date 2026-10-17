@@ -8,11 +8,13 @@
 #include <glm/geometric.hpp>
 #include <glm/vec4.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <numbers>
 #include <vector>
 
@@ -135,6 +137,237 @@ TEST_CASE("The shadow ray reaches across the whole scene, not to the far plane",
     CHECK(rayTracedShadowRayLength(Aabb{}) == ve::renderer::kRtFallbackRayLength);
 }
 
+TEST_CASE("The shadow mask covers the sub-rect in whole workgroups", "[raytracing][mask]")
+{
+    using ve::renderer::kRtMaskLocalSize;
+    using ve::renderer::rayTracedShadowMaskGroupCount;
+
+    CHECK(rayTracedShadowMaskGroupCount(0) == 0);
+    CHECK(rayTracedShadowMaskGroupCount(1) == 1);
+    CHECK(rayTracedShadowMaskGroupCount(kRtMaskLocalSize) == 1);
+    CHECK(rayTracedShadowMaskGroupCount(kRtMaskLocalSize + 1) == 2);
+    // 720 rows are exactly 90 groups; the 1280 columns of a full-resolution
+    // frame are 160. A render-scaled sub-rect rounds up, and the shader returns
+    // early on the overhang.
+    CHECK(rayTracedShadowMaskGroupCount(720) == 90);
+    CHECK(rayTracedShadowMaskGroupCount(1280) == 160);
+    CHECK(rayTracedShadowMaskGroupCount(721) == 91);
+}
+
+TEST_CASE("The shadow mask runs only where it has depth to trace from", "[raytracing][mask]")
+{
+    using ve::renderer::rayTracedShadowMaskActive;
+
+    CHECK(rayTracedShadowMaskActive(true, true, true, true));
+    // Each condition alone turns it off: a frame that does not trace, a frame
+    // with no depth prepass to reconstruct surfaces from, a device or build
+    // where the pass could not be created, and the setting, which is the A/B
+    // control. In every case the main pass traces inline, as before the mask.
+    CHECK_FALSE(rayTracedShadowMaskActive(false, true, true, true));
+    CHECK_FALSE(rayTracedShadowMaskActive(true, false, true, true));
+    CHECK_FALSE(rayTracedShadowMaskActive(true, true, false, true));
+    CHECK_FALSE(rayTracedShadowMaskActive(true, true, true, false));
+
+    // Off by default: measured, it only costs while the shadow is hard.
+    const ve::RayTracedShadowSettings defaults{};
+    CHECK_FALSE(defaults.screenSpaceMask);
+    CHECK_FALSE(defaults.debugMaskSource);
+}
+
+TEST_CASE("A soft shadow or the reference asks for the mask by itself", "[raytracing][mask]")
+{
+    using ve::renderer::rayTracedShadowMaskRequested;
+
+    // The hard shadow asks only through the setting, which measured as a cost.
+    CHECK_FALSE(rayTracedShadowMaskRequested(false, 0.0f, 0));
+    CHECK(rayTracedShadowMaskRequested(true, 0.0f, 0));
+    // A sun with extent needs the mask: its filter has to see the visibility
+    // before anything is shaded with it. So does the reference mode.
+    CHECK(rayTracedShadowMaskRequested(false, 0.53f, 0));
+    CHECK(rayTracedShadowMaskRequested(false, 0.0f, 16));
+
+    // Off by default: no extent and no reference.
+    const ve::RayTracedShadowSettings defaults{};
+    CHECK_FALSE(rayTracedShadowMaskRequested(
+        defaults.screenSpaceMask, defaults.sunAngularDiameterDegrees, defaults.debugReferenceSamples));
+    CHECK(defaults.halfResolutionMask);
+}
+
+TEST_CASE("Only a traced soft shadow is filtered, and never the reference", "[raytracing][mask][filter]")
+{
+    using ve::renderer::rayTracedShadowFilterActive;
+
+    CHECK(rayTracedShadowFilterActive(true, true, 0.53f, 0, false));
+    // Nothing to filter without the mask, and a hard shadow's single ray is the
+    // answer.
+    CHECK_FALSE(rayTracedShadowFilterActive(false, true, 0.53f, 0, false));
+    CHECK_FALSE(rayTracedShadowFilterActive(true, true, 0.0f, 0, false));
+    CHECK_FALSE(rayTracedShadowFilterActive(true, false, 0.53f, 0, false));
+    // The reference is what the filter is graded against, and the hit-distance
+    // view shows the rays as traced.
+    CHECK_FALSE(rayTracedShadowFilterActive(true, true, 0.53f, 64, false));
+    CHECK_FALSE(rayTracedShadowFilterActive(true, true, 0.53f, 0, true));
+
+    // On by default, so a soft shadow is filtered unless asked not to be.
+    const ve::RayTracedShadowSettings defaults{};
+    CHECK(defaults.filter);
+    CHECK_FALSE(defaults.debugPenumbraRadius);
+}
+
+TEST_CASE("The penumbra radius follows the occluder, the sun and the surface's footprint", "[raytracing][mask][filter]")
+{
+    using ve::renderer::kRtFilterMaxRadius;
+    using ve::renderer::rayTracedShadowPenumbraRadius;
+    using ve::renderer::rayTracedShadowTexelsPerUnit;
+    using ve::renderer::rayTracedShadowWorldPerTexel;
+
+    // A 60-degree vertical field of view on a 720-pixel sub-rect: [1][1] is
+    // 1/tan(30 degrees), and a unit at one unit away covers 623.5 pixels.
+    const float yScale = 1.0f / std::tan(std::numbers::pi_v<float> / 6.0f);
+    CHECK(rayTracedShadowTexelsPerUnit(yScale, 720, 1) == Catch::Approx(623.538f).epsilon(1e-4));
+    // Half resolution halves it, and the Vulkan Y flip's sign does not matter.
+    CHECK(rayTracedShadowTexelsPerUnit(-yScale, 720, 2) == Catch::Approx(311.769f).epsilon(1e-4));
+    CHECK(rayTracedShadowTexelsPerUnit(yScale, 720, 0) == 0.0f);
+
+    // Facing the camera 10 units away, a texel spans 10 / 623.5 units; a floor
+    // receding 0.05 units per texel spans more, dominated by the recession.
+    const float texelsPerUnit = rayTracedShadowTexelsPerUnit(yScale, 720, 1);
+    const float facing = rayTracedShadowWorldPerTexel(10.0f, texelsPerUnit, 0.0f);
+    CHECK(facing == Catch::Approx(10.0f / texelsPerUnit));
+    const float receding = rayTracedShadowWorldPerTexel(10.0f, texelsPerUnit, 0.05f);
+    CHECK(receding == Catch::Approx(std::sqrt(facing * facing + 0.05f * 0.05f)));
+    CHECK(receding > 3.0f * facing);
+
+    // An occluder 1 unit along the sun ray, the sun 1 degree across: half the
+    // penumbra is tan(0.5 deg) = 0.0087 units, which on the facing surface is
+    // 0.544 texels.
+    const float tanRadius = std::tan(0.5f * std::numbers::pi_v<float> / 180.0f);
+    const float base = rayTracedShadowPenumbraRadius(1.0f, tanRadius, facing);
+    CHECK(base == Catch::Approx(tanRadius / facing));
+    CHECK(base == Catch::Approx(0.544f).epsilon(1e-2));
+    // Linear in the occluder's distance, fewer texels where each spans more, and
+    // clamped.
+    CHECK(rayTracedShadowPenumbraRadius(4.0f, tanRadius, facing) == Catch::Approx(4.0f * base));
+    CHECK(rayTracedShadowPenumbraRadius(1.0f, tanRadius, receding) == Catch::Approx(tanRadius / receding));
+    CHECK(rayTracedShadowPenumbraRadius(1000.0f, tanRadius, facing) == kRtFilterMaxRadius);
+    // No occluder, no sun, or no footprint: nothing to blur.
+    CHECK(rayTracedShadowPenumbraRadius(-1.0f, tanRadius, facing) == 0.0f);
+    CHECK(rayTracedShadowPenumbraRadius(1.0f, 0.0f, facing) == 0.0f);
+    CHECK(rayTracedShadowPenumbraRadius(1.0f, tanRadius, 0.0f) == 0.0f);
+    CHECK(rayTracedShadowPenumbraRadius(std::numeric_limits<float>::quiet_NaN(), tanRadius, facing) == 0.0f);
+}
+
+TEST_CASE("The trace grid covers the sub-rect at either resolution", "[raytracing][mask]")
+{
+    using ve::renderer::rayTracedShadowTraceExtent;
+    using ve::renderer::rayTracedShadowTraceScale;
+
+    CHECK(rayTracedShadowTraceScale(true, 0) == 2u);
+    CHECK(rayTracedShadowTraceScale(false, 0) == 1u);
+    // The reference is the converged answer for every pixel, so it never halves.
+    CHECK(rayTracedShadowTraceScale(true, 8) == 1u);
+
+    CHECK(rayTracedShadowTraceExtent(1280, 1) == 1280u);
+    CHECK(rayTracedShadowTraceExtent(1280, 2) == 640u);
+    // An odd sub-rect: texel t stands for pixel 2t, so the last pixel, 720, is
+    // texel 360 -- 361 texels.
+    CHECK(rayTracedShadowTraceExtent(721, 2) == 361u);
+    for (uint32_t pixels : {1u, 2u, 3u, 719u, 720u, 721u}) {
+        const uint32_t texels = rayTracedShadowTraceExtent(pixels, 2);
+        // The last texel's pixel is inside the sub-rect, and no pixel is past
+        // the last texel's block.
+        CHECK((texels - 1) * 2 < pixels);
+        CHECK(texels * 2 >= pixels);
+    }
+    CHECK(rayTracedShadowTraceExtent(100, 0) == 0u);
+}
+
+TEST_CASE("The sun's disc maps area-uniformly onto a cone of its angle", "[raytracing][mask]")
+{
+    using ve::renderer::concentricDiskSample;
+    using ve::renderer::orthonormalBasis;
+    using ve::renderer::sunConeDirection;
+    using ve::renderer::sunConeTangent;
+
+    // The cone's tangent: zero is the hard shadow, and the real sun's 0.53
+    // degrees is about 0.0046.
+    CHECK(sunConeTangent(0.0f) == 0.0f);
+    CHECK(sunConeTangent(-1.0f) == 0.0f);
+    CHECK(sunConeTangent(0.53f) == Catch::Approx(std::tan(0.265f * std::numbers::pi_v<float> / 180.0f)));
+
+    // The centre of the square is the centre of the disc, the corners its rim,
+    // and a regular grid covers the disc area-uniformly: the mean squared
+    // radius of a uniform unit disc is 1/2.
+    CHECK(glm::length(concentricDiskSample(glm::vec2(0.5f))) == Catch::Approx(0.0f).margin(1e-6));
+    CHECK(glm::length(concentricDiskSample(glm::vec2(1.0f, 0.5f))) == Catch::Approx(1.0f));
+    CHECK(glm::length(concentricDiskSample(glm::vec2(0.0f, 0.0f))) == Catch::Approx(1.0f));
+    constexpr int kGrid = 64;
+    double radiusSquaredSum = 0.0;
+    double xSum = 0.0;
+    for (int y = 0; y < kGrid; ++y) {
+        for (int x = 0; x < kGrid; ++x) {
+            const glm::vec2 u((static_cast<float>(x) + 0.5f) / kGrid, (static_cast<float>(y) + 0.5f) / kGrid);
+            const glm::vec2 disk = concentricDiskSample(u);
+            CHECK(glm::length(disk) <= 1.0f + 1e-5f);
+            radiusSquaredSum += glm::dot(disk, disk);
+            xSum += disk.x;
+        }
+    }
+    CHECK(radiusSquaredSum / (kGrid * kGrid) == Catch::Approx(0.5).epsilon(0.01));
+    CHECK(xSum / (kGrid * kGrid) == Catch::Approx(0.0).margin(1e-3));
+
+    // The basis is orthonormal for any direction, including straight down,
+    // where a basis built by crossing with +z would degenerate.
+    for (const glm::vec3 n : {glm::vec3(0.0f, 0.0f, 1.0f),
+                              glm::vec3(0.0f, 0.0f, -1.0f),
+                              glm::normalize(glm::vec3(0.35f, -0.65f, -0.55f)),
+                              glm::normalize(glm::vec3(1.0f, 1e-4f, 0.0f))}) {
+        glm::vec3 tangent{};
+        glm::vec3 bitangent{};
+        orthonormalBasis(n, tangent, bitangent);
+        CHECK(glm::length(tangent) == Catch::Approx(1.0f).epsilon(1e-5));
+        CHECK(glm::length(bitangent) == Catch::Approx(1.0f).epsilon(1e-5));
+        CHECK(glm::dot(tangent, n) == Catch::Approx(0.0f).margin(1e-5));
+        CHECK(glm::dot(bitangent, n) == Catch::Approx(0.0f).margin(1e-5));
+        CHECK(glm::dot(tangent, bitangent) == Catch::Approx(0.0f).margin(1e-5));
+    }
+
+    // Every direction stays inside the cone and the rim reaches it; the centre
+    // is the sun's own direction.
+    const glm::vec3 towardLight = glm::normalize(glm::vec3(-0.35f, 0.65f, 0.55f));
+    const float tanRadius = sunConeTangent(2.0f);
+    const float cosRadius = 1.0f / std::sqrt(1.0f + tanRadius * tanRadius);
+    CHECK(glm::dot(sunConeDirection(towardLight, tanRadius, glm::vec2(0.5f)), towardLight) == Catch::Approx(1.0f));
+    float smallestCosine = 1.0f;
+    for (int y = 0; y <= 8; ++y) {
+        for (int x = 0; x <= 8; ++x) {
+            const glm::vec2 u(static_cast<float>(x) / 8.0f, static_cast<float>(y) / 8.0f);
+            const float cosine = glm::dot(sunConeDirection(towardLight, tanRadius, u), towardLight);
+            CHECK(cosine >= cosRadius - 1e-6f);
+            smallestCosine = std::min(smallestCosine, cosine);
+        }
+    }
+    CHECK(smallestCosine == Catch::Approx(cosRadius).epsilon(1e-5));
+}
+
+TEST_CASE("The frame the mask turns on rebuilds the top-level structure", "[raytracing][mask]")
+{
+    using ve::renderer::rayTracedShadowMaskNeedsFreshBuild;
+
+    // A kept structure is only visible to the stages that read it on the frame
+    // that built it. Built with the mask off, that is the fragment stage alone,
+    // so the first frame the mask's compute rays need it has to build again.
+    CHECK(rayTracedShadowMaskNeedsFreshBuild(true, false));
+    // Built with the mask on, both stages were covered, and stay covered for as
+    // long as the structure is kept -- including across the mask going off and
+    // back on.
+    CHECK_FALSE(rayTracedShadowMaskNeedsFreshBuild(true, true));
+    // Turning the mask off leaves only the fragment reads, which every build
+    // covers.
+    CHECK_FALSE(rayTracedShadowMaskNeedsFreshBuild(false, true));
+    CHECK_FALSE(rayTracedShadowMaskNeedsFreshBuild(false, false));
+}
+
 TEST_CASE("Scratch addresses round up to the device's alignment", "[raytracing]")
 {
     CHECK(alignUpPowerOfTwo(0, 128) == 0);
@@ -187,6 +420,17 @@ TEST_CASE("Ray-traced shadow settings clamp into their ranges", "[raytracing][se
     ve::clampRayTracedShadowSettings(settings);
     CHECK(settings.normalOffset == 0.0f);
     CHECK(settings.pixelFootprintOffset == 16.0f);
+
+    // The sun's disc and the reference both have ceilings, and a NaN angle must
+    // not survive to reach tan().
+    settings.sunAngularDiameterDegrees = 90.0f;
+    settings.debugReferenceSamples = 1000;
+    ve::clampRayTracedShadowSettings(settings);
+    CHECK(settings.sunAngularDiameterDegrees == 5.0f);
+    CHECK(settings.debugReferenceSamples == ve::renderer::kRtReferenceMaxSamples);
+    settings.sunAngularDiameterDegrees = std::numeric_limits<float>::quiet_NaN();
+    ve::clampRayTracedShadowSettings(settings);
+    CHECK(settings.sunAngularDiameterDegrees == 0.0f);
 
     // Zero is a real A/B point for both and must survive.
     settings.normalOffset = 0.0f;

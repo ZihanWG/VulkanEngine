@@ -1056,11 +1056,59 @@ void Renderer::drawShadowsDebugUi()
                               "distance, on top of the LOD error budget the renderer adds itself.\n"
                               "Rays see level 0 of every mesh while the raster pass may have drawn\n"
                               "a coarser one; this keeps the coarse surface from shadowing itself.");
+        ImGui::Checkbox("Trace a screen-space mask", &rayTracedShadowSettings_.screenSpaceMask);
+        ImGui::SetItemTooltip("On, a compute pass after the depth prepass traces one ray per pixel and\n"
+                              "the main pass reads it. Fragments the prepass did not draw -- the skinned\n"
+                              "mesh, phase-two rescues, blended surfaces -- still trace inline, as does\n"
+                              "every fragment on a frame without a prepass. Off, every fragment traces\n"
+                              "inline.");
+        ImGui::Text("Mask: %s",
+                    frameRayTracedShadowMaskActive_    ? "traced this frame"
+                    : rayTracedShadowMask_.available() ? "available, not traced this frame"
+                                                       : "unavailable");
+        if (ImGui::SliderFloat(
+                "Sun angular diameter", &rayTracedShadowSettings_.sunAngularDiameterDegrees, 0.0f, 5.0f, "%.2f deg")) {
+            clampRuntimeSettings();
+        }
+        ImGui::SetItemTooltip("Zero is a sun with no extent and a hard shadow. Above zero each mask texel\n"
+                              "traces towards a point on the sun's disc, and the mask runs whatever the\n"
+                              "checkbox above says. The real sun is about 0.53. One ray per texel is\n"
+                              "noise until the filter below smooths it.");
+        ImGui::Checkbox("Trace the mask at half resolution", &rayTracedShadowSettings_.halfResolutionMask);
+        ImGui::SetItemTooltip("One ray per 2x2 block, upsampled to the pixels on the same surface;\n"
+                              "pixels no sample speaks for trace inline.");
+        ImGui::Checkbox("Filter the soft shadow", &rayTracedShadowSettings_.filter);
+        ImGui::SetItemTooltip("A blur over each texel's penumbra, as wide as the hit distances around it\n"
+                              "say the penumbra is, kept to the surface it is on. Off, one ray per texel\n"
+                              "is used as traced. Never applied to a hard shadow or the reference.");
+        ImGui::Text("Filter: %s", frameRayTracedShadowFilterActive_ ? "running this frame" : "not running this frame");
+        int referenceSamples = static_cast<int>(rayTracedShadowSettings_.debugReferenceSamples);
+        if (ImGui::SliderInt("Debug: reference rays per pixel",
+                             &referenceSamples,
+                             0,
+                             static_cast<int>(renderer::kRtReferenceMaxSamples))) {
+            rayTracedShadowSettings_.debugReferenceSamples = static_cast<uint32_t>(referenceSamples);
+            clampRuntimeSettings();
+        }
+        ImGui::SetItemTooltip("Stratified rays over the sun's disc, averaged with no filter, at full\n"
+                              "resolution: the converged soft shadow the single filtered ray is judged\n"
+                              "against. Zero is off. Slow by design.");
+        ImGui::Checkbox("Debug: hit distance", &rayTracedShadowSettings_.debugHitDistance);
+        ImGui::SetItemTooltip("Where the mask traced, how far each ray went before it hit: dark near,\n"
+                              "light far, white where nothing was hit. Turns the filter off.");
+        ImGui::Checkbox("Debug: penumbra radius", &rayTracedShadowSettings_.debugPenumbraRadius);
+        ImGui::SetItemTooltip("Where the filter ran, the blur radius it chose, the larger of its two\n"
+                              "axes: black where it left the texel alone, white at the largest radius.");
         ImGui::Checkbox("Debug: ray-traced visibility", &rayTracedShadowSettings_.debugVisibility);
         ImGui::Checkbox("Debug: compare with cascades", &rayTracedShadowSettings_.debugCompareCascades);
         ImGui::SetItemTooltip("Red: only the ray finds an occluder. Blue: only the cascades do.\n"
                               "Grey: they agree. Past the cascades' shadow distance they report lit,\n"
                               "so red there is their range limit. Wins over the visibility view.");
+        ImGui::Checkbox("Debug: mask source", &rayTracedShadowSettings_.debugMaskSource);
+        ImGui::SetItemTooltip("Green: the mask answered and an inline ray from the fragment agrees.\n"
+                              "Magenta: the mask answered and the inline ray disagrees. Blue: the\n"
+                              "fragment traces inline. Grey: it faces away from the sun and traces\n"
+                              "nothing. Wins over both views above.");
         if (rayTracingScene_.ready()) {
             const renderer::RayTracingSceneStats& stats = rayTracingScene_.stats();
             ImGui::Text("BLAS: %u (%llu triangles, %.1f MiB), built in %.1f ms",

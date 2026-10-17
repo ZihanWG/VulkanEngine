@@ -5,7 +5,7 @@
 # has to be accompanied by the matching C++ descriptor or push-constant
 # change, which is the pairing this file exists to make visible.
 #
-# 46 modules.
+# 50 modules.
 
 bloom_blur.frag
   push_constant pc : BloomBlurPushConstants{texelSize:vec2@0, horizontal:uint@8, padding:uint@12, sourceUvScale:vec2@16}
@@ -143,6 +143,29 @@ punctual_shadow_cull.comp
   set=0 binding=3   ssbos        CasterFlagBuffer : CasterFlagBuffer{flags[0]:uint@0}
   set=0 binding=4   ssbos        BatchVisibleCountBuffer : BatchVisibleCountBuffer{visibleCounts[0]:uint@0}
 
+ray_traced_shadow_blur.comp
+  push_constant pc : FilterPushConstants{traceExtent:uvec2@0, direction:ivec2@8, texelsPerUnit:float@16, tanSunRadius:float@20}
+  set=0 binding=0   textures     uFilterSource : sampler2D
+  set=0 binding=1   images       uFilterDestination : image2D
+
+ray_traced_shadow_radius.comp
+  push_constant pc : FilterPushConstants{traceExtent:uvec2@0, direction:ivec2@8, texelsPerUnit:float@16, tanSunRadius:float@20}
+  set=0 binding=0   textures     uFilterSource : sampler2D
+  set=0 binding=1   images       uFilterDestination : image2D
+
+ray_traced_shadow_resolve.comp
+  push_constant pc : ResolvePushConstants{frameConstants:FrameConstantsBuffer{values:FrameConstants{cascadeViewProjection[4]:mat4@0, jitteredViewProjection:mat4@256, viewProjection:mat4@320, lightDirection:vec4@384, lightColor:vec4@400, ambientColor:vec4@416, cascadeSplits:vec4@432, shadowSettings:vec4@448, cameraPosition:vec4@464, cameraForward:vec4@480, shadowQuality:vec4@496, vsmLightView:mat4@512, vsmPageTable:uvec4@576, vsmParams:vec4@592, vsmCamera:vec4@608, rayTracedShadow:uvec4@624, rayTracedShadowParams:vec4@640}@0}*@0, traceScale:uint@8, filtered:uint@12, fullExtent:uvec2@16, inverseFullExtent:vec2@24, inverseViewProjection:mat4@32}
+  set=0 binding=0   textures     uSceneDepth : sampler2D
+  set=0 binding=1   textures     uShadowTrace : sampler2D
+  set=0 binding=2   images       uRayTracedShadowMask : uimage2D
+
+ray_traced_shadow_trace.comp
+  push_constant pc : TracePushConstants{frameConstants:FrameConstantsBuffer{values:FrameConstants{cascadeViewProjection[4]:mat4@0, jitteredViewProjection:mat4@256, viewProjection:mat4@320, lightDirection:vec4@384, lightColor:vec4@400, ambientColor:vec4@416, cascadeSplits:vec4@432, shadowSettings:vec4@448, cameraPosition:vec4@464, cameraForward:vec4@480, shadowQuality:vec4@496, vsmLightView:mat4@512, vsmPageTable:uvec4@576, vsmParams:vec4@592, vsmCamera:vec4@608, rayTracedShadow:uvec4@624, rayTracedShadowParams:vec4@640}@0}*@0, objectFrameData:ObjectFrameDataBuffer{objects[0]:ObjectFrameData{model:mat4@0, baseColorFactor:vec4@64, materialParams:vec4@80, textureIndices:uvec4@96, emissiveFactor:vec4@112, prevMvpNoJitter:mat4@128}@0}*@8, inverseViewProjection:mat4@16, fullExtent:uvec2@80, inverseFullExtent:vec2@88, traceExtent:uvec2@96, traceScale:uint@104, referenceSamples:uint@108}
+  set=0 binding=0   textures     uSceneDepth : sampler2D
+  set=0 binding=1   acceleration_structures uSceneTopLevel : accelerationStructureNV
+  set=0 binding=2   images       uShadowTrace : image2D
+  set=1 binding=0   textures     uBaseColorTextures[0] : sampler2D
+
 shadow.vert
   push_constant pc : PushConstants{objectFrameData:ObjectFrameDataBuffer{objects[0]:ObjectFrameData{model:mat4@0, baseColorFactor:vec4@64, materialParams:vec4@80, textureIndices:uvec4@96, emissiveFactor:vec4@112, prevMvpNoJitter:mat4@128}@0}*@0, cascadeIndex:uint@8, frameConstants:FrameConstantsBuffer{values:FrameConstants{cascadeViewProjection[4]:mat4@0, jitteredViewProjection:mat4@256, viewProjection:mat4@320, lightDirection:vec4@384, lightColor:vec4@400, ambientColor:vec4@416, cascadeSplits:vec4@432, shadowSettings:vec4@448, cameraPosition:vec4@464, cameraForward:vec4@480, shadowQuality:vec4@496, vsmLightView:mat4@512, vsmPageTable:uvec4@576, vsmParams:vec4@592, vsmCamera:vec4@608, rayTracedShadow:uvec4@624, rayTracedShadowParams:vec4@640}@0}*@112}
 
@@ -211,6 +234,7 @@ simple_bindless_rq.frag
   set=0 binding=14  textures     uVsmPagePool : sampler2DShadow
   set=0 binding=15  textures     uPunctualShadowAtlasCompare : sampler2DShadow
   set=0 binding=16  acceleration_structures uSceneTopLevel : accelerationStructureNV
+  set=0 binding=17  textures     uRayTracedShadowMask : usampler2D
   set=0 binding=4   textures     uDiffuseIrradianceMap : samplerCube
   set=0 binding=5   textures     uPrefilteredEnvMap : samplerCube
   set=0 binding=6   textures     uBrdfLut : sampler2D

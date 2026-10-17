@@ -2,6 +2,7 @@
 
 #include "rhi/VulkanCommon.h"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -87,13 +88,24 @@ enum class RGAccess {
     // A top-level acceleration structure build, declared on the structure's
     // storage buffer: it writes the structure and reads what it was built from.
     AccelerationStructureBuild,
-    // Ray queries against an acceleration structure from fragment shaders. The
-    // only tracing this renderer does is the main pass's sun shadow ray.
-    AccelerationStructureRead
+    // Ray queries against an acceleration structure from fragment shaders: the
+    // main fragment shader's inline sun shadow ray.
+    AccelerationStructureRead,
+    // The same from a compute shader: the ray-traced shadow mask, which traces
+    // one ray per pixel ahead of the main pass. Its scope names the fragment
+    // stage too, for the main pass's rays that follow it; see
+    // accessStateForBuffer.
+    AccelerationStructureComputeRead
 };
+
+// Declared in renderer/RayTracedShadows.h; named here only to pick a filter pass.
+enum class RayTracedShadowFilterStage : uint32_t;
 
 enum class RenderPassType {
     RayTracingSceneBuild,
+    RayTracedShadowTrace,
+    RayTracedShadowFilter,
+    RayTracedShadowResolve,
     Shadow,
     ShadowGpuCulling,
     VsmPageMark,
@@ -517,6 +529,16 @@ struct RenderGraphFrameResources {
     // The top-level acceleration structure's storage buffer. Imported only on
     // frames that trace; see rayTracedShadowsEnabled.
     RenderGraphBufferResource rayTracingTopLevel;
+    // The ray-traced shadow mask. Imported on every frame it exists, traced or
+    // not: every pass that runs the main fragment shader declares a read of it,
+    // so the image is always in the layout set 0 binding 17 records.
+    RenderGraphImageResource rayTracedShadowMask;
+    // What the mask's trace writes and its resolve reads. Imported only on a
+    // frame the mask traces, which is the only time anything touches it.
+    RenderGraphImageResource rayTracedShadowTrace;
+    // The soft shadow filter's other image, which it ping-pongs with the trace
+    // image. Imported only on a frame the filter runs.
+    RenderGraphImageResource rayTracedShadowFilter;
     bool taaEnabled = false;
     // Declares the two-phase occlusion passes (mid-frame depth pyramid, cull
     // phase 2, second main HDR pass) for this frame.
@@ -566,6 +588,17 @@ struct RenderGraphFrameResources {
     // first touched by a read, which needs no barrier, and the build it reads
     // is ordered by the barrier recorded on the frame that built it.
     bool rayTracingSceneBuildEnabled = false;
+    // Declares RayTracedShadowTrace and RayTracedShadowResolve between
+    // DepthPrepass and MainHDRPass: the trace reads the prepass's depth and the
+    // TLAS and writes the trace image, the resolve reads both images' worth and
+    // writes the mask the main pass reads.
+    bool rayTracedShadowMaskEnabled = false;
+    // Declares the soft shadow filter's three passes between
+    // RayTracedShadowTrace and RayTracedShadowResolve -- RayTracedShadowRadius,
+    // RayTracedShadowBlurH and RayTracedShadowBlurV -- and has the resolve read
+    // the filter image they leave instead of the trace image. Only with
+    // rayTracedShadowMaskEnabled.
+    bool rayTracedShadowFilterEnabled = false;
     // Declares the probe-atlas update compute pass for this frame. The two
     // atlases are imported and read by the main pass whenever they exist, the
     // same asymmetry the punctual shadow atlas uses: a frame that updates no
@@ -781,6 +814,16 @@ public:
     // work in the dispatch sense, and recorded outside any rendering scope.
     void beginRayTracingSceneBuildPass();
     void endRayTracingSceneBuildPass();
+    // The ray-traced shadow mask's two dispatches, recorded between the depth
+    // prepass and the main pass inside the main-pass recorder, outside any
+    // rendering scope.
+    void beginRayTracedShadowTracePass();
+    void endRayTracedShadowTracePass();
+    // One of the filter's three, by its RayTracedShadowFilterStage.
+    void beginRayTracedShadowFilterPass(RayTracedShadowFilterStage stage);
+    void endRayTracedShadowFilterPass();
+    void beginRayTracedShadowResolvePass();
+    void endRayTracedShadowResolvePass();
     // The GPU shadow caster cull. Recorded inside the cascade shadow recorder,
     // ahead of the first cascade, which is why its declaration sits immediately
     // before CSMShadowPass: a declared order that disagrees with the recorded one
@@ -979,9 +1022,16 @@ private:
     // shader is what traces: the main pass, the phase-2 re-draw and the
     // transparent pass. Declares nothing on a frame that does not trace.
     void declareRayTracedShadowRead(RenderGraphBuilder& builder);
+    // The same three passes read the ray-traced shadow mask. Declared on every
+    // frame the mask exists, unlike the TLAS read: the ray-query variant samples
+    // binding 17 on every frame it runs, traced or not.
+    void declareRayTracedShadowMaskRead(RenderGraphBuilder& builder);
     enum class ActivePass {
         None,
         RayTracingSceneBuild,
+        RayTracedShadowTrace,
+        RayTracedShadowFilter,
+        RayTracedShadowResolve,
         VsmPageMark,
         VsmPage,
         Shadow,
@@ -1074,6 +1124,11 @@ private:
 
     struct BuiltinPassIndices {
         uint32_t rayTracingSceneBuild = kInvalidRenderGraphHandle;
+        uint32_t rayTracedShadowTrace = kInvalidRenderGraphHandle;
+        // Indexed by RayTracedShadowFilterStage.
+        std::array<uint32_t, 3> rayTracedShadowFilter{
+            kInvalidRenderGraphHandle, kInvalidRenderGraphHandle, kInvalidRenderGraphHandle};
+        uint32_t rayTracedShadowResolve = kInvalidRenderGraphHandle;
         uint32_t vsmPageMark = kInvalidRenderGraphHandle;
         uint32_t vsmPage = kInvalidRenderGraphHandle;
         uint32_t shadow = kInvalidRenderGraphHandle;
@@ -1130,6 +1185,9 @@ private:
         RGTextureHandle normalRoughness{};
         RGTextureHandle ambientOcclusion{};
         RGTextureHandle ambientOcclusionRaw{};
+        RGTextureHandle rayTracedShadowMask{};
+        RGTextureHandle rayTracedShadowTrace{};
+        RGTextureHandle rayTracedShadowFilter{};
         RGTextureHandle ssrSceneColorCopy{};
         RGTextureHandle taaHistoryRead{};
         RGTextureHandle taaHistoryWrite{};

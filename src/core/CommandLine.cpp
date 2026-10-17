@@ -269,6 +269,15 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--rt-shadow-dump") {
+            if (index + 1 >= argc) {
+                Logger::error("--rt-shadow-dump requires a file path.");
+                return false;
+            }
+            options.rtShadowDump = argv[++index];
+            continue;
+        }
+
         if (argument == "--settings") {
             if (index + 1 >= argc) {
                 Logger::error("--settings requires a file path.");
@@ -359,6 +368,11 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
     // would hand back a frame that looks right and answers nothing.
     if (!options.vsmDumpPool.empty() && options.captureFrame == 0) {
         Logger::error("--vsm-dump-pool requires --capture-frame, so the pool and the frame it shaded match.");
+        return false;
+    }
+
+    if (!options.rtShadowDump.empty() && options.captureFrame == 0) {
+        Logger::error("--rt-shadow-dump requires --capture-frame, so the mask and the frame it shaded match.");
         return false;
     }
 

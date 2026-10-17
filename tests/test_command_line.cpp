@@ -122,6 +122,20 @@ TEST_CASE("GPU timings print once a second unless the run asks for every frame")
     CHECK_FALSE(alone.freezeAnimation);
 }
 
+TEST_CASE("The shadow mask dump needs a capture frame to match")
+{
+    LaunchOptions dumped{};
+    REQUIRE(parse({"--capture-frame", "30", "--capture-output", "frame.png", "--rt-shadow-dump", "mask.pfm"}, dumped));
+    CHECK(dumped.rtShadowDump == "mask.pfm");
+
+    // Without a capture frame the dump would describe a frame nothing else
+    // records, so the run is refused rather than half-honoured.
+    LaunchOptions alone{};
+    CHECK_FALSE(parse({"--rt-shadow-dump", "mask.pfm"}, alone));
+    LaunchOptions missingPath{};
+    CHECK_FALSE(parse({"--capture-frame", "30", "--capture-output", "frame.png", "--rt-shadow-dump"}, missingPath));
+}
+
 TEST_CASE("Ray query stays available unless the run disables it")
 {
     LaunchOptions defaults{};

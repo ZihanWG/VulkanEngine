@@ -260,6 +260,7 @@ add_library(VulkanEngineCore STATIC
     src/core/CommandLine.cpp
     src/core/JobSystem.cpp
     src/core/Logger.cpp
+    src/core/PfmWriter.cpp
     src/core/PngWriter.cpp
     src/renderer/AssetLoadStats.cpp
     src/renderer/BrdfIntegration.cpp
@@ -325,6 +326,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/OverdrawQuery.cpp
     src/renderer/PostProcessStack.cpp
     src/renderer/PunctualShadows.cpp
+    src/renderer/RayTracedShadowMask.cpp
     src/renderer/RayTracingScene.cpp
     src/renderer/RayTracingSkinning.cpp
     src/renderer/VolumetricFogPass.cpp
@@ -479,6 +481,10 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/simple.frag"
     "${SHADER_SOURCE_DIR}/simple_bindless.frag"
     "${SHADER_SOURCE_DIR}/skin_positions.comp"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_trace.comp"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_radius.comp"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_blur.comp"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_resolve.comp"
     "${SHADER_SOURCE_DIR}/skybox.vert"
     "${SHADER_SOURCE_DIR}/skybox.frag"
     "${SHADER_SOURCE_DIR}/depth_prepass.vert"
@@ -558,6 +564,9 @@ set(SHADER_INCLUDES
     "${SHADER_SOURCE_DIR}/taa_disocclusion.glsl"
     "${SHADER_SOURCE_DIR}/lod_transition.glsl"
     "${SHADER_SOURCE_DIR}/ray_traced_shadows.glsl"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_trace.glsl"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_reconstruct.glsl"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_filter.glsl"
 )
 
 if(GLSLC_EXECUTABLE)

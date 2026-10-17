@@ -132,10 +132,18 @@
         "enabled": false,
         "renderCascades": false,
         "rebuildEveryFrame": false,
+        "screenSpaceMask": false,
+        "sunAngularDiameterDegrees": 0.0,
+        "halfResolutionMask": true,
+        "filter": true,
         "normalOffset": 0.02,
         "pixelFootprintOffset": 1.0,
         "debugVisibility": false,
-        "debugCompareCascades": false
+        "debugCompareCascades": false,
+        "debugMaskSource": false,
+        "debugReferenceSamples": 0,
+        "debugHitDistance": false,
+        "debugPenumbraRadius": false
     },
     "gi": {
         "enabled": false,

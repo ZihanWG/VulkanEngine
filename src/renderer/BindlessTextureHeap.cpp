@@ -86,7 +86,10 @@ void BindlessTextureHeap::create(rhi::VulkanContext& context, uint32_t maxTextur
         bindings[binding].binding = binding;
         bindings[binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[binding].descriptorCount = maxTextures_;
-        bindings[binding].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // Base colour is also read by the ray-traced shadow mask's compute pass,
+        // which runs the cutout test on the candidates its rays cross.
+        bindings[binding].stageFlags =
+            binding == 0 ? VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
     }
 
     // Update-after-bind moves the heap out of the small non-update-after-bind

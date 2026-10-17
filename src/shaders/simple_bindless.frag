@@ -153,89 +153,55 @@ layout(set = 1, binding = 2) uniform sampler2D uMetallicRoughnessTextures[];
 // structure is rebuilt in place rather than replaced.
 layout(set = 0, binding = 16) uniform accelerationStructureEXT uSceneTopLevel;
 
-// Where each draw item's geometry lives, indexed by the same frameDataIndex the
-// instance carries as its custom index. Mirrors
-// ve::renderer::RayTracingGeometryRecord.
-struct RtGeometryRecord {
-    uvec2 vertexAddress;
-    // Already advanced to the draw item's firstIndex.
-    uvec2 indexAddress;
-};
-layout(buffer_reference, std430) readonly buffer RtGeometryRecordBuffer {
-    RtGeometryRecord records[];
-};
-layout(buffer_reference, std430) readonly buffer RtVertexFloats {
-    float values[];
-};
-layout(buffer_reference, std430) readonly buffer RtIndices {
-    uint values[];
-};
+// The ray-traced shadow mask (renderer/RayTracedShadowMask.h): for every pixel
+// the depth prepass covered, the sun's visibility traced ahead of this pass, and
+// the exact depth it was traced at. Read only on frames that set
+// kRtShadowFlagScreenMask, but declared and bound on every frame this variant
+// runs, so the image is always in the layout this sampler expects.
+layout(set = 0, binding = 17) uniform usampler2D uRayTracedShadowMask;
 
-// renderer::Vertex as floats (kRtVertexStrideFloats, kRtVertexUvOffsetFloats).
-#include "ray_traced_shadows.glsl"
+#include "ray_traced_shadow_trace.glsl"
 
-vec2 rtVertexUv(RtVertexFloats vertices, uint vertexIndex)
-{
-    uint base = vertexIndex * kRtVertexStrideFloats + kRtVertexUvOffsetFloats;
-    return vec2(vertices.values[base], vertices.values[base + 1u]);
-}
+// What rayTracedShadowFromMask returns for a fragment behind the surface the
+// prepass drew at its pixel. Never stored in the mask.
+const float kRtMaskFragmentHidden = -2.0;
 
-// Whether a candidate triangle of a cutout caster blocks the sun at the point the
-// ray crossed it. The cascades' masked shadow pass, answered for one hit: the
-// same three ObjectFrameData fields and the same comparison as
-// shadow_masked.frag, so a cutout throws the same shape either way. Level 0 of
-// the base colour where the raster pass takes its derivative-selected mip, since
-// a ray has no footprint to select one with.
-bool rtCandidateBlocksLight(uint frameDataIndex, uint primitive, vec2 barycentrics)
-{
-    RtGeometryRecord record =
-        RtGeometryRecordBuffer(pc.frameConstants.values.rayTracedShadow.xy).records[frameDataIndex];
-    RtIndices indices = RtIndices(record.indexAddress);
-    RtVertexFloats vertices = RtVertexFloats(record.vertexAddress);
-    uint first = primitive * 3u;
-    vec2 uv = rtVertexUv(vertices, indices.values[first]) * (1.0 - barycentrics.x - barycentrics.y) +
-              rtVertexUv(vertices, indices.values[first + 1u]) * barycentrics.x +
-              rtVertexUv(vertices, indices.values[first + 2u]) * barycentrics.y;
-
-    uint textureIndex = pc.objectFrameData.objects[frameDataIndex].textureIndices.x;
-    float alpha = textureLod(uBaseColorTextures[nonuniformEXT(textureIndex)], uv, 0.0).a *
-                  pc.objectFrameData.objects[frameDataIndex].baseColorFactor.a;
-    return alpha >= pc.objectFrameData.objects[frameDataIndex].materialParams.w;
-}
-
-// 1.0 when nothing in the scene lies between this surface and the sun, 0.0 when
-// something does. Hard by construction: one ray, toward a light with no extent.
+// The mask's visibility for this fragment, or kRtMaskNotTraced when this
+// fragment has to trace for itself. The depth test is what makes the mask safe
+// to read: the prepass drew opaque and cutout geometry only, and this pass tests
+// LESS_OR_EQUAL against it with the same vertex positions, so a fragment of a
+// surface the prepass drew has exactly the depth it wrote. The skinned mesh,
+// phase-two rescues and blended surfaces are strictly in front of it and never
+// match, which sends each of them to the inline ray without a per-draw flag.
 //
-// The origin moves off the surface by a constant plus a term that grows with
-// distance from the camera (FrameConstants::rayTracedShadowParams). The second
-// is what covers LOD: rays see every mesh at level 0, while the raster pass drew
-// whichever level the cull chose, so a distant simplified surface would
-// otherwise find its own detailed version just above it. The offset goes to the
-// side of the surface facing the sun, so a two-sided caster seen from behind
-// does not start its ray inside itself.
-float rayTracedSunVisibility(vec3 worldPosition, vec3 surfaceNormal, vec3 towardLight)
+// A fragment strictly behind the prepass's depth gets kRtMaskFragmentHidden
+// instead, and traces nothing. Every pass that reads the mask tests depth with
+// LESS or LESS_OR_EQUAL against a buffer that only moves nearer after the
+// prepass, so such a fragment is rejected after it is shaded and nothing it
+// computes is seen. It is shaded at all because this shader can discard, which
+// lets the driver run the depth test late. Before this, each one traced the
+// inline fallback: see docs/ray_traced_shadows.md#cost.
+//
+// A texel traced from a surface facing away from the sun is used only when this
+// fragment's vertex normal faces away as well -- a normal-mapped wall past the
+// sun's horizon, where the inline ray would start from the same side. Where the
+// vertex normal still faces the sun the fragment is on the terminator of a
+// smooth-shaded surface, and the inline ray, which starts from that normal, is
+// the one that matches the shading.
+float rayTracedShadowFromMask(vec3 vertexNormal, vec3 towardLight)
 {
-    vec4 params = pc.frameConstants.values.rayTracedShadowParams;
-    float offset = params.x + params.y * length(pc.frameConstants.values.cameraPosition.xyz - worldPosition);
-    vec3 normal = dot(surfaceNormal, towardLight) >= 0.0 ? surfaceNormal : -surfaceNormal;
-    vec3 origin = worldPosition + normal * offset;
-
-    rayQueryEXT query;
-    rayQueryInitializeEXT(query, uSceneTopLevel, gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, origin, 0.0,
-                          towardLight, params.z);
-    // Opaque instances never stop here -- they are FORCE_OPAQUE and commit on
-    // their own. Only cutout instances present candidates.
-    while (rayQueryProceedEXT(query)) {
-        if (rayQueryGetIntersectionTypeEXT(query, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {
-            uint frameDataIndex = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(query, false));
-            uint primitive = uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, false));
-            vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, false);
-            if (rtCandidateBlocksLight(frameDataIndex, primitive, barycentrics)) {
-                rayQueryConfirmIntersectionEXT(query);
-            }
-        }
+    uvec2 texel = texelFetch(uRayTracedShadowMask, ivec2(gl_FragCoord.xy), 0).xy;
+    if (texel.y != floatBitsToUint(gl_FragCoord.z)) {
+        return gl_FragCoord.z > uintBitsToFloat(texel.y) ? kRtMaskFragmentHidden : kRtMaskNotTraced;
     }
-    return rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+    float visibility = uintBitsToFloat(texel.x);
+    if (visibility >= kRtMaskBackFacingBias) {
+        if (dot(vertexNormal, towardLight) > 0.0) {
+            return kRtMaskNotTraced;
+        }
+        visibility -= kRtMaskBackFacingBias;
+    }
+    return visibility;
 }
 #endif
 
@@ -1054,6 +1020,9 @@ void main()
     // uniform branch on a FrameConstants flag, not a pipeline switch, so the
     // setting flips at runtime without rebuilding anything.
     uint rayTracedFlags = 0u;
+    // Whether this fragment's visibility came from the shadow mask rather than an
+    // inline ray. Only the mask-source debug view reads it.
+    bool rayTracedFromMask = false;
 #ifdef VE_RAY_QUERY
     rayTracedFlags = pc.frameConstants.values.rayTracedShadow.z;
 #endif
@@ -1061,10 +1030,34 @@ void main()
 #ifdef VE_RAY_QUERY
         // Where nothing faces the sun the term multiplies zero, so the ray is
         // skipped -- unless a debug view is about to show the term itself.
+        //
+        // Nor does a helper invocation trace: it runs only so its quad has
+        // derivatives, writes nothing, and nothing after this takes a derivative
+        // of the term. It also never matches the mask -- its depth is
+        // extrapolated past its triangle's edge -- so without this every helper
+        // lane on every triangle edge took the inline fallback, which no debug
+        // view can show because helpers draw no pixel. On Sponza at the 700 MHz
+        // pin it took MainHDRPass from 6.07 to 5.50 ms with a soft sun and from
+        // 4.08 to 3.90 ms with the hard mask (single runs, not an A/B series).
         bool rayTracedDebug =
-            (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades)) != 0u;
-        if (normalLight > 0.0 || rayTracedDebug) {
-            shadowFactor = rayTracedSunVisibility(vWorldPosition, normalize(vNormal), lightDirection);
+            (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades |
+                               kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance |
+                               kRtShadowFlagDebugPenumbraRadius)) != 0u;
+        if ((normalLight > 0.0 || rayTracedDebug) && !gl_HelperInvocation) {
+            float masked = (rayTracedFlags & kRtShadowFlagScreenMask) != 0u
+                               ? rayTracedShadowFromMask(normalize(vNormal), lightDirection)
+                               : kRtMaskNotTraced;
+            rayTracedFromMask = masked >= 0.0;
+            if (rayTracedFromMask) {
+                shadowFactor = masked;
+            } else if (masked != kRtMaskFragmentHidden) {
+                shadowFactor = rayTracedSunVisibility(pc.frameConstants,
+                                                      pc.objectFrameData,
+                                                      vWorldPosition,
+                                                      normalize(vNormal),
+                                                      lightDirection,
+                                                      gl_FragCoord.xy);
+            }
         }
 #endif
     } else if ((pc.frameConstants.values.vsmPageTable.w & kVsmFlagEnabled) != 0u) {
@@ -1282,8 +1275,35 @@ void main()
     // cascades report lit, so red there is the range limit, not a disagreement
     // about the scene.
     if ((rayTracedFlags & kRtShadowFlagEnabled) != 0u &&
-        (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades)) != 0u) {
+        (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades |
+                           kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance |
+                           kRtShadowFlagDebugPenumbraRadius)) != 0u) {
         vec3 debugColor = vec3(shadowFactor);
+#ifdef VE_RAY_QUERY
+        if ((rayTracedFlags & kRtShadowFlagDebugMaskSource) != 0u) {
+            // Where the mask answered, an inline ray asks the same question from
+            // this fragment's own position and normal: green where they agree,
+            // magenta where they do not. Blue is the inline fallback the shaded
+            // frame pays a ray for; grey is a fallback it never traces, because
+            // the surface faces away from the sun and the term multiplies zero.
+            vec3 verdict = normalLight > 0.0 ? vec3(0.15, 0.35, 1.0) : vec3(0.3);
+            if (rayTracedFromMask) {
+                float inlineVisibility = rayTracedSunVisibility(pc.frameConstants,
+                                                                pc.objectFrameData,
+                                                                vWorldPosition,
+                                                                normalize(vNormal),
+                                                                lightDirection,
+                                                                gl_FragCoord.xy);
+                verdict = (inlineVisibility > 0.5) == (shadowFactor > 0.5) ? vec3(0.2, 0.85, 0.3)
+                                                                            : vec3(1.0, 0.1, 1.0);
+            }
+            float debugLuminance = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
+            outColor = vec4(verdict * (0.35 + 0.65 * clamp(debugLuminance, 0.0, 1.0)), 1.0);
+            outVelocity = computeVelocity();
+            outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
+            return;
+        }
+#endif
         if ((rayTracedFlags & kRtShadowFlagDebugCompareCascades) != 0u) {
             bool rayLit = shadowFactor > 0.5;
             bool cascadeLit = sampleShadowFactor(normal, selectShadowCascade()) > 0.5;
