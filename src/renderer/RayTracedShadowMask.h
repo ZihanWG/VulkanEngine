@@ -26,10 +26,12 @@
 // with the ray-tracing scene's resources, recreated with every other
 // render-resolution target, destroyed before them.
 //
-// The mask image exists whenever the device can trace, pass or no pass: the main
-// shader's ray-query variant declares it at set 0 binding 17 and runs on every
-// frame such a device draws, so the binding has to hold an image in
-// SHADER_READ_ONLY_OPTIMAL whether or not this frame traced it.
+// The mask image exists whenever the ray-query variant of the main shader draws
+// -- the TLAS and the bindless path both present -- pass or no pass: that
+// variant declares it at set 0 binding 17 and runs on every frame, so the
+// binding has to hold an image in SHADER_READ_ONLY_OPTIMAL whether or not this
+// frame traced it. Without the bindless path nothing declares the binding, and
+// the image is not allocated.
 
 #include "renderer/RayTracedShadows.h"
 #include "renderer/RenderResolution.h"

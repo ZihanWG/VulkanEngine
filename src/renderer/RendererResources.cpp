@@ -1735,9 +1735,11 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[16].pNext = &topLevelInfo;
     // The shadow mask, under the same reasoning as the TLAS above, except that a
     // resize replaces the image: refreshMaterialRayTracedShadowMaskDescriptors
-    // rewrites it then. The image exists whenever the TLAS does; only an
-    // allocation failure leaves it absent, and then the binding stays unwritten
-    // and the mask flag is never set.
+    // rewrites it then. The image exists whenever the ray-query variant draws.
+    // Without the bindless path it is never allocated, and only the per-material
+    // sets of simple.frag, which does not declare the binding, see it unwritten;
+    // an allocation failure leaves it absent too, and then the mask flag is never
+    // set.
     VkDescriptorImageInfo shadowMaskInfo{};
     shadowMaskInfo.sampler = rayTracedShadowMask_.sampler();
     shadowMaskInfo.imageView = rayTracedShadowMask_.image().imageView();

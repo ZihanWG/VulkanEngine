@@ -361,10 +361,13 @@ void Renderer::recreatePostProcessResources()
                               brdfLutTexture_.imageView(),
                               brdfLutTexture_.sampler());
     gtao_.createResources(postProcess_.normalRoughness().imageView(), static_cast<uint32_t>(frames_.size()));
-    // Whenever the device can trace, pass or no pass: binding 17 needs an image
-    // on every frame the ray-query variant draws. After the depth image, whose
-    // view the pass's set samples.
-    if (rayTracingScene_.hasTopLevel()) {
+    // Whenever the ray-query variant draws, pass or no pass: it declares binding
+    // 17, so the binding needs an image on every frame it runs. Not otherwise --
+    // without the bindless path no shader declares the binding, and the image
+    // would be eight bytes a pixel nothing reads. Both conditions are settled at
+    // startup, before the first call. After the depth image, whose view the
+    // pass's set samples.
+    if (rayQueryShadingAvailable()) {
         rayTracedShadowMask_.createResources(rayTracingScene_.topLevelHandle());
     }
     refreshMaterialRayTracedShadowMaskDescriptors();
