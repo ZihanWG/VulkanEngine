@@ -177,12 +177,79 @@ Buffer declarations use existing buffer-oriented `RGAccess` values such as:
   Adding them found that the write mask had no acceleration-structure write bit,
   which made a build followed by a trace look like two reads and emit nothing.
 - `AccelerationStructureComputeRead`, the same read from the ray-traced shadow
-  mask's compute pass. Its scope names the fragment stage as well as the compute
-  stage, because it is the first trace after the build and the main pass's
-  fragment-stage rays come next with no barrier of their own (see the read-after-
-  read limitation below).
+  mask's trace pass (`RayTracedShadowTrace`), scoped to the compute stage.
 
-At pass begin, the graph maps buffer accesses to conservative Synchronization2 buffer barriers. It tracks the previous stage/access for each imported buffer during the frame and emits full-buffer barriers when a declared pass-to-pass dependency includes a write-after-read, read-after-write, or write-after-write hazard. Read-after-read usage does not emit a barrier.
+At pass begin, the graph maps buffer accesses to conservative Synchronization2
+full-buffer barriers. What it tracks per buffer, for the frame
+(`BufferSyncState`, applied by `advanceBufferSync`):
+
+- the last write's stage and access;
+- every reader since that write -- or since the frame began, while nothing has
+  written;
+- the stage/access scopes the last write has been made visible to: the second
+  scope of each barrier emitted since it, kept as pairs, because a barrier makes
+  its accesses visible to its own stages only.
+
+From that:
+
+- **A write** waits for the last write and for every reader since it. Naming
+  only the most recent reader, as the graph used to, leaves the earlier ones
+  racing the write: no barrier chains from them.
+- **A read** gets a barrier from the last write unless one since has already
+  named the read's stage together with its access. The first reader after a
+  write gets one; so does a later reader in a stage or with an access no earlier
+  barrier reached; a repeat read in a stage already reached gets none.
+- **A read before any write** this frame, and a buffer's first use of any kind,
+  gets nothing: buffer state is rebuilt every frame, so there is nothing in the
+  frame to order against. Cross-frame edges stay with the subsystems (see "What
+  subsystems still write by hand").
+
+Until this tracking existed, a read after a read emitted nothing whatever its
+stage, so only the first reader after a write was ordered against it. The
+ray-traced shadow mask is what hit it: an `api_dump` showed its compute-stage
+read of the top-level acceleration structure taking the build's only barrier,
+with the main pass's fragment-stage rays unordered behind it. The mask's access
+named the fragment stage too as a stopgap; it names the compute stage alone now,
+and the main pass gets its own barrier
+([ray_traced_shadows.md](ray_traced_shadows.md#synchronization)).
+
+Images keep the pairwise rule -- the last access against the next one -- and do
+not need more. Every read of one layout names the same stages
+(`textureAccessState`), and a change of layout is itself a barrier whose first
+scope is the previous access, so each one chains from the one before it.
+
+`tests/test_render_graph.cpp` drives `advanceBufferSync` through sequences: a
+second reader in another stage, repeat reads in a stage already reached, a write
+after two readers, a write after another write, visibility per stage/access pair,
+and what happens past the state's room for scopes. Each rule was checked by
+breaking it and watching a case fail.
+
+What it changed, counted over 60 frames of each configuration with the old rule
+evaluated beside the new one (a temporary log, not committed):
+
+| Scene | Settings | Buffer barriers per frame, before -> after | Of which new | Wider first scope |
+| --- | --- | --- | --- | --- |
+| default | defaults | 10 -> 10 | 0 | 2 |
+| default | ray-traced shadows | 9 -> 9 | 0 | 2 |
+| default | ray-traced shadows, screen-space mask | 9 -> 10 | 1 | 2 |
+| default | ray-traced shadows, 2-degree sun (filtered mask) | 9 -> 10 | 1 | 2 |
+| sponza | defaults | 8 -> 8 | 0 | 2 |
+| sponza | ray-traced shadows | 8 -> 8 | 0 | 2 |
+| sponza | ray-traced shadows, screen-space mask | 8 -> 8; 5 on the frame that builds | 1 on that frame | 2 |
+| sponza | ray-traced shadows, 2-degree sun (filtered mask) | 8 -> 8; 5 on the frame that builds | 1 on that frame | 2 |
+
+No barrier disappeared. The one new barrier is the main pass's own, from the
+acceleration-structure build, on a frame that both builds and runs the mask's
+trace -- every frame on the default scene, whose skinned caster moves, and only
+the first on Sponza, which keeps its structure after that. It joins the pass's
+existing `vkCmdPipelineBarrier2` rather than adding one. The soft mask's filter
+passes read and write images only, so they add nothing here. The two wider scopes
+are `MainGpuCullingPhase2`'s writes to the main cull's indirect commands and
+visible counts: their first scope used to be the draw-indirect stage of the
+reads before them and now also names the phase-one cull's write. That adds no
+wait -- by then the depth transition after the main pass has waited for its
+fragment tests and every stage before them, and the Hi-Z barrier for the
+pyramid's compute -- so the frame cost was not measured.
 
 The implementation favors correctness and debug readability over barrier minimization. Same-layout write-after-write or write-after-read cases can still emit ordering barriers.
 
@@ -1036,14 +1103,6 @@ the default.
   is **off by default** (`enableTransientAliasing`). See "Transient memory
   aliasing" below.
 - No resource pooling overhaul.
-- A read after a read emits no barrier, whatever its stage. Only the first reader
-  after a write is ordered against it, so a buffer written and then read in two
-  different stages leaves the second reader unordered unless the first reader's
-  declared scope already names its stage. The ray-traced shadow mask is the one
-  case that hit it -- its compute read precedes the main pass's fragment read of
-  the same structure -- and its access names both stages for that reason
-  ([ray_traced_shadows.md](ray_traced_shadows.md#synchronization)). The general
-  fix is to track, per buffer, the stages each write has been made visible to.
 - Transient scene/bloom resources and persistent TAA history resources are graph-described but still physically allocated by `Renderer`.
 - Intra-pass sequencing remains manual, and always will: the graph emits at pass
   boundaries, so a buffer filled, dispatched against, copied and made
