@@ -406,6 +406,26 @@ setting for that. `sunAngularDiameterDegrees` stays 0: the soft shadow costs
 0.44 ms over the hard one, and on contact shadows -- most of the shadow in the
 default and stress scenes -- it stays noisy until temporal accumulation.
 
+**Again, with early depth testing behind the prepass.** The series above ran
+before the main pass tested depth ahead of shading what the prepass covered
+(`renderer.enablePrepassEarlyDepthTest`, on by default). That took about a
+millisecond out of Sponza's main pass, so the two comparisons the defaults rest
+on were run again on that build: same pin, holding at 705/7001 under load, after
+a throwaway run. A first attempt at the soft series drifted 1.2% and was
+discarded.
+
+| Series | Frame total | Notes |
+| --- | --- | --- |
+| soft, half, filtered vs hard inline (drift 0.17%, 27598 and 25052 samples) | 4.015 -> 4.498 (**+0.483, +12.0%**) | trace 0.179, filter 0.085, resolve 0.100; MainHDRPass +0.185 |
+| hard mask, full res, vs hard inline (drift 0.69%, 27779 and 24360 samples) | 4.023 -> 4.635 (**+0.612, +15.2%**) | trace 0.643, resolve 0.035; MainHDRPass -0.103 |
+
+Both sides of both series run above 160 fps. The soft shadow costs about what it
+did in milliseconds and more as a share, because the frame under it shrank. The
+hard mask now gains less in the main pass than before, -0.103 ms against
+-0.242: early depth testing already stopped the hidden fragments from being
+shaded, which was part of what the mask's guard had been saving. It stays off,
+and the defaults stand.
+
 ## What casts
 
 The cascades' rules, applied to the same draw-item list (`docs/transparency.md`):
