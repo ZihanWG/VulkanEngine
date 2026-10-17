@@ -1,0 +1,88 @@
+#version 460
+
+// One axis of the soft shadow filter's separable blur, run twice: horizontally
+// from the filter image into the trace image, then vertically back. A Gaussian
+// over the texel's own penumbra radius along that axis (sigma =
+// kRtFilterSigmaScale times it, taps out to two sigma), weighted down where a tap
+// is not on the same surface.
+// A symmetric kernel leaves a linear ramp unchanged, so inside a penumbra wider
+// than the kernel the blur removes noise without widening the shadow; only the
+// ramp's ends, where it curves into umbra or lit ground, are softened. See
+// docs/ray_traced_shadows.md#the-filter.
+//
+// Writes the source texel with x replaced by the blurred visibility; y, z and w
+// pass through, so the second axis reads the radius the radius pass wrote for
+// it: z along screen x, y along screen y.
+
+#include "ray_traced_shadows.glsl"
+#include "ray_traced_shadow_filter.glsl"
+
+// The neighbour along this axis on the surface's near side: the one whose
+// reciprocal camera distance differs least, which across a depth edge is the
+// one on this side of it. Reciprocal because that, not the distance itself, is
+// what changes linearly across the screen on a plane.
+float rtReciprocalSlope(ivec2 texel, float reciprocal)
+{
+    float slope = 0.0;
+    float best = 3.0e38;
+    for (int side = -1; side <= 1; side += 2) {
+        ivec2 position = texel + side * pc.direction;
+        if (!rtFilterInside(position)) {
+            continue;
+        }
+        vec4 neighbour = texelFetch(uFilterSource, position, 0);
+        if (neighbour.x < 0.0 || neighbour.w <= 0.0) {
+            continue;
+        }
+        float difference = (1.0 / neighbour.w - reciprocal) * float(side);
+        if (abs(difference) < best) {
+            best = abs(difference);
+            slope = difference;
+        }
+    }
+    return slope;
+}
+
+void main()
+{
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (!rtFilterInside(texel)) {
+        return;
+    }
+    vec4 centre = texelFetch(uFilterSource, texel, 0);
+    vec4 result = centre;
+    float radius = pc.direction.x != 0 ? centre.z : centre.y;
+    float sigma = radius > 0.0 ? max(radius * kRtFilterSigmaScale, kRtFilterMinSigma) : 0.0;
+    int taps = int(ceil(min(2.0 * sigma, kRtFilterMaxRadius)));
+    if (rtFilterUsable(centre) && taps > 0 && centre.w > 0.0) {
+        float inverseTwoSigmaSquared = 0.5 / (sigma * sigma);
+        float reciprocal = 1.0 / centre.w;
+        float slope = rtReciprocalSlope(texel, reciprocal);
+        float tolerance = kRtFilterDistanceTolerance * reciprocal;
+        float weightSum = 1.0;
+        float visibilitySum = centre.x;
+        for (int step = 1; step <= taps; ++step) {
+            float gaussian = exp(-float(step * step) * inverseTwoSigmaSquared);
+            for (int side = -1; side <= 1; side += 2) {
+                ivec2 position = texel + side * step * pc.direction;
+                if (!rtFilterInside(position)) {
+                    continue;
+                }
+                vec4 tap = texelFetch(uFilterSource, position, 0);
+                if (!rtFilterUsable(tap)) {
+                    continue;
+                }
+                // Where the centre's plane, extended this far, would put the
+                // tap: a plane seen at an angle keeps its whole kernel, and a
+                // tap off it -- a step up a wall, the floor past an edge -- does
+                // not.
+                float expected = reciprocal + float(side * step) * slope;
+                float weight = gaussian * exp(-abs(1.0 / tap.w - expected) / tolerance);
+                weightSum += weight;
+                visibilitySum += weight * tap.x;
+            }
+        }
+        result.x = visibilitySum / weightSum;
+    }
+    imageStore(uFilterDestination, texel, result);
+}

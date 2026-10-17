@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <numbers>
+
+#include <glm/geometric.hpp>
 
 namespace ve::renderer {
 
@@ -64,6 +67,79 @@ float rayTracedShadowRayLength(const Aabb& sceneBounds)
     // The margin covers the origin's own offset off its surface, and a scene
     // whose draw items all sit at one point.
     return diagonal * 1.01f + 1.0f;
+}
+
+uint32_t rayTracedShadowMaskGroupCount(uint32_t pixels)
+{
+    return (pixels + kRtMaskLocalSize - 1u) / kRtMaskLocalSize;
+}
+
+float sunConeTangent(float angularDiameterDegrees)
+{
+    if (!(angularDiameterDegrees > 0.0f)) {
+        return 0.0f;
+    }
+    return std::tan(0.5f * angularDiameterDegrees * std::numbers::pi_v<float> / 180.0f);
+}
+
+float rayTracedShadowWorldPerTexel(float cameraDistance, float texelsPerUnit, float distanceStep)
+{
+    const float across = cameraDistance / std::max(texelsPerUnit, 1.0e-6f);
+    return std::sqrt(across * across + distanceStep * distanceStep);
+}
+
+float rayTracedShadowPenumbraRadius(float occluderDistance, float tanSunRadius, float worldPerTexel)
+{
+    if (!(occluderDistance > 0.0f) || !(worldPerTexel > 0.0f)) {
+        return 0.0f;
+    }
+    return std::min(occluderDistance * tanSunRadius / worldPerTexel, kRtFilterMaxRadius);
+}
+
+float rayTracedShadowTexelsPerUnit(float projectionYScale, uint32_t fullHeight, uint32_t traceScale)
+{
+    if (traceScale == 0) {
+        return 0.0f;
+    }
+    return std::abs(projectionYScale) * 0.5f * static_cast<float>(fullHeight) / static_cast<float>(traceScale);
+}
+
+glm::vec2 concentricDiskSample(glm::vec2 u)
+{
+    const glm::vec2 offset = 2.0f * u - 1.0f;
+    if (offset.x == 0.0f && offset.y == 0.0f) {
+        return glm::vec2(0.0f);
+    }
+    constexpr float kQuarterPi = std::numbers::pi_v<float> * 0.25f;
+    constexpr float kHalfPi = std::numbers::pi_v<float> * 0.5f;
+    float radius = 0.0f;
+    float angle = 0.0f;
+    if (std::abs(offset.x) > std::abs(offset.y)) {
+        radius = offset.x;
+        angle = kQuarterPi * (offset.y / offset.x);
+    } else {
+        radius = offset.y;
+        angle = kHalfPi - kQuarterPi * (offset.x / offset.y);
+    }
+    return radius * glm::vec2(std::cos(angle), std::sin(angle));
+}
+
+void orthonormalBasis(const glm::vec3& n, glm::vec3& tangent, glm::vec3& bitangent)
+{
+    const float sign = n.z >= 0.0f ? 1.0f : -1.0f;
+    const float a = -1.0f / (sign + n.z);
+    const float b = n.x * n.y * a;
+    tangent = glm::vec3(1.0f + sign * n.x * n.x * a, sign * b, -sign * n.x);
+    bitangent = glm::vec3(b, sign + n.y * n.y * a, -n.y);
+}
+
+glm::vec3 sunConeDirection(const glm::vec3& towardLight, float tanRadius, glm::vec2 u)
+{
+    glm::vec3 tangent{};
+    glm::vec3 bitangent{};
+    orthonormalBasis(towardLight, tangent, bitangent);
+    const glm::vec2 disk = concentricDiskSample(u) * tanRadius;
+    return glm::normalize(towardLight + disk.x * tangent + disk.y * bitangent);
 }
 
 uint32_t rayTracingPreSkinGroupCount(uint32_t vertexCount)

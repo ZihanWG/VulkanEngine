@@ -1851,6 +1851,21 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // digest decides whether its BLAS is refitted.
     frameRayTracedShadowsActive_ = rayTracedShadowSettings_.enabled && rayQueryShadingAvailable() &&
                                    rayTracingScene_.ready() && !allDrawItems_.empty();
+    // After the prepass decision, which buildMainCullingFrameData makes, and
+    // before the instances: the frame the mask turns on must rebuild.
+    frameRayTracedShadowMaskActive_ = renderer::rayTracedShadowMaskActive(
+        frameRayTracedShadowsActive_,
+        frameDepthPrepassActive_,
+        rayTracedShadowMask_.available(),
+        renderer::rayTracedShadowMaskRequested(rayTracedShadowSettings_.screenSpaceMask,
+                                               rayTracedShadowSettings_.sunAngularDiameterDegrees,
+                                               rayTracedShadowSettings_.debugReferenceSamples));
+    frameRayTracedShadowFilterActive_ =
+        renderer::rayTracedShadowFilterActive(frameRayTracedShadowMaskActive_,
+                                              rayTracedShadowSettings_.filter,
+                                              rayTracedShadowSettings_.sunAngularDiameterDegrees,
+                                              rayTracedShadowSettings_.debugReferenceSamples,
+                                              rayTracedShadowSettings_.debugHitDistance);
     frameRayTracingSceneBuildRequired_ = false;
     if (frameRayTracedShadowsActive_) {
         const ScopedCpuTimer timer = cpuScope(CpuScope::RayTracingInstances);
@@ -1961,6 +1976,8 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameSsrActive_ = false;
     frameGtaoActive_ = false;
     frameRayTracedShadowsActive_ = false;
+    frameRayTracedShadowMaskActive_ = false;
+    frameRayTracedShadowFilterActive_ = false;
     frameRayTracingSceneBuildRequired_ = false;
     frameCascadesReplacedByRayTracing_ = false;
     frameProbeCaptureActive_ = false;
@@ -2517,6 +2534,18 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         if (rayTracedShadowSettings_.debugCompareCascades) {
             flags |= renderer::kRtShadowFlagDebugCompareCascades;
         }
+        if (frameRayTracedShadowMaskActive_) {
+            flags |= renderer::kRtShadowFlagScreenMask;
+        }
+        if (rayTracedShadowSettings_.debugMaskSource) {
+            flags |= renderer::kRtShadowFlagDebugMaskSource;
+        }
+        if (rayTracedShadowSettings_.debugHitDistance && frameRayTracedShadowMaskActive_) {
+            flags |= renderer::kRtShadowFlagDebugHitDistance;
+        }
+        if (rayTracedShadowSettings_.debugPenumbraRadius && frameRayTracedShadowFilterActive_) {
+            flags |= renderer::kRtShadowFlagDebugPenumbraRadius;
+        }
         constants.rayTracedShadow = glm::uvec4(static_cast<uint32_t>(geometryTable & 0xFFFFFFFFull),
                                                static_cast<uint32_t>(geometryTable >> 32),
                                                flags,
@@ -2534,7 +2563,9 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
                                                                  camera_.verticalFovRadians,
                                                                  renderResolution_.extent().height),
                       frameRayTracedShadowRayLength_,
-                      0.0f);
+                      // The sun's disc for the mask's trace; zero is the hard
+                      // shadow, a sun with no extent.
+                      renderer::sunConeTangent(rayTracedShadowSettings_.sunAngularDiameterDegrees));
     }
 
     frameConstantsBuffers_.at(frameIndex).upload(std::as_bytes(std::span<const FrameConstants>(&constants, 1)));
@@ -2608,10 +2639,14 @@ void Renderer::writeRayTracingInstances(uint32_t frameIndex)
         skinned.kind = renderer::RayTracedCasterKind::Opaque;
         rayTracingInstanceInputs_.push_back(skinned);
     }
+    const bool rebuild =
+        rayTracedShadowSettings_.rebuildEveryFrame ||
+        renderer::rayTracedShadowMaskNeedsFreshBuild(frameRayTracedShadowMaskActive_, rayTracingTopLevelBuiltWithMask_);
     frameRayTracingSceneBuildRequired_ =
-        rayTracingScene_
-            .writeInstances(frameIndex, rayTracingInstanceInputs_, rayTracedShadowSettings_.rebuildEveryFrame)
-            .build;
+        rayTracingScene_.writeInstances(frameIndex, rayTracingInstanceInputs_, rebuild).build;
+    if (frameRayTracingSceneBuildRequired_) {
+        rayTracingTopLevelBuiltWithMask_ = frameRayTracedShadowMaskActive_;
+    }
 }
 
 } // namespace ve

@@ -94,6 +94,24 @@ struct FrameConstants {
 const uint kRtShadowFlagEnabled = 1u;
 const uint kRtShadowFlagDebugVisibility = 2u;
 const uint kRtShadowFlagDebugCompareCascades = 4u;
+// The main pass reads the ray-traced shadow mask where it covers the fragment,
+// and traces only where it does not.
+const uint kRtShadowFlagScreenMask = 8u;
+// Colours each pixel by where its visibility came from: the mask (green where it
+// agrees with an inline ray, magenta where it does not) or the inline fallback
+// (blue where the shaded frame traces it, grey where it faces away from the sun
+// and never does). Wins over the other two debug views.
+const uint kRtShadowFlagDebugMaskSource = 16u;
+// The mask's resolve writes how far each pixel's ray went instead of whether it
+// reached the sun, and the main pass shows the term on its own, as with
+// kRtShadowFlagDebugVisibility: dark where the occluder is near, white where
+// nothing was hit.
+const uint kRtShadowFlagDebugHitDistance = 32u;
+// The mask's resolve writes the soft shadow filter's penumbra radius, the
+// larger of its two axes, instead of the visibility, as a fraction of
+// kRtFilterMaxRadius, and the main pass shows the term on its own: black where
+// the filter left the texel alone.
+const uint kRtShadowFlagDebugPenumbraRadius = 64u;
 
 layout(buffer_reference, std430) readonly buffer FrameConstantsBuffer {
     FrameConstants values;

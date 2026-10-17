@@ -117,10 +117,18 @@ RuntimeSettings makeNonDefaultSettings()
     settings.rayTracedShadows.enabled = true;
     settings.rayTracedShadows.renderCascades = true;
     settings.rayTracedShadows.rebuildEveryFrame = true;
+    settings.rayTracedShadows.screenSpaceMask = true;
+    settings.rayTracedShadows.sunAngularDiameterDegrees = 1.25f;
+    settings.rayTracedShadows.halfResolutionMask = false;
+    settings.rayTracedShadows.filter = false;
+    settings.rayTracedShadows.debugPenumbraRadius = true;
+    settings.rayTracedShadows.debugReferenceSamples = 16;
+    settings.rayTracedShadows.debugHitDistance = true;
     settings.rayTracedShadows.normalOffset = 0.05f;
     settings.rayTracedShadows.pixelFootprintOffset = 2.5f;
     settings.rayTracedShadows.debugVisibility = true;
     settings.rayTracedShadows.debugCompareCascades = true;
+    settings.rayTracedShadows.debugMaskSource = true;
 
     settings.debugUi.showRenderGraphPanel = false;
     settings.debugUi.showSceneHierarchyPanel = false;
@@ -166,11 +174,20 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.rayTracedShadows.enabled == original.rayTracedShadows.enabled);
     CHECK(loaded.rayTracedShadows.renderCascades == original.rayTracedShadows.renderCascades);
     CHECK(loaded.rayTracedShadows.rebuildEveryFrame == original.rayTracedShadows.rebuildEveryFrame);
+    CHECK(loaded.rayTracedShadows.screenSpaceMask == original.rayTracedShadows.screenSpaceMask);
+    CHECK(loaded.rayTracedShadows.sunAngularDiameterDegrees ==
+          Catch::Approx(original.rayTracedShadows.sunAngularDiameterDegrees));
+    CHECK(loaded.rayTracedShadows.halfResolutionMask == original.rayTracedShadows.halfResolutionMask);
+    CHECK(loaded.rayTracedShadows.filter == original.rayTracedShadows.filter);
+    CHECK(loaded.rayTracedShadows.debugPenumbraRadius == original.rayTracedShadows.debugPenumbraRadius);
+    CHECK(loaded.rayTracedShadows.debugReferenceSamples == original.rayTracedShadows.debugReferenceSamples);
+    CHECK(loaded.rayTracedShadows.debugHitDistance == original.rayTracedShadows.debugHitDistance);
     CHECK(loaded.rayTracedShadows.normalOffset == Catch::Approx(original.rayTracedShadows.normalOffset));
     CHECK(loaded.rayTracedShadows.pixelFootprintOffset ==
           Catch::Approx(original.rayTracedShadows.pixelFootprintOffset));
     CHECK(loaded.rayTracedShadows.debugVisibility == original.rayTracedShadows.debugVisibility);
     CHECK(loaded.rayTracedShadows.debugCompareCascades == original.rayTracedShadows.debugCompareCascades);
+    CHECK(loaded.rayTracedShadows.debugMaskSource == original.rayTracedShadows.debugMaskSource);
 
     CHECK(loaded.bloom.enabled == original.bloom.enabled);
     CHECK(loaded.bloom.useMipChain == original.bloom.useMipChain);
