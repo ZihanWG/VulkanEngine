@@ -239,6 +239,33 @@ overshading, and the rays ran alongside it. Moved into a pass of their own they 
 the serialisation around a compute pass. For a hard shadow the mask is pure
 cost, which is why it is off by default; it is there for a soft one.
 
+**The soft mask's trace, at full resolution, against the hard inline shadow.**
+A is the default traced path; B samples a 0.53-degree sun -- the real one -- one
+ray per pixel through the trace and resolve, unfiltered. Control drift 0.57%,
+26076 and 23531 samples, after a throwaway run, the pin holding at 802/7001:
+
+```
+python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=true --b-set rayTracedShadows.enabled=true --b-set rayTracedShadows.sunAngularDiameterDegrees=0.53 --b-set rayTracedShadows.halfResolutionMask=false --a-label hard-inline --b-label soft-full --args --scene sponza
+```
+
+| Pass | hard inline | soft, full resolution | Delta |
+| --- | --- | --- | --- |
+| `Frame total` | 4.408 | 4.979 | **+0.571 (+13.0%)** |
+| `RayTracedShadowTrace` | — | 0.560 | soft only |
+| `RayTracedShadowResolve` | — | 0.029 | soft only |
+| `MainHDRPass` | 3.423 | 3.452 | +0.029 (+0.8%) |
+
+A disc sample costs what the centre did: the trace is 0.560 ms against the
+single-pass mask's 0.554, so on Sponza the jittered rays lose no coherence worth
+measuring.
+
+Half resolution against full is **not measured**. Three series failed the drift
+gate at 3.7%, 1.3% and 3.0%, with four- and six-minute cool-downs between them;
+the comparison changes the frame rate, which on this machine has needed a lower
+pin than 800 before. A series whose control moved is not evidence, so none of
+their rows is quoted here. It is re-measured with the filter, where the choice
+is actually made.
+
 ## What casts
 
 The cascades' rules, applied to the same draw-item list (`docs/transparency.md`):
