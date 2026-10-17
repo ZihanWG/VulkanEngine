@@ -38,4 +38,22 @@ const float kRtMaskNotTraced = -1.0;
 // the vertex normal instead. Only the fragment knows which of the two it is.
 const float kRtMaskBackFacingBias = 2.0;
 
+// Most rays a pixel traces in the reference mode (debugReferenceSamples), which
+// averages that many stratified points on the sun's disc with no filter.
+// Mirrors renderer::kRtReferenceMaxSamples, the setting's clamp.
+const uint kRtReferenceMaxSamples = 64u;
+
+// The resolve's depth test for a half-resolution sample: its camera distance may
+// differ from the full-resolution pixel's by this fraction of that distance and
+// still count as the same surface, with weight falling off as exp(-difference /
+// tolerance). Where the samples around a pixel weigh less than kRtResolveMinWeight
+// in total, none of them is about its surface and it traces inline instead.
+const float kRtResolveDistanceTolerance = 0.05;
+const float kRtResolveMinWeight = 0.05;
+
+const float kRtHalfPi = 1.5707963;
+const float kRtQuarterPi = 0.7853982;
+// The golden angle, which spreads the reference mode's samples round the disc.
+const float kRtGoldenAngle = 2.3999632;
+
 #endif // VE_RAY_TRACED_SHADOWS_GLSL

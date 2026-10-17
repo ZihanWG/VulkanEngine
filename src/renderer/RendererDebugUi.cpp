@@ -1066,6 +1066,31 @@ void Renderer::drawShadowsDebugUi()
                     frameRayTracedShadowMaskActive_    ? "traced this frame"
                     : rayTracedShadowMask_.available() ? "available, not traced this frame"
                                                        : "unavailable");
+        if (ImGui::SliderFloat(
+                "Sun angular diameter", &rayTracedShadowSettings_.sunAngularDiameterDegrees, 0.0f, 5.0f, "%.2f deg")) {
+            clampRuntimeSettings();
+        }
+        ImGui::SetItemTooltip("Zero is a sun with no extent and a hard shadow. Above zero each mask texel\n"
+                              "traces towards a point on the sun's disc, and the mask runs whatever the\n"
+                              "checkbox above says. The real sun is about 0.53. Unfiltered for now: one\n"
+                              "ray per texel is noise until the filter exists.");
+        ImGui::Checkbox("Trace the mask at half resolution", &rayTracedShadowSettings_.halfResolutionMask);
+        ImGui::SetItemTooltip("One ray per 2x2 block, upsampled to the pixels on the same surface;\n"
+                              "pixels no sample speaks for trace inline.");
+        int referenceSamples = static_cast<int>(rayTracedShadowSettings_.debugReferenceSamples);
+        if (ImGui::SliderInt("Debug: reference rays per pixel",
+                             &referenceSamples,
+                             0,
+                             static_cast<int>(renderer::kRtReferenceMaxSamples))) {
+            rayTracedShadowSettings_.debugReferenceSamples = static_cast<uint32_t>(referenceSamples);
+            clampRuntimeSettings();
+        }
+        ImGui::SetItemTooltip("Stratified rays over the sun's disc, averaged with no filter, at full\n"
+                              "resolution: the converged soft shadow the single filtered ray is judged\n"
+                              "against. Zero is off. Slow by design.");
+        ImGui::Checkbox("Debug: hit distance", &rayTracedShadowSettings_.debugHitDistance);
+        ImGui::SetItemTooltip("Where the mask traced, how far each ray went before it hit: dark near,\n"
+                              "light far, white where nothing was hit.");
         ImGui::Checkbox("Debug: ray-traced visibility", &rayTracedShadowSettings_.debugVisibility);
         ImGui::Checkbox("Debug: compare with cascades", &rayTracedShadowSettings_.debugCompareCascades);
         ImGui::SetItemTooltip("Red: only the ray finds an occluder. Blue: only the cascades do.\n"

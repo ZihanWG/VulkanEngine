@@ -584,6 +584,16 @@ struct RayTracedShadowSettings {
     // exists for the soft shadow, whose filter needs the visibility before
     // anything is shaded with it.
     bool screenSpaceMask = false;
+    // The sun's angular diameter in degrees, clamped to [0, 5]. Zero is a sun
+    // with no extent and a hard shadow, traced inline unless screenSpaceMask
+    // asks otherwise. Above zero each mask texel traces one ray towards a point
+    // on the sun's disc, and the mask runs whether or not screenSpaceMask is on.
+    // The real sun is about 0.53.
+    float sunAngularDiameterDegrees = 0.0f;
+    // Trace the mask at one pixel per 2x2 block and upsample, a quarter of the
+    // rays; off, one ray per pixel. A penumbra is low-frequency, so half
+    // resolution should lose little of it; contact shadows are what it risks.
+    bool halfResolutionMask = true;
     // Ray origin offset along the surface normal, in world units, at any
     // distance. What keeps a flat surface from hitting itself.
     float normalOffset = 0.02f;
@@ -605,6 +615,14 @@ struct RayTracedShadowSettings {
     // the fragment traces inline, grey where it faces away from the sun and so
     // traces nothing at all. Wins over both views above.
     bool debugMaskSource = false;
+    // The reference: this many stratified rays per pixel towards the sun's
+    // disc, averaged with no filter, at full resolution. Zero is off; clamped
+    // to renderer::kRtReferenceMaxSamples. What the single filtered ray is
+    // judged against, and far too slow to ship.
+    uint32_t debugReferenceSamples = 0;
+    // The mask carries how far each ray went instead of whether it reached the
+    // sun, shown on its own: dark where the occluder is near.
+    bool debugHitDistance = false;
 
     [[nodiscard]] bool operator==(const RayTracedShadowSettings&) const = default;
 };

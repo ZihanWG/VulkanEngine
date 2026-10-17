@@ -1019,7 +1019,7 @@ void main()
         // Where nothing faces the sun the term multiplies zero, so the ray is
         // skipped -- unless a debug view is about to show the term itself.
         bool rayTracedDebug = (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades |
-                                                 kRtShadowFlagDebugMaskSource)) != 0u;
+                                                 kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance)) != 0u;
         if (normalLight > 0.0 || rayTracedDebug) {
             float masked = (rayTracedFlags & kRtShadowFlagScreenMask) != 0u
                                ? rayTracedShadowFromMask(normalize(vNormal), lightDirection)
@@ -1249,7 +1249,7 @@ void main()
     // about the scene.
     if ((rayTracedFlags & kRtShadowFlagEnabled) != 0u &&
         (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades |
-                           kRtShadowFlagDebugMaskSource)) != 0u) {
+                           kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance)) != 0u) {
         vec3 debugColor = vec3(shadowFactor);
 #ifdef VE_RAY_QUERY
         if ((rayTracedFlags & kRtShadowFlagDebugMaskSource) != 0u) {

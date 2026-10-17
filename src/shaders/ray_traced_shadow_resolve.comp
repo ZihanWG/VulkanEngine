@@ -1,0 +1,126 @@
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+
+// The ray-traced shadow mask's resolve: from what RayTracedShadowTrace wrote, the
+// full-resolution mask the main pass reads at set 0 binding 17 -- each pixel's
+// visibility and the depth bits it is about. At traceScale 1 that is the trace's
+// own texel; at 2 it is an upsample that only lets a half-resolution sample speak
+// for a pixel on the same surface. See docs/ray_traced_shadows.md#the-screen-space-mask.
+
+#include "object_frame_data.glsl"
+#include "ray_traced_shadows.glsl"
+
+layout(local_size_x = kRtMaskLocalSize, local_size_y = kRtMaskLocalSize, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uSceneDepth;
+// What the trace wrote: x = visibility (with the not-traced and back-facing
+// encodings), y = hit distance, w = camera distance. Read with texelFetch.
+layout(set = 0, binding = 1) uniform sampler2D uShadowTrace;
+layout(set = 0, binding = 2, rg32ui) uniform writeonly uimage2D uRayTracedShadowMask;
+
+#include "ray_traced_shadow_reconstruct.glsl"
+
+// Mirrors ve::renderer::RayTracedShadowResolvePushConstants.
+layout(push_constant) uniform ResolvePushConstants {
+    FrameConstantsBuffer frameConstants;
+    uint traceScale;
+    uint padding;
+    uvec2 fullExtent;
+    vec2 inverseFullExtent;
+    mat4 inverseViewProjection;
+} pc;
+
+// The visibility without the back-facing mark; the mark is the reader's
+// business, and an average of marked and unmarked values would mean neither.
+float rtUnmarked(float visibility)
+{
+    return visibility >= kRtMaskBackFacingBias ? visibility - kRtMaskBackFacingBias : visibility;
+}
+
+// The hit-distance debug view: dark where the occluder is near, light where it
+// is far, white where the ray hit nothing, on a log scale up to the ray length.
+float rtHitDistanceShade(float hitDistance)
+{
+    if (hitDistance < 0.0) {
+        return 1.0;
+    }
+    float rayLength = max(pc.frameConstants.values.rayTracedShadowParams.z, 1.0);
+    return clamp(log2(1.0 + hitDistance) / log2(1.0 + rayLength), 0.0, 1.0);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(gl_GlobalInvocationID.xy, pc.fullExtent))) {
+        return;
+    }
+
+    float depth = texelFetch(uSceneDepth, pixel, 0).r;
+    bool debugHitDistance = (pc.frameConstants.values.rayTracedShadow.z & kRtShadowFlagDebugHitDistance) != 0u;
+    float visibility = kRtMaskNotTraced;
+    if (depth < 1.0 && pc.traceScale <= 1u) {
+        // The trace's own texel, marks and all: exactly what one full-
+        // resolution trace says about this pixel.
+        vec4 texel = texelFetch(uShadowTrace, pixel, 0);
+        visibility = texel.x;
+        if (debugHitDistance && visibility >= 0.0) {
+            visibility = rtHitDistanceShade(texel.y);
+        }
+    } else if (depth < 1.0) {
+        RtDepthGrid grid;
+        grid.inverseViewProjection = pc.inverseViewProjection;
+        grid.inverseExtent = pc.inverseFullExtent;
+        grid.extent = ivec2(pc.fullExtent);
+        vec3 cameraPosition = pc.frameConstants.values.cameraPosition.xyz;
+        vec3 position = rtWorldPositionAt(grid, pixel, depth);
+        float distanceToCamera = distance(position, cameraPosition);
+
+        // The four trace texels around this pixel, bilinearly: texel t stands
+        // for full-resolution pixel t * traceScale, so an even pixel lands on one
+        // texel exactly and an odd one halfway between two. Each counts only as
+        // far as its surface's camera distance agrees with this pixel's.
+        ivec2 traceExtent = (ivec2(pc.fullExtent) + int(pc.traceScale) - 1) / int(pc.traceScale);
+        vec2 tracePosition = vec2(pixel) / float(pc.traceScale);
+        ivec2 base = ivec2(floor(tracePosition));
+        vec2 fraction = tracePosition - vec2(base);
+        float weightSum = 0.0;
+        float visibilitySum = 0.0;
+        float hitSum = 0.0;
+        float hitWeight = 0.0;
+        for (int index = 0; index < 4; ++index) {
+            ivec2 offset = ivec2(index & 1, index >> 1);
+            ivec2 tracePixel = base + offset;
+            if (any(greaterThanEqual(tracePixel, traceExtent))) {
+                continue;
+            }
+            vec4 texel = texelFetch(uShadowTrace, tracePixel, 0);
+            if (texel.x < 0.0) {
+                continue;
+            }
+            vec2 bilinear = mix(vec2(1.0) - fraction, fraction, vec2(offset));
+            float tolerance = kRtResolveDistanceTolerance * distanceToCamera;
+            float weight = bilinear.x * bilinear.y * exp(-abs(texel.w - distanceToCamera) / max(tolerance, 1e-4));
+            weightSum += weight;
+            visibilitySum += weight * rtUnmarked(texel.x);
+            if (texel.y >= 0.0) {
+                hitSum += weight * texel.y;
+                hitWeight += weight;
+            }
+        }
+
+        vec3 normal;
+        if (weightSum >= kRtResolveMinWeight &&
+            rtSurfaceNormal(grid, pixel, depth, position, cameraPosition, normal)) {
+            visibility = visibilitySum / weightSum;
+            if (debugHitDistance) {
+                visibility = rtHitDistanceShade(hitWeight > 0.0 ? hitSum / hitWeight : -1.0);
+            } else if (dot(normal, normalize(-pc.frameConstants.values.lightDirection.xyz)) < 0.0) {
+                // This pixel's own mark, from its own normal: a sample from the
+                // next pixel over may sit on the other side of a terminator.
+                visibility += kRtMaskBackFacingBias;
+            }
+        }
+    }
+    imageStore(uRayTracedShadowMask, pixel, uvec4(floatBitsToUint(visibility), floatBitsToUint(depth), 0u, 0u));
+}

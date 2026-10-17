@@ -102,6 +102,11 @@ const uint kRtShadowFlagScreenMask = 8u;
 // (blue where the shaded frame traces it, grey where it faces away from the sun
 // and never does). Wins over the other two debug views.
 const uint kRtShadowFlagDebugMaskSource = 16u;
+// The mask's resolve writes how far each pixel's ray went instead of whether it
+// reached the sun, and the main pass shows the term on its own, as with
+// kRtShadowFlagDebugVisibility: dark where the occluder is near, white where
+// nothing was hit.
+const uint kRtShadowFlagDebugHitDistance = 32u;
 
 layout(buffer_reference, std430) readonly buffer FrameConstantsBuffer {
     FrameConstants values;

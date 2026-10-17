@@ -117,6 +117,10 @@ RuntimeSettings makeNonDefaultSettings()
     settings.rayTracedShadows.renderCascades = true;
     settings.rayTracedShadows.rebuildEveryFrame = true;
     settings.rayTracedShadows.screenSpaceMask = true;
+    settings.rayTracedShadows.sunAngularDiameterDegrees = 1.25f;
+    settings.rayTracedShadows.halfResolutionMask = false;
+    settings.rayTracedShadows.debugReferenceSamples = 16;
+    settings.rayTracedShadows.debugHitDistance = true;
     settings.rayTracedShadows.normalOffset = 0.05f;
     settings.rayTracedShadows.pixelFootprintOffset = 2.5f;
     settings.rayTracedShadows.debugVisibility = true;
@@ -168,6 +172,11 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.rayTracedShadows.renderCascades == original.rayTracedShadows.renderCascades);
     CHECK(loaded.rayTracedShadows.rebuildEveryFrame == original.rayTracedShadows.rebuildEveryFrame);
     CHECK(loaded.rayTracedShadows.screenSpaceMask == original.rayTracedShadows.screenSpaceMask);
+    CHECK(loaded.rayTracedShadows.sunAngularDiameterDegrees ==
+          Catch::Approx(original.rayTracedShadows.sunAngularDiameterDegrees));
+    CHECK(loaded.rayTracedShadows.halfResolutionMask == original.rayTracedShadows.halfResolutionMask);
+    CHECK(loaded.rayTracedShadows.debugReferenceSamples == original.rayTracedShadows.debugReferenceSamples);
+    CHECK(loaded.rayTracedShadows.debugHitDistance == original.rayTracedShadows.debugHitDistance);
     CHECK(loaded.rayTracedShadows.normalOffset == Catch::Approx(original.rayTracedShadows.normalOffset));
     CHECK(loaded.rayTracedShadows.pixelFootprintOffset ==
           Catch::Approx(original.rayTracedShadows.pixelFootprintOffset));

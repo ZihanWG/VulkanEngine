@@ -449,7 +449,7 @@ sequenced by the graph from end to end.
 | `recordVolumetricFogPass` | `VolumetricFogPass` |
 | `recordIrradianceProbePasses` | `ProbeCapture` |
 | `recordRayTracingSceneBuild` | `RayTracingSceneBuild` |
-| `recordMainPassGeometry` | `MainHDRPass`; it also records `DepthPrepass` and `RayTracedShadowMask` ahead of it |
+| `recordMainPassGeometry` | `MainHDRPass`; it also records `DepthPrepass`, `RayTracedShadowTrace` and `RayTracedShadowResolve` ahead of it |
 | the seven post-process recorders | `DepthPyramidPass` … `CompositePass` |
 | screenshot copies and the ImGui overlay | `ImGuiPass` |
 

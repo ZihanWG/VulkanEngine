@@ -1,3 +1,3 @@
 {
-  "rayTracedShadows": { "enabled": true, "screenSpaceMask": true, "debugMaskSource": true }
+  "rayTracedShadows": { "enabled": true, "screenSpaceMask": true, "halfResolutionMask": false, "debugMaskSource": true, "debugHitDistance": true, "debugReferenceSamples": 4 }
 }

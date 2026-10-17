@@ -527,8 +527,9 @@ void Renderer::createRayTracedShadowMaskPipeline()
         return;
     }
     try {
-        rayTracedShadowMask_.createPipeline(shaderPath("ray_traced_shadow_mask.comp.spv"),
-                                            bindlessTextureHeap_.descriptorSetLayout());
+        rayTracedShadowMask_.createPipelines(shaderPath("ray_traced_shadow_trace.comp.spv"),
+                                             shaderPath("ray_traced_shadow_resolve.comp.spv"),
+                                             bindlessTextureHeap_.descriptorSetLayout());
     } catch (const std::exception& error) {
         Logger::warn(std::string("Ray-traced shadow mask unavailable; every fragment traces inline: ") + error.what());
     }

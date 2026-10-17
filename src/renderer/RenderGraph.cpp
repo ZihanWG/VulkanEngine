@@ -211,8 +211,10 @@ const char* renderPassTypeName(RenderPassType type)
     switch (type) {
     case RenderPassType::RayTracingSceneBuild:
         return "Ray Tracing Scene Build";
-    case RenderPassType::RayTracedShadowMask:
-        return "Ray Traced Shadow Mask";
+    case RenderPassType::RayTracedShadowTrace:
+        return "Ray Traced Shadow Trace";
+    case RenderPassType::RayTracedShadowResolve:
+        return "Ray Traced Shadow Resolve";
     case RenderPassType::Shadow:
         return "Shadow";
     case RenderPassType::ShadowGpuCulling:
@@ -625,6 +627,9 @@ void RenderGraph::importFrameBuffers()
     if (frame_.resources.rayTracedShadowMask.image != VK_NULL_HANDLE) {
         frame_.rayTracedShadowMask = importTexture(frame_.resources.rayTracedShadowMask);
     }
+    if (frame_.resources.rayTracedShadowMaskEnabled && frame_.resources.rayTracedShadowTrace.image != VK_NULL_HANDLE) {
+        frame_.rayTracedShadowTrace = importTexture(frame_.resources.rayTracedShadowTrace);
+    }
 }
 
 void RenderGraph::beginVsmPageMarkPass()
@@ -973,26 +978,51 @@ void RenderGraph::declareRayTracedShadowMaskRead(RenderGraphBuilder& builder)
     }
 }
 
-void RenderGraph::beginRayTracedShadowMaskPass()
+void RenderGraph::beginRayTracedShadowTracePass()
 {
-    requireFrameActive("RenderGraph::beginRayTracedShadowMaskPass");
+    requireFrameActive("RenderGraph::beginRayTracedShadowTracePass");
     if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginRayTracedShadowMaskPass called while another pass is active.");
+        throw std::logic_error("RenderGraph::beginRayTracedShadowTracePass called while another pass is active.");
     }
-    if (!beginDeclaredPass(frame_.passIndices.rayTracedShadowMask)) {
+    if (!beginDeclaredPass(frame_.passIndices.rayTracedShadowTrace)) {
         throw std::logic_error(
-            "RenderGraph::beginRayTracedShadowMaskPass was culled but the renderer attempted to record it.");
+            "RenderGraph::beginRayTracedShadowTracePass was culled but the renderer attempted to record it.");
     }
 
-    activePass_ = ActivePass::RayTracedShadowMask;
+    activePass_ = ActivePass::RayTracedShadowTrace;
 }
 
-void RenderGraph::endRayTracedShadowMaskPass()
+void RenderGraph::endRayTracedShadowTracePass()
 {
-    requireFrameActive("RenderGraph::endRayTracedShadowMaskPass");
-    if (activePass_ != ActivePass::RayTracedShadowMask) {
+    requireFrameActive("RenderGraph::endRayTracedShadowTracePass");
+    if (activePass_ != ActivePass::RayTracedShadowTrace) {
         throw std::logic_error(
-            "RenderGraph::endRayTracedShadowMaskPass called without an active ray-traced shadow mask pass.");
+            "RenderGraph::endRayTracedShadowTracePass called without an active ray-traced shadow trace pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginRayTracedShadowResolvePass()
+{
+    requireFrameActive("RenderGraph::beginRayTracedShadowResolvePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginRayTracedShadowResolvePass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.rayTracedShadowResolve)) {
+        throw std::logic_error(
+            "RenderGraph::beginRayTracedShadowResolvePass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::RayTracedShadowResolve;
+}
+
+void RenderGraph::endRayTracedShadowResolvePass()
+{
+    requireFrameActive("RenderGraph::endRayTracedShadowResolvePass");
+    if (activePass_ != ActivePass::RayTracedShadowResolve) {
+        throw std::logic_error(
+            "RenderGraph::endRayTracedShadowResolvePass called without an active ray-traced shadow resolve pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -2495,29 +2525,45 @@ void RenderGraph::declareGeometryPasses()
                     });
     }
 
-    // After the prepass whose depth it traces from and the build whose structure
-    // it traces against, before the main pass that reads what it writes. The
-    // renderer records it on exactly this condition; the mask and the TLAS
+    // After the prepass whose depth they trace from and the build whose structure
+    // they trace against, before the main pass that reads what they write. The
+    // renderer records both on exactly this condition; the images and the TLAS
     // handles are valid whenever the flag is set, since the flag implies a frame
-    // that traces on a device whose mask image exists.
+    // that traces on a device whose mask is available.
     if (frame_.resources.rayTracedShadowMaskEnabled && frame_.rayTracedShadowMask.valid() &&
-        frame_.rayTracingTopLevel.valid()) {
-        frame_.passIndices.rayTracedShadowMask = addPass(
-            "RayTracedShadowMask",
-            RenderPassType::RayTracedShadowMask,
+        frame_.rayTracedShadowTrace.valid() && frame_.rayTracingTopLevel.valid()) {
+        frame_.passIndices.rayTracedShadowTrace = addPass(
+            "RayTracedShadowTrace",
+            RenderPassType::RayTracedShadowTrace,
             RenderPassExecutionType::Compute,
             false,
             [this](RenderGraphBuilder& builder) {
                 builder.readTexture(frame_.mainDepth,
                                     RGAccess::ShaderRead,
-                                    "Reconstructs each pixel's surface from the depth the prepass wrote.");
+                                    "Reconstructs each traced pixel's surface from the depth the prepass wrote.");
                 builder.readBuffer(frame_.rayTracingTopLevel,
                                    RGAccess::AccelerationStructureComputeRead,
-                                   "Traces one sun shadow ray per pixel against the top-level acceleration structure.");
+                                   "Traces sun shadow rays against the top-level acceleration structure.");
+                frame_.rayTracedShadowTrace =
+                    builder.writeTexture(frame_.rayTracedShadowTrace,
+                                         RGAccess::StorageImageWrite,
+                                         "Writes each trace texel's visibility, hit distance and camera distance.");
+            });
+        frame_.passIndices.rayTracedShadowResolve = addPass(
+            "RayTracedShadowResolve",
+            RenderPassType::RayTracedShadowResolve,
+            RenderPassExecutionType::Compute,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.mainDepth,
+                                    RGAccess::ShaderRead,
+                                    "Matches each full-resolution pixel to the trace texels about its surface.");
+                builder.readTexture(
+                    frame_.rayTracedShadowTrace, RGAccess::ShaderRead, "Reads the trace texels around each pixel.");
                 frame_.rayTracedShadowMask =
                     builder.writeTexture(frame_.rayTracedShadowMask,
                                          RGAccess::StorageImageWrite,
-                                         "Writes each pixel's sun visibility and the depth it was traced at.");
+                                         "Writes each pixel's sun visibility and the depth it is about.");
             });
     }
 

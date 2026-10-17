@@ -480,7 +480,8 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/simple.frag"
     "${SHADER_SOURCE_DIR}/simple_bindless.frag"
     "${SHADER_SOURCE_DIR}/skin_positions.comp"
-    "${SHADER_SOURCE_DIR}/ray_traced_shadow_mask.comp"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_trace.comp"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_resolve.comp"
     "${SHADER_SOURCE_DIR}/skybox.vert"
     "${SHADER_SOURCE_DIR}/skybox.frag"
     "${SHADER_SOURCE_DIR}/depth_prepass.vert"
@@ -561,6 +562,7 @@ set(SHADER_INCLUDES
     "${SHADER_SOURCE_DIR}/lod_transition.glsl"
     "${SHADER_SOURCE_DIR}/ray_traced_shadows.glsl"
     "${SHADER_SOURCE_DIR}/ray_traced_shadow_trace.glsl"
+    "${SHADER_SOURCE_DIR}/ray_traced_shadow_reconstruct.glsl"
 )
 
 if(GLSLC_EXECUTABLE)

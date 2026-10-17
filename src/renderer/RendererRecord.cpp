@@ -779,6 +779,28 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     }
 
+    // The trace image, only when the passes can run at all; the graph imports it
+    // only on a frame the mask traces.
+    renderer::RenderGraphImageResource rayTracedShadowTraceResource{};
+    if (rayTracedShadowMask_.available()) {
+        const VkExtent3D traceExtent = rayTracedShadowMask_.traceImage().extent();
+        rayTracedShadowTraceResource = renderer::RenderGraphImageResource{
+            .name = "RayTracedShadowTrace",
+            .image = rayTracedShadowMask_.traceImage().image(),
+            .imageView = rayTracedShadowMask_.traceImage().imageView(),
+            .extent = VkExtent2D{traceExtent.width, traceExtent.height},
+            .layout = rayTracedShadowMask_.traceLayoutPtr(),
+            .format = renderer::RayTracedShadowMask::kTraceFormat,
+            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .clearValue = VkClearValue{},
+            .hasClearValue = false,
+            .imported = true,
+        };
+    }
+
     renderer::RenderGraphImageResource gtaoRawResource{};
     if (gtao_.available()) {
         // Raw AO is half resolution; import its actual extent, not the scene's.
@@ -1138,6 +1160,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                                 true},
         .rayTracedShadowMask = rayTracedShadowMaskResource,
+        .rayTracedShadowTrace = rayTracedShadowTraceResource,
         .taaEnabled = postProcess_.isTaaActive(),
         .twoPhaseOcclusionEnabled = frameTwoPhaseOcclusionActive_,
         .depthPrepassEnabled = frameDepthPrepassActive_,
@@ -2951,23 +2974,51 @@ void Renderer::recordRayTracedShadowMask(VkCommandBuffer commandBuffer)
         return;
     }
 
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "RayTracedShadowMask");
-    rhi::debug::beginLabel(commandBuffer, "RayTracedShadowMask");
-    renderGraph_.beginRayTracedShadowMaskPass();
-
     const VkExtent2D extent = renderResolution_.extent();
-    renderer::RayTracedShadowMaskPushConstants push{};
-    push.frameConstants = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
-    push.objectFrameData = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
-    push.extent = glm::uvec2(extent.width, extent.height);
-    push.inverseExtent = glm::vec2(1.0f / static_cast<float>(extent.width), 1.0f / static_cast<float>(extent.height));
+    const glm::uvec2 fullExtent(extent.width, extent.height);
+    const glm::vec2 inverseFullExtent(1.0f / static_cast<float>(extent.width),
+                                      1.0f / static_cast<float>(extent.height));
     // The matrix the prepass rasterised with, jitter included, so a pixel centre
     // reconstructs to the surface point the main pass shades at that pixel.
-    push.inverseViewProjection = glm::inverse(frameJitteredViewProjection_);
-    rayTracedShadowMask_.record(commandBuffer, push, bindlessTextureHeap_.descriptorSet());
+    const glm::mat4 inverseViewProjection = glm::inverse(frameJitteredViewProjection_);
+    const uint32_t traceScale = renderer::rayTracedShadowTraceScale(rayTracedShadowSettings_.halfResolutionMask,
+                                                                    rayTracedShadowSettings_.debugReferenceSamples);
+    const VkDeviceAddress frameConstantsAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
 
-    renderGraph_.endRayTracedShadowMaskPass();
-    rhi::debug::endLabel(commandBuffer);
+    {
+        const renderer::GpuProfileScope profileScope(
+            gpuProfiler_, currentFrame_, commandBuffer, "RayTracedShadowTrace");
+        rhi::debug::beginLabel(commandBuffer, "RayTracedShadowTrace");
+        renderGraph_.beginRayTracedShadowTracePass();
+        renderer::RayTracedShadowTracePushConstants push{};
+        push.frameConstants = frameConstantsAddress;
+        push.objectFrameData = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+        push.inverseViewProjection = inverseViewProjection;
+        push.fullExtent = fullExtent;
+        push.inverseFullExtent = inverseFullExtent;
+        push.traceExtent = glm::uvec2(renderer::rayTracedShadowTraceExtent(fullExtent.x, traceScale),
+                                      renderer::rayTracedShadowTraceExtent(fullExtent.y, traceScale));
+        push.traceScale = traceScale;
+        push.referenceSamples = rayTracedShadowSettings_.debugReferenceSamples;
+        rayTracedShadowMask_.recordTrace(commandBuffer, push, bindlessTextureHeap_.descriptorSet());
+        renderGraph_.endRayTracedShadowTracePass();
+        rhi::debug::endLabel(commandBuffer);
+    }
+    {
+        const renderer::GpuProfileScope profileScope(
+            gpuProfiler_, currentFrame_, commandBuffer, "RayTracedShadowResolve");
+        rhi::debug::beginLabel(commandBuffer, "RayTracedShadowResolve");
+        renderGraph_.beginRayTracedShadowResolvePass();
+        renderer::RayTracedShadowResolvePushConstants push{};
+        push.frameConstants = frameConstantsAddress;
+        push.traceScale = traceScale;
+        push.fullExtent = fullExtent;
+        push.inverseFullExtent = inverseFullExtent;
+        push.inverseViewProjection = inverseViewProjection;
+        rayTracedShadowMask_.recordResolve(commandBuffer, push);
+        renderGraph_.endRayTracedShadowResolvePass();
+        rhi::debug::endLabel(commandBuffer);
+    }
 }
 
 void Renderer::recordRayTracingSceneBuild(VkCommandBuffer commandBuffer)

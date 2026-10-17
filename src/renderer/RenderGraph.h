@@ -99,7 +99,8 @@ enum class RGAccess {
 
 enum class RenderPassType {
     RayTracingSceneBuild,
-    RayTracedShadowMask,
+    RayTracedShadowTrace,
+    RayTracedShadowResolve,
     Shadow,
     ShadowGpuCulling,
     VsmPageMark,
@@ -527,6 +528,9 @@ struct RenderGraphFrameResources {
     // not: every pass that runs the main fragment shader declares a read of it,
     // so the image is always in the layout set 0 binding 17 records.
     RenderGraphImageResource rayTracedShadowMask;
+    // What the mask's trace writes and its resolve reads. Imported only on a
+    // frame the mask traces, which is the only time anything touches it.
+    RenderGraphImageResource rayTracedShadowTrace;
     bool taaEnabled = false;
     // Declares the two-phase occlusion passes (mid-frame depth pyramid, cull
     // phase 2, second main HDR pass) for this frame.
@@ -576,8 +580,10 @@ struct RenderGraphFrameResources {
     // first touched by a read, which needs no barrier, and the build it reads
     // is ordered by the barrier recorded on the frame that built it.
     bool rayTracingSceneBuildEnabled = false;
-    // Declares RayTracedShadowMask between DepthPrepass and MainHDRPass: it reads
-    // the prepass's depth and the TLAS, and writes the mask the main pass reads.
+    // Declares RayTracedShadowTrace and RayTracedShadowResolve between
+    // DepthPrepass and MainHDRPass: the trace reads the prepass's depth and the
+    // TLAS and writes the trace image, the resolve reads both images' worth and
+    // writes the mask the main pass reads.
     bool rayTracedShadowMaskEnabled = false;
     // Declares the probe-atlas update compute pass for this frame. The two
     // atlases are imported and read by the main pass whenever they exist, the
@@ -794,11 +800,13 @@ public:
     // work in the dispatch sense, and recorded outside any rendering scope.
     void beginRayTracingSceneBuildPass();
     void endRayTracingSceneBuildPass();
-    // The ray-traced shadow mask's dispatch, recorded between the depth prepass
-    // and the main pass inside the main-pass recorder, outside any rendering
-    // scope.
-    void beginRayTracedShadowMaskPass();
-    void endRayTracedShadowMaskPass();
+    // The ray-traced shadow mask's two dispatches, recorded between the depth
+    // prepass and the main pass inside the main-pass recorder, outside any
+    // rendering scope.
+    void beginRayTracedShadowTracePass();
+    void endRayTracedShadowTracePass();
+    void beginRayTracedShadowResolvePass();
+    void endRayTracedShadowResolvePass();
     // The GPU shadow caster cull. Recorded inside the cascade shadow recorder,
     // ahead of the first cascade, which is why its declaration sits immediately
     // before CSMShadowPass: a declared order that disagrees with the recorded one
@@ -1004,7 +1012,8 @@ private:
     enum class ActivePass {
         None,
         RayTracingSceneBuild,
-        RayTracedShadowMask,
+        RayTracedShadowTrace,
+        RayTracedShadowResolve,
         VsmPageMark,
         VsmPage,
         Shadow,
@@ -1097,7 +1106,8 @@ private:
 
     struct BuiltinPassIndices {
         uint32_t rayTracingSceneBuild = kInvalidRenderGraphHandle;
-        uint32_t rayTracedShadowMask = kInvalidRenderGraphHandle;
+        uint32_t rayTracedShadowTrace = kInvalidRenderGraphHandle;
+        uint32_t rayTracedShadowResolve = kInvalidRenderGraphHandle;
         uint32_t vsmPageMark = kInvalidRenderGraphHandle;
         uint32_t vsmPage = kInvalidRenderGraphHandle;
         uint32_t shadow = kInvalidRenderGraphHandle;
@@ -1155,6 +1165,7 @@ private:
         RGTextureHandle ambientOcclusion{};
         RGTextureHandle ambientOcclusionRaw{};
         RGTextureHandle rayTracedShadowMask{};
+        RGTextureHandle rayTracedShadowTrace{};
         RGTextureHandle ssrSceneColorCopy{};
         RGTextureHandle taaHistoryRead{};
         RGTextureHandle taaHistoryWrite{};

@@ -394,6 +394,7 @@ jobs:
           ray-traced-shadows-debug-views|--settings config/ci/ray-traced-shadows-debug-views.json
           ray-traced-shadows-declined|--settings config/ci/ray-traced-shadows.json --disable-ray-query
           ray-traced-shadows-mask|--settings config/ci/ray-traced-shadows-mask.json
+          ray-traced-shadows-soft|--settings config/ci/ray-traced-shadows-soft.json
           ray-traced-shadows-frozen|--settings config/ci/ray-traced-shadows.json --freeze-animation
           scene-sunlit|--scene sunlit
           scene-cornell|--scene cornell

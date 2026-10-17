@@ -1853,10 +1853,13 @@ void Renderer::updateFrameData(uint32_t frameIndex)
                                    rayTracingScene_.ready() && !allDrawItems_.empty();
     // After the prepass decision, which buildMainCullingFrameData makes, and
     // before the instances: the frame the mask turns on must rebuild.
-    frameRayTracedShadowMaskActive_ = renderer::rayTracedShadowMaskActive(frameRayTracedShadowsActive_,
-                                                                          frameDepthPrepassActive_,
-                                                                          rayTracedShadowMask_.available(),
-                                                                          rayTracedShadowSettings_.screenSpaceMask);
+    frameRayTracedShadowMaskActive_ = renderer::rayTracedShadowMaskActive(
+        frameRayTracedShadowsActive_,
+        frameDepthPrepassActive_,
+        rayTracedShadowMask_.available(),
+        renderer::rayTracedShadowMaskRequested(rayTracedShadowSettings_.screenSpaceMask,
+                                               rayTracedShadowSettings_.sunAngularDiameterDegrees,
+                                               rayTracedShadowSettings_.debugReferenceSamples));
     frameRayTracingSceneBuildRequired_ = false;
     if (frameRayTracedShadowsActive_) {
         const ScopedCpuTimer timer = cpuScope(CpuScope::RayTracingInstances);
@@ -2510,6 +2513,9 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         if (rayTracedShadowSettings_.debugMaskSource) {
             flags |= renderer::kRtShadowFlagDebugMaskSource;
         }
+        if (rayTracedShadowSettings_.debugHitDistance && frameRayTracedShadowMaskActive_) {
+            flags |= renderer::kRtShadowFlagDebugHitDistance;
+        }
         constants.rayTracedShadow = glm::uvec4(static_cast<uint32_t>(geometryTable & 0xFFFFFFFFull),
                                                static_cast<uint32_t>(geometryTable >> 32),
                                                flags,
@@ -2527,7 +2533,9 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
                                                                  camera_.verticalFovRadians,
                                                                  renderResolution_.extent().height),
                       frameRayTracedShadowRayLength_,
-                      0.0f);
+                      // The sun's disc for the mask's trace; zero is the hard
+                      // shadow, a sun with no extent.
+                      renderer::sunConeTangent(rayTracedShadowSettings_.sunAngularDiameterDegrees));
     }
 
     frameConstantsBuffers_.at(frameIndex).upload(std::as_bytes(std::span<const FrameConstants>(&constants, 1)));
