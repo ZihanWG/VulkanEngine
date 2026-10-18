@@ -121,7 +121,7 @@ RuntimeSettings makeNonDefaultSettings()
     settings.rayTracedShadows.sunAngularDiameterDegrees = 1.25f;
     settings.rayTracedShadows.halfResolutionMask = false;
     settings.rayTracedShadows.filter = false;
-    settings.rayTracedShadows.temporalAccumulation = true;
+    settings.rayTracedShadows.temporalAccumulation = false;
     settings.rayTracedShadows.temporalMaxFrames = 24;
     settings.rayTracedShadows.debugHistoryLength = true;
     settings.rayTracedShadows.debugPenumbraRadius = true;

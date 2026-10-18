@@ -426,6 +426,31 @@ hard mask now gains less in the main pass than before, -0.103 ms against
 shaded, which was part of what the mask's guard had been saving. It stays off,
 and the defaults stand.
 
+**Temporal accumulation's cost.** Soft, half resolution and filtered, with and
+without accumulation, at the same pin, holding at 705/7001 under load, after a
+throwaway run. A first series drifted 1.1% and was discarded. Control drift
+0.86%, 24882 and 24752 samples:
+
+```
+python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=true --a-set rayTracedShadows.sunAngularDiameterDegrees=0.53 --b-set rayTracedShadows.enabled=true --b-set rayTracedShadows.sunAngularDiameterDegrees=0.53 --b-set rayTracedShadows.temporalAccumulation=true --a-label soft-half-filtered --b-label soft-half-temporal --args --scene sponza
+```
+
+| Pass | filter only | accumulating | Delta |
+| --- | --- | --- | --- |
+| `Frame total` | 4.530 | 4.551 | +0.021, inside the noise floor: not measured |
+| `RayTracedShadowTemporal` | — | 0.037 | accumulating only |
+| `RayTracedShadowFilter` | 0.085 | 0.121 | +0.036: the radius pass reads the history |
+| `RayTracedShadowResolve` | 0.124 | 0.096 | -0.028 |
+| `MainHDRPass` | 3.159 | 3.131 | -0.028 |
+
+The two new costs add 0.073 ms; the resolve and the main pass moving the other
+way by as much is work shifting across pass boundaries, not something
+accumulation does to them, and the frame totals' medians agree at about
++0.02 ms. So `temporalAccumulation` is on by default: it halves the contact
+shadows' error for less than the frame total can resolve, and it only runs where
+a soft shadow does. `sunAngularDiameterDegrees` stays 0, so a soft shadow, at
++0.483 ms, is still asked for.
+
 ## What casts
 
 The cascades' rules, applied to the same draw-item list (`docs/transparency.md`):
@@ -873,7 +898,8 @@ at contacts went from 8 to 124 and from 16 to 130 pixels. Both rejected.
 ## Temporal accumulation
 
 The filter smooths one frame's rays. `rayTracedShadows.temporalAccumulation`
-(off by default until P4.3b measures its cost) adds a pass ahead of it,
+(on by default, at a cost the frame total cannot resolve: Cost) adds a pass ahead
+of it,
 `RayTracedShadowTemporal`, that keeps each trace texel's running mean over the
 frames its surface has been seen; the radius pass reads that mean in place of
 the single ray, and the filter blurs what noise is left. The sampling noise
@@ -997,7 +1023,7 @@ better nor worse.
 | `rayTracedShadows.sunAngularDiameterDegrees` | 0 | degrees, clamped to [0, 5]; zero is the hard shadow, above zero samples the sun's disc and turns the mask on. The real sun is about 0.53 |
 | `rayTracedShadows.halfResolutionMask` | true | trace one pixel per 2x2 block and upsample |
 | `rayTracedShadows.filter` | true | filter a soft shadow's mask: a penumbra radius per screen axis from the hit distances around each texel, then a separable bilateral blur. Never the hard shadow or the reference |
-| `rayTracedShadows.temporalAccumulation` | false | accumulate the mask over frames ahead of the filter, reprojected through the camera's motion and clamped to this frame's rays; the sampling noise moves while it is on. Only with the filter |
+| `rayTracedShadows.temporalAccumulation` | true | accumulate the mask over frames ahead of the filter, reprojected through the camera's motion and clamped to this frame's rays; the sampling noise moves while it is on. Only with the filter |
 | `rayTracedShadows.temporalMaxFrames` | 16 | the longest history a texel keeps, clamped to [1, 64] |
 | `rayTracedShadows.normalOffset` | 0.02 | world units, clamped to [0, 1] |
 | `rayTracedShadows.pixelFootprintOffset` | 1.0 | pixels, clamped to [0, 16] |
@@ -1014,8 +1040,9 @@ views, `renderCascades` and `rebuildEveryFrame`, enabled on a still scene
 (`--freeze-animation`, which keeps the TLAS), enabled with the mask at full
 resolution and its source view, the hit-distance view and a four-ray reference
 on, enabled with a one-degree sun at half resolution under the penumbra-radius
-view, the same sun with the filter off, the same sun accumulating under the
-history-length view, and enabled with `--disable-ray-query`
+view and not accumulating, the same sun with the filter off, the same sun
+accumulating under the history-length view, and enabled with
+`--disable-ray-query`
 (`config/ci/`). Mesa's lavapipe exposes all three extensions, so the first two
 run the traced path in CI, under validation.
 

@@ -136,7 +136,7 @@
         "sunAngularDiameterDegrees": 0.0,
         "halfResolutionMask": true,
         "filter": true,
-        "temporalAccumulation": false,
+        "temporalAccumulation": true,
         "temporalMaxFrames": 16,
         "normalOffset": 0.02,
         "pixelFootprintOffset": 1.0,

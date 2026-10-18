@@ -291,9 +291,9 @@ TEST_CASE("Frames accumulate only inside the filter, and history survives only a
     changed.height = 360;
     CHECK_FALSE(rayTracedShadowHistoryUsable(key, changed, false, false));
 
-    // Off by default until measured; the clamp holds the history to [1, 64].
+    // On by default, measured; the clamp holds the history to [1, 64].
     ve::RayTracedShadowSettings settings{};
-    CHECK_FALSE(settings.temporalAccumulation);
+    CHECK(settings.temporalAccumulation);
     CHECK_FALSE(settings.debugHistoryLength);
     CHECK(settings.temporalMaxFrames == 16u);
     settings.temporalMaxFrames = 0;
