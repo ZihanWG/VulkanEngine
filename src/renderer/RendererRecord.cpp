@@ -32,6 +32,7 @@
 #include <glm/geometric.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/matrix.hpp>
+#include <glm/gtc/matrix_access.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
@@ -833,6 +834,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
     // the filter runs.
     renderer::RenderGraphImageResource rayTracedShadowTraceResource{};
     renderer::RenderGraphImageResource rayTracedShadowFilterResource{};
+    std::array<renderer::RenderGraphImageResource, 2> rayTracedShadowHistoryResources{};
     if (rayTracedShadowMask_.available()) {
         const VkExtent3D traceExtent = rayTracedShadowMask_.traceImage().extent();
         rayTracedShadowTraceResource = renderer::RenderGraphImageResource{
@@ -850,6 +852,25 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             .hasClearValue = false,
             .imported = true,
         };
+        for (uint32_t index = 0; index < 2; ++index) {
+            const rhi::VulkanImage& history = rayTracedShadowMask_.historyImage(index);
+            const VkExtent3D historyExtent = history.extent();
+            rayTracedShadowHistoryResources[index] = renderer::RenderGraphImageResource{
+                .name = index == 0 ? "RayTracedShadowHistory0" : "RayTracedShadowHistory1",
+                .image = history.image(),
+                .imageView = history.imageView(),
+                .extent = VkExtent2D{historyExtent.width, historyExtent.height},
+                .layout = rayTracedShadowMask_.historyLayoutPtr(index),
+                .format = renderer::RayTracedShadowMask::kTraceFormat,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .clearValue = VkClearValue{},
+                .hasClearValue = false,
+                .imported = true,
+            };
+        }
         const VkExtent3D filterExtent = rayTracedShadowMask_.filterImage().extent();
         rayTracedShadowFilterResource = renderer::RenderGraphImageResource{
             .name = "RayTracedShadowFilter",
@@ -1229,6 +1250,9 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .rayTracedShadowMask = rayTracedShadowMaskResource,
         .rayTracedShadowTrace = rayTracedShadowTraceResource,
         .rayTracedShadowFilter = rayTracedShadowFilterResource,
+        // The parity was advanced in frame prep: this frame writes that one.
+        .rayTracedShadowHistoryWrite = rayTracedShadowHistoryResources[rayTracedShadowMask_.historyParity()],
+        .rayTracedShadowHistoryRead = rayTracedShadowHistoryResources[rayTracedShadowMask_.historyParity() ^ 1u],
         .taaEnabled = postProcess_.isTaaActive(),
         .twoPhaseOcclusionEnabled = frameTwoPhaseOcclusionActive_,
         .depthPrepassEnabled = frameDepthPrepassActive_,
@@ -1257,6 +1281,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .rayTracedShadowMaskEnabled = frameRayTracedShadowMaskActive_,
         // The same flag recordRayTracedShadowMask records the filter on.
         .rayTracedShadowFilterEnabled = frameRayTracedShadowFilterActive_,
+        // The same flag recordRayTracedShadowMask records the temporal pass on.
+        .rayTracedShadowTemporalEnabled = frameRayTracedShadowTemporalActive_,
         .irradianceProbeUpdateEnabled = isIrradianceProbeUpdateActive(),
         .probeCaptureEnabled = frameProbeCaptureActive_,
         // GpuCulling's own answer to "will recordMainCull record anything", not a
@@ -3074,6 +3100,28 @@ void Renderer::recordRayTracedShadowMask(VkCommandBuffer commandBuffer)
         renderGraph_.endRayTracedShadowTracePass();
         rhi::debug::endLabel(commandBuffer);
     }
+    if (frameRayTracedShadowTemporalActive_) {
+        const renderer::GpuProfileScope profileScope(
+            gpuProfiler_, currentFrame_, commandBuffer, "RayTracedShadowTemporal");
+        rhi::debug::beginLabel(commandBuffer, "RayTracedShadowTemporal");
+        renderGraph_.beginRayTracedShadowTemporalPass();
+        renderer::RayTracedShadowTemporalPushConstants push{};
+        // Last frame's matrix is still the previous one here: it is captured
+        // only after this frame is recorded. Unjittered, where the history was
+        // written at last frame's jitter: under TAA a still surface reprojects
+        // up to half a pixel off, inside the bilinear footprint.
+        push.reprojection = previousFrameViewProjection_ * inverseViewProjection;
+        push.viewDepthRow = glm::row(inverseViewProjection, 3);
+        push.fullExtent = fullExtent;
+        push.inverseFullExtent = inverseFullExtent;
+        push.traceExtent = traceExtent;
+        push.traceScale = traceScale;
+        push.maxFrames = static_cast<float>(rayTracedShadowSettings_.temporalMaxFrames);
+        push.historyUsable = frameRayTracedShadowHistoryUsable_ ? 1u : 0u;
+        rayTracedShadowMask_.recordTemporal(commandBuffer, push);
+        renderGraph_.endRayTracedShadowTemporalPass();
+        rhi::debug::endLabel(commandBuffer);
+    }
     if (frameRayTracedShadowFilterActive_) {
         // One profiler scope over the three dispatches: the filter's cost is the
         // question, and each scope is two more timestamps in a pass this small.
@@ -3087,6 +3135,9 @@ void Renderer::recordRayTracedShadowMask(VkCommandBuffer commandBuffer)
         push.texelsPerUnit =
             renderer::rayTracedShadowTexelsPerUnit(frameJitteredProjection_[1][1], extent.height, traceScale);
         push.tanSunRadius = renderer::sunConeTangent(rayTracedShadowSettings_.sunAngularDiameterDegrees);
+        push.temporal = frameRayTracedShadowTemporalActive_ ? 1u : 0u;
+        push.debugHistoryLength =
+            frameRayTracedShadowTemporalActive_ && rayTracedShadowSettings_.debugHistoryLength ? 1u : 0u;
         for (const renderer::RayTracedShadowFilterStage stage : {renderer::RayTracedShadowFilterStage::Radius,
                                                                  renderer::RayTracedShadowFilterStage::BlurHorizontal,
                                                                  renderer::RayTracedShadowFilterStage::BlurVertical}) {

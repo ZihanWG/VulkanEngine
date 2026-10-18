@@ -1725,6 +1725,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     frameCameraPosition_ = camera_.position;
     // First frame after a history reset: reproject against the current matrices
     // so the velocity buffer reads as zero motion instead of garbage.
+    frameViewHistoryReset_ = !previousFrameViewProjectionValid_;
     if (!previousFrameViewProjectionValid_) {
         previousFrameViewProjection_ = viewProjection;
         previousFrameView_ = view;
@@ -1866,6 +1867,31 @@ void Renderer::updateFrameData(uint32_t frameIndex)
                                               rayTracedShadowSettings_.sunAngularDiameterDegrees,
                                               rayTracedShadowSettings_.debugReferenceSamples,
                                               rayTracedShadowSettings_.debugHitDistance);
+    // Once a frame, before anything is recorded: the history this frame writes
+    // swaps with last frame's, and the key decides whether last frame's means
+    // anything to this one.
+    frameRayTracedShadowTemporalActive_ = renderer::rayTracedShadowTemporalActive(
+        frameRayTracedShadowFilterActive_, rayTracedShadowSettings_.temporalAccumulation);
+    frameRayTracedShadowHistoryUsable_ = false;
+    if (frameRayTracedShadowTemporalActive_) {
+        const VkExtent2D maskExtent = renderResolution_.extent();
+        const renderer::RayTracedShadowHistoryKey key{
+            .active = true,
+            .traceScale = renderer::rayTracedShadowTraceScale(rayTracedShadowSettings_.halfResolutionMask,
+                                                              rayTracedShadowSettings_.debugReferenceSamples),
+            .tanSunRadius = renderer::sunConeTangent(rayTracedShadowSettings_.sunAngularDiameterDegrees),
+            .width = maskExtent.width,
+            .height = maskExtent.height,
+        };
+        const bool imagesFresh = rayTracedShadowMask_.consumeHistoryFresh();
+        frameRayTracedShadowHistoryUsable_ = renderer::rayTracedShadowHistoryUsable(
+            rayTracedShadowLastHistoryKey_, key, frameViewHistoryReset_, imagesFresh);
+        rayTracedShadowLastHistoryKey_ = key;
+        rayTracedShadowMask_.advanceHistory();
+        ++rayTracedShadowNoiseFrame_;
+    } else {
+        rayTracedShadowLastHistoryKey_ = {};
+    }
     frameRayTracingSceneBuildRequired_ = false;
     if (frameRayTracedShadowsActive_) {
         const ScopedCpuTimer timer = cpuScope(CpuScope::RayTracingInstances);
@@ -1978,6 +2004,9 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameRayTracedShadowsActive_ = false;
     frameRayTracedShadowMaskActive_ = false;
     frameRayTracedShadowFilterActive_ = false;
+    frameRayTracedShadowTemporalActive_ = false;
+    frameRayTracedShadowHistoryUsable_ = false;
+    rayTracedShadowLastHistoryKey_ = {};
     frameRayTracingSceneBuildRequired_ = false;
     frameCascadesReplacedByRayTracing_ = false;
     frameProbeCaptureActive_ = false;
@@ -2543,13 +2572,26 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         if (rayTracedShadowSettings_.debugHitDistance && frameRayTracedShadowMaskActive_) {
             flags |= renderer::kRtShadowFlagDebugHitDistance;
         }
-        if (rayTracedShadowSettings_.debugPenumbraRadius && frameRayTracedShadowFilterActive_) {
+        // The history-length view wins over the penumbra-radius view: its radius
+        // pass writes the length and leaves every radius zero, so the resolve's
+        // radius view would show black in its place.
+        const bool debugHistoryLength =
+            rayTracedShadowSettings_.debugHistoryLength && frameRayTracedShadowTemporalActive_;
+        if (rayTracedShadowSettings_.debugPenumbraRadius && frameRayTracedShadowFilterActive_ && !debugHistoryLength) {
             flags |= renderer::kRtShadowFlagDebugPenumbraRadius;
         }
+        if (debugHistoryLength) {
+            flags |= renderer::kRtShadowFlagDebugHistoryLength;
+        }
+        // The frame index the sampling noise moves by. Zero unless frames
+        // accumulate: one frame's noise is what the spatial filter alone is
+        // tuned for, and a still frame stays the same frame to frame.
+        const uint32_t noiseFrame =
+            frameRayTracedShadowTemporalActive_ ? rayTracedShadowNoiseFrame_ % renderer::kRtNoiseFrameCycle : 0u;
         constants.rayTracedShadow = glm::uvec4(static_cast<uint32_t>(geometryTable & 0xFFFFFFFFull),
                                                static_cast<uint32_t>(geometryTable >> 32),
                                                flags,
-                                               0u);
+                                               noiseFrame);
         // The LOD budget only bounds the drawn level's error under screen-space
         // selection; the radius rule has no pixel bound to add.
         const float lodErrorPixels =

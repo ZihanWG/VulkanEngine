@@ -1082,6 +1082,20 @@ void Renderer::drawShadowsDebugUi()
                               "say the penumbra is, kept to the surface it is on. Off, one ray per texel\n"
                               "is used as traced. Never applied to a hard shadow or the reference.");
         ImGui::Text("Filter: %s", frameRayTracedShadowFilterActive_ ? "running this frame" : "not running this frame");
+        ImGui::Checkbox("Accumulate over frames", &rayTracedShadowSettings_.temporalAccumulation);
+        ImGui::SetItemTooltip("Each texel's mean over the frames its surface has been seen, reprojected\n"
+                              "through the camera's motion, ahead of the filter. Only with the filter.");
+        int temporalMaxFrames = static_cast<int>(rayTracedShadowSettings_.temporalMaxFrames);
+        if (ImGui::SliderInt("Longest history",
+                             &temporalMaxFrames,
+                             1,
+                             static_cast<int>(renderer::kRtTemporalMaxFrames),
+                             "%d frames")) {
+            rayTracedShadowSettings_.temporalMaxFrames = static_cast<uint32_t>(temporalMaxFrames);
+            clampRuntimeSettings();
+        }
+        ImGui::SetItemTooltip("Longer converges further on a still view and trails further behind a\n"
+                              "moving shadow.");
         int referenceSamples = static_cast<int>(rayTracedShadowSettings_.debugReferenceSamples);
         if (ImGui::SliderInt("Debug: reference rays per pixel",
                              &referenceSamples,
@@ -1096,6 +1110,9 @@ void Renderer::drawShadowsDebugUi()
         ImGui::Checkbox("Debug: hit distance", &rayTracedShadowSettings_.debugHitDistance);
         ImGui::SetItemTooltip("Where the mask traced, how far each ray went before it hit: dark near,\n"
                               "light far, white where nothing was hit. Turns the filter off.");
+        ImGui::Checkbox("Debug: history length", &rayTracedShadowSettings_.debugHistoryLength);
+        ImGui::SetItemTooltip("Where frames accumulate, how many each texel's mean covers: black where\n"
+                              "it just started over, white at the longest history there can be.");
         ImGui::Checkbox("Debug: penumbra radius", &rayTracedShadowSettings_.debugPenumbraRadius);
         ImGui::SetItemTooltip("Where the filter ran, the blur radius it chose, the larger of its two\n"
                               "axes: black where it left the texel alone, white at the largest radius.");

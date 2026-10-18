@@ -257,6 +257,53 @@ TEST_CASE("The penumbra radius follows the occluder, the sun and the surface's f
     CHECK(rayTracedShadowPenumbraRadius(std::numeric_limits<float>::quiet_NaN(), tanRadius, facing) == 0.0f);
 }
 
+TEST_CASE("Frames accumulate only inside the filter, and history survives only an unchanged view",
+          "[raytracing][mask][temporal]")
+{
+    using ve::renderer::RayTracedShadowHistoryKey;
+    using ve::renderer::rayTracedShadowHistoryUsable;
+    using ve::renderer::rayTracedShadowTemporalActive;
+
+    CHECK(rayTracedShadowTemporalActive(true, true));
+    CHECK_FALSE(rayTracedShadowTemporalActive(false, true));
+    CHECK_FALSE(rayTracedShadowTemporalActive(true, false));
+
+    const RayTracedShadowHistoryKey key{
+        .active = true, .traceScale = 2, .tanSunRadius = 0.0046f, .width = 1280, .height = 720};
+    CHECK(rayTracedShadowHistoryUsable(key, key, false, false));
+    // The first frame after one that did not accumulate starts over.
+    CHECK_FALSE(rayTracedShadowHistoryUsable(RayTracedShadowHistoryKey{}, key, false, false));
+    // A camera cut, or images that were just created, hold nothing to reuse.
+    CHECK_FALSE(rayTracedShadowHistoryUsable(key, key, true, false));
+    CHECK_FALSE(rayTracedShadowHistoryUsable(key, key, false, true));
+    // Every part of the key is a different history: the grid, the sun, the
+    // sub-rect.
+    RayTracedShadowHistoryKey changed = key;
+    changed.traceScale = 1;
+    CHECK_FALSE(rayTracedShadowHistoryUsable(key, changed, false, false));
+    changed = key;
+    changed.tanSunRadius = 0.01f;
+    CHECK_FALSE(rayTracedShadowHistoryUsable(key, changed, false, false));
+    changed = key;
+    changed.width = 640;
+    CHECK_FALSE(rayTracedShadowHistoryUsable(key, changed, false, false));
+    changed = key;
+    changed.height = 360;
+    CHECK_FALSE(rayTracedShadowHistoryUsable(key, changed, false, false));
+
+    // On by default, measured; the clamp holds the history to [1, 64].
+    ve::RayTracedShadowSettings settings{};
+    CHECK(settings.temporalAccumulation);
+    CHECK_FALSE(settings.debugHistoryLength);
+    CHECK(settings.temporalMaxFrames == 16u);
+    settings.temporalMaxFrames = 0;
+    ve::clampRayTracedShadowSettings(settings);
+    CHECK(settings.temporalMaxFrames == 1u);
+    settings.temporalMaxFrames = 1000;
+    ve::clampRayTracedShadowSettings(settings);
+    CHECK(settings.temporalMaxFrames == ve::renderer::kRtTemporalMaxFrames);
+}
+
 TEST_CASE("The trace grid covers the sub-rect at either resolution", "[raytracing][mask]")
 {
     using ve::renderer::rayTracedShadowTraceExtent;

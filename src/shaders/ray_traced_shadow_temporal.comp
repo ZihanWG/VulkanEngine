@@ -1,0 +1,157 @@
+#version 460
+
+// The ray-traced shadow mask's temporal accumulation: per trace texel, the
+// running mean of the visibility its rays have found over the frames the
+// surface under it has been seen, reprojected from last frame's history. The
+// soft shadow filter reads that mean in place of the single ray, so it smooths
+// what is left of the noise rather than all of it. See
+// docs/ray_traced_shadows.md#temporal-accumulation.
+//
+// Runs between RayTracedShadowTrace and RayTracedShadowRadius, at the trace's
+// resolution, before the main pass: there is no velocity for this frame yet, so
+// the history is reprojected through the depth the prepass wrote and the
+// camera's motion alone. A surface that moved, or that the previous frame did
+// not show, does not match the view depth its history recorded and starts over.
+//
+// What survives is clamped to the range of this frame's own rays around the
+// texel, as TAA clamps colour to its neighbourhood. Each ray is 0 or 1, so the
+// clamp does nothing inside a penumbra, where they disagree, and pins the mean
+// wherever they all agree: a lit wall cannot keep a shadow its rays no longer
+// find -- stale history the depth test let through, or a shadow that has moved
+// off a surface that has not.
+
+#include "ray_traced_shadows.glsl"
+
+layout(local_size_x = kRtMaskLocalSize, local_size_y = kRtMaskLocalSize, local_size_z = 1) in;
+
+// Main depth as the prepass left it, through a nearest sampler.
+layout(set = 0, binding = 0) uniform sampler2D uSceneDepth;
+// What the trace wrote this frame: x = visibility with its encodings.
+layout(set = 0, binding = 1) uniform sampler2D uShadowTrace;
+// Last frame's history and this frame's: x = mean visibility, y = how many
+// frames it is the mean of (zero where nothing was accumulated), z = the view
+// depth of the surface it was accumulated on.
+layout(set = 0, binding = 2) uniform sampler2D uHistoryPrevious;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D uHistoryCurrent;
+
+// Mirrors ve::renderer::RayTracedShadowTemporalPushConstants.
+layout(push_constant) uniform TemporalPushConstants {
+    // Last frame's view-projection times the inverse of this frame's jittered
+    // one: this frame's NDC to last frame's clip space, for a surface that stood
+    // still.
+    mat4 reprojection;
+    // Row 3 of the inverse jittered view-projection: a surface's view depth this
+    // frame is 1 / dot(row, ndc).
+    vec4 viewDepthRow;
+    uvec2 fullExtent;
+    vec2 inverseFullExtent;
+    uvec2 traceExtent;
+    uint traceScale;
+    // The longest history a texel keeps, in frames.
+    float maxFrames;
+    // Zero when last frame's history is not this frame's to use: see
+    // renderer::rayTracedShadowHistoryUsable.
+    uint historyUsable;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+} pc;
+
+float rtUnmarked(float visibility)
+{
+    return visibility >= kRtMaskBackFacingBias ? visibility - kRtMaskBackFacingBias : visibility;
+}
+
+void main()
+{
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(gl_GlobalInvocationID.xy, pc.traceExtent))) {
+        return;
+    }
+    // Every texel is rewritten, so a texel nothing covers this frame cannot hand
+    // an old mean to the next one.
+    vec4 trace = texelFetch(uShadowTrace, texel, 0);
+    if (trace.x < 0.0) {
+        imageStore(uHistoryCurrent, texel, vec4(0.0));
+        return;
+    }
+
+    ivec2 pixel = texel * int(pc.traceScale);
+    float depth = texelFetch(uSceneDepth, pixel, 0).r;
+    vec4 ndc = vec4((vec2(pixel) + 0.5) * pc.inverseFullExtent * 2.0 - 1.0, depth, 1.0);
+    float viewDepth = 1.0 / dot(pc.viewDepthRow, ndc);
+
+    float historyMean = 0.0;
+    float historyLength = 0.0;
+    // How far the surface moved across the trace grid since last frame.
+    float motionTexels = 0.0;
+    if (pc.historyUsable != 0u) {
+        // The product is last frame's clip position scaled by the homogeneous
+        // w the inverse left on the world point, 1 / viewDepth: xy / w does not
+        // care, the depth compared with the history does.
+        vec4 previousClip = pc.reprojection * ndc;
+        float previousDepth = previousClip.w * viewDepth;
+        if (previousClip.w > 0.0) {
+            // Last frame's trace grid at the reprojected point: texel t stands for
+            // pixel t * traceScale, whose centre is half a pixel in.
+            vec2 previousPixel = (previousClip.xy / previousClip.w * 0.5 + 0.5) * vec2(pc.fullExtent) - 0.5;
+            vec2 previousTexel = previousPixel / float(pc.traceScale);
+            motionTexels = length(previousTexel - vec2(texel));
+            ivec2 base = ivec2(floor(previousTexel));
+            vec2 fraction = previousTexel - vec2(base);
+            float weightSum = 0.0;
+            float meanSum = 0.0;
+            for (int index = 0; index < 4; ++index) {
+                ivec2 offset = ivec2(index & 1, index >> 1);
+                ivec2 tap = base + offset;
+                if (any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, ivec2(pc.traceExtent)))) {
+                    continue;
+                }
+                vec4 history = texelFetch(uHistoryPrevious, tap, 0);
+                // Accumulated on another surface: the one this pixel shows was
+                // hidden last frame, or has moved since.
+                if (history.y <= 0.0 ||
+                    abs(history.z - previousDepth) > kRtTemporalDepthTolerance * previousDepth) {
+                    continue;
+                }
+                vec2 bilinear = mix(vec2(1.0) - fraction, fraction, vec2(offset));
+                float weight = bilinear.x * bilinear.y;
+                weightSum += weight;
+                meanSum += weight * history.x;
+                historyLength += weight * history.y;
+            }
+            // Where only some of the four matched, their mean stands and their
+            // length counts for the share of the footprint they cover.
+            historyMean = weightSum > 1.0e-4 ? meanSum / weightSum : 0.0;
+        }
+    }
+
+    // This frame's rays around the texel, on the same surface.
+    float neighbourMin = 1.0;
+    float neighbourMax = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            ivec2 tap = texel + ivec2(x, y);
+            if (any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, ivec2(pc.traceExtent)))) {
+                continue;
+            }
+            vec4 neighbour = texelFetch(uShadowTrace, tap, 0);
+            if (neighbour.x < 0.0 || abs(neighbour.w - trace.w) > kRtTemporalNeighbourTolerance * trace.w) {
+                continue;
+            }
+            float value = rtUnmarked(neighbour.x);
+            neighbourMin = min(neighbourMin, value);
+            neighbourMax = max(neighbourMax, value);
+        }
+    }
+    historyMean = clamp(historyMean, neighbourMin, neighbourMax);
+
+    // Each bilinear read blurs the history a little wherever it lands between
+    // texels, and a long history read through many moving frames has been
+    // blurred as many times: one-pixel shadows wash out. So the history is
+    // shorter the faster its surface moves across the screen.
+    float motionCap = max(kRtTemporalMinMovingFrames, pc.maxFrames / (1.0 + motionTexels * kRtTemporalMotionScale));
+    float frames = min(historyLength + 1.0, min(pc.maxFrames, motionCap));
+    float mean = mix(historyMean, rtUnmarked(trace.x), 1.0 / frames);
+    imageStore(uHistoryCurrent, texel, vec4(mean, frames, viewDepth, 0.0));
+}

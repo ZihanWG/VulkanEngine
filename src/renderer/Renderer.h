@@ -1901,6 +1901,22 @@ private:
     // declaration, their recording, which image the resolve reads and the
     // penumbra-radius debug flag, which have to agree.
     bool frameRayTracedShadowFilterActive_ = false;
+    // This frame accumulates the mask over frames
+    // (renderer::rayTracedShadowTemporalActive), and whether it may read the
+    // history the previous frame wrote (renderer::rayTracedShadowHistoryUsable).
+    // Gate the temporal pass's declaration and recording, the radius pass's
+    // input and the moving noise.
+    bool frameRayTracedShadowTemporalActive_ = false;
+    bool frameRayTracedShadowHistoryUsable_ = false;
+    // What the last frame that accumulated accumulated under; see
+    // renderer::RayTracedShadowHistoryKey.
+    renderer::RayTracedShadowHistoryKey rayTracedShadowLastHistoryKey_{};
+    // Counts frames that accumulate; rayTracedShadow.w carries it modulo
+    // renderer::kRtNoiseFrameCycle so the sampling noise moves.
+    uint32_t rayTracedShadowNoiseFrame_ = 0;
+    // The view's history was reset this frame (previousFrameViewProjectionValid_
+    // was clear on entry): a camera cut, a scene change, a TAA reset.
+    bool frameViewHistoryReset_ = false;
     // Whether the mask was active on the last frame that built the TLAS; see
     // renderer::rayTracedShadowMaskNeedsFreshBuild.
     bool rayTracingTopLevelBuiltWithMask_ = false;

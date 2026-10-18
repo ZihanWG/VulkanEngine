@@ -600,6 +600,17 @@ struct RayTracedShadowSettings {
     // ray per texel is used as traced, which is noise wherever the sun is
     // partly covered. Never applies to a hard shadow or the reference.
     bool filter = true;
+    // Accumulate the mask over frames before the filter: each texel's running
+    // mean over the frames its surface has been seen, reprojected through the
+    // camera's motion, so the filter smooths what is left of the noise. Only
+    // while the filter runs. The sampling noise moves every frame it is on. On
+    // by default on measured cost: its passes add about 0.07 ms on Sponza at
+    // the 700 MHz pin and the frame total does not resolve the difference.
+    bool temporalAccumulation = true;
+    // The longest history a texel keeps, in frames, clamped to
+    // [1, renderer::kRtTemporalMaxFrames]. Longer converges further on a still
+    // view and trails further behind a moving shadow.
+    uint32_t temporalMaxFrames = 16;
     // Ray origin offset along the surface normal, in world units, at any
     // distance. What keeps a flat surface from hitting itself.
     float normalOffset = 0.02f;
@@ -635,6 +646,12 @@ struct RayTracedShadowSettings {
     // leaves a texel alone, white at renderer::kRtFilterMaxRadius trace texels.
     // Only while the filter runs, so not with debugHitDistance.
     bool debugPenumbraRadius = false;
+    // The mask carries each texel's history length instead of the visibility,
+    // shown on its own: black where it just started over, white at
+    // renderer::kRtTemporalMaxFrames frames. Only while temporal accumulation
+    // runs, and it replaces the filter's output; it wins over
+    // debugPenumbraRadius when both are on.
+    bool debugHistoryLength = false;
 
     [[nodiscard]] bool operator==(const RayTracedShadowSettings&) const = default;
 };

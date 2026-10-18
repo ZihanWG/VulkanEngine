@@ -235,6 +235,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Ray Tracing Scene Build";
     case RenderPassType::RayTracedShadowTrace:
         return "Ray Traced Shadow Trace";
+    case RenderPassType::RayTracedShadowTemporal:
+        return "Ray Traced Shadow Temporal";
     case RenderPassType::RayTracedShadowFilter:
         return "Ray Traced Shadow Filter";
     case RenderPassType::RayTracedShadowResolve:
@@ -657,6 +659,13 @@ void RenderGraph::importFrameBuffers()
     if (frame_.resources.rayTracedShadowMaskEnabled && frame_.resources.rayTracedShadowFilterEnabled &&
         frame_.resources.rayTracedShadowFilter.image != VK_NULL_HANDLE) {
         frame_.rayTracedShadowFilter = importTexture(frame_.resources.rayTracedShadowFilter);
+        if (frame_.resources.rayTracedShadowHistoryWrite.image != VK_NULL_HANDLE) {
+            frame_.rayTracedShadowHistoryWrite = importTexture(frame_.resources.rayTracedShadowHistoryWrite);
+        }
+        if (frame_.resources.rayTracedShadowTemporalEnabled &&
+            frame_.resources.rayTracedShadowHistoryRead.image != VK_NULL_HANDLE) {
+            frame_.rayTracedShadowHistoryRead = importTexture(frame_.resources.rayTracedShadowHistoryRead);
+        }
     }
 }
 
@@ -1026,6 +1035,31 @@ void RenderGraph::endRayTracedShadowTracePass()
     if (activePass_ != ActivePass::RayTracedShadowTrace) {
         throw std::logic_error(
             "RenderGraph::endRayTracedShadowTracePass called without an active ray-traced shadow trace pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginRayTracedShadowTemporalPass()
+{
+    requireFrameActive("RenderGraph::beginRayTracedShadowTemporalPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginRayTracedShadowTemporalPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.rayTracedShadowTemporal)) {
+        throw std::logic_error(
+            "RenderGraph::beginRayTracedShadowTemporalPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::RayTracedShadowTemporal;
+}
+
+void RenderGraph::endRayTracedShadowTemporalPass()
+{
+    requireFrameActive("RenderGraph::endRayTracedShadowTemporalPass");
+    if (activePass_ != ActivePass::RayTracedShadowTemporal) {
+        throw std::logic_error(
+            "RenderGraph::endRayTracedShadowTemporalPass called without an active ray-traced shadow temporal pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -2609,6 +2643,29 @@ void RenderGraph::declareGeometryPasses()
         // the trace image, and the vertical axis writes the filter image again,
         // which is what the resolve then reads.
         const bool filtered = frame_.resources.rayTracedShadowFilterEnabled && frame_.rayTracedShadowFilter.valid();
+        // Temporal accumulation, ahead of the filter whose radius pass reads it.
+        if (filtered && frame_.resources.rayTracedShadowTemporalEnabled && frame_.rayTracedShadowHistoryRead.valid() &&
+            frame_.rayTracedShadowHistoryWrite.valid()) {
+            frame_.passIndices.rayTracedShadowTemporal =
+                addPass("RayTracedShadowTemporal",
+                        RenderPassType::RayTracedShadowTemporal,
+                        RenderPassExecutionType::Compute,
+                        false,
+                        [this](RenderGraphBuilder& builder) {
+                            builder.readTexture(frame_.mainDepth,
+                                                RGAccess::ShaderRead,
+                                                "Reprojects each trace texel through its depth.");
+                            builder.readTexture(
+                                frame_.rayTracedShadowTrace, RGAccess::ShaderRead, "Reads this frame's ray per texel.");
+                            builder.readTexture(frame_.rayTracedShadowHistoryRead,
+                                                RGAccess::ShaderRead,
+                                                "Reads last frame's history at the reprojected position.");
+                            frame_.rayTracedShadowHistoryWrite =
+                                builder.writeTexture(frame_.rayTracedShadowHistoryWrite,
+                                                     RGAccess::StorageImageWrite,
+                                                     "Writes each texel's running mean, frame count and view depth.");
+                        });
+        }
         if (filtered) {
             static_assert(kRayTracedShadowFilterStageCount == 3);
             struct FilterPassDeclaration {
@@ -2644,6 +2701,14 @@ void RenderGraph::declareGeometryPasses()
                                 RGTextureHandle& destination =
                                     toFilterImage ? frame_.rayTracedShadowFilter : frame_.rayTracedShadowTrace;
                                 builder.readTexture(source, RGAccess::ShaderRead, declaration.readPurpose);
+                                // The radius pass's set samples this frame's
+                                // history whether or not frames accumulate.
+                                if (declaration.stage == RayTracedShadowFilterStage::Radius &&
+                                    frame_.rayTracedShadowHistoryWrite.valid()) {
+                                    builder.readTexture(frame_.rayTracedShadowHistoryWrite,
+                                                        RGAccess::ShaderRead,
+                                                        "Reads each texel's accumulated visibility.");
+                                }
                                 destination = builder.writeTexture(
                                     destination, RGAccess::StorageImageWrite, declaration.writePurpose);
                             });

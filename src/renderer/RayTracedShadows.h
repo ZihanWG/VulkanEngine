@@ -18,6 +18,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 #include <array>
 #include <cstddef>
@@ -48,6 +49,9 @@ inline constexpr uint32_t kRtShadowFlagDebugHitDistance = 32u;
 // The mask's resolve writes the soft shadow filter's penumbra radius instead of
 // the visibility, and the main pass shows that term on its own.
 inline constexpr uint32_t kRtShadowFlagDebugPenumbraRadius = 64u;
+// The mask carries each texel's temporal history length instead of the
+// visibility, and the main pass shows that term on its own.
+inline constexpr uint32_t kRtShadowFlagDebugHistoryLength = 128u;
 
 // Where a mesh vertex keeps what the alpha test needs, in floats. The fragment
 // shader reads candidate triangles' UVs straight out of the vertex buffer by
@@ -151,6 +155,54 @@ inline constexpr uint32_t kRayTracedShadowFilterStageCount = 3;
 // Most trace texels the blur reaches either side of a texel, and the clamp on
 // the radius. Mirrored in ray_traced_shadows.glsl.
 inline constexpr float kRtFilterMaxRadius = 16.0f;
+
+// --- Temporal accumulation ---------------------------------------------------
+//
+// Between the trace and the filter, at the trace's resolution: each texel's
+// running mean over the frames its surface has been seen, reprojected through
+// the prepass depth and the camera's motion. See
+// docs/ray_traced_shadows.md#temporal-accumulation.
+
+// The ceiling on the frames a history texel may average, and the clamp on
+// RayTracedShadowSettings::temporalMaxFrames. Mirrored in
+// ray_traced_shadows.glsl.
+inline constexpr uint32_t kRtTemporalMaxFrames = 64;
+// How many frames the sampling noise runs through before it repeats: the frame
+// index rayTracedShadow.w carries cycles with this period.
+inline constexpr uint32_t kRtNoiseFrameCycle = 64;
+
+// Whether this frame accumulates. Only inside the filter, whose radius pass is
+// what reads the history, so it inherits everything that turns the filter off.
+[[nodiscard]] constexpr bool rayTracedShadowTemporalActive(bool filterActive, bool temporalAccumulation)
+{
+    return filterActive && temporalAccumulation;
+}
+
+// What a history was accumulated under. Two frames' histories mean the same
+// thing only when all of it matches: the trace grid, the sun's size and the
+// sub-rect the grid covers.
+struct RayTracedShadowHistoryKey {
+    // The frame accumulated at all.
+    bool active = false;
+    uint32_t traceScale = 0;
+    float tanSunRadius = 0.0f;
+    uint32_t width = 0;
+    uint32_t height = 0;
+
+    [[nodiscard]] bool operator==(const RayTracedShadowHistoryKey&) const = default;
+};
+
+// Whether this frame may read the history the previous frame wrote. Not when
+// the previous frame did not accumulate, or did under another key, or the view
+// was reset since (a camera cut, a scene change: whatever resets the TAA
+// history), or the history images were just created and hold nothing.
+[[nodiscard]] constexpr bool rayTracedShadowHistoryUsable(const RayTracedShadowHistoryKey& previous,
+                                                          const RayTracedShadowHistoryKey& current,
+                                                          bool viewReset,
+                                                          bool imagesFresh)
+{
+    return previous.active && current.active && previous == current && !viewReset && !imagesFresh;
+}
 // How much surface one trace texel spans along a screen axis, in world units:
 // the width a texel subtends at cameraDistance, combined with distanceStep, how
 // far the surface recedes from one texel to the next along that axis. Mirrors
@@ -258,11 +310,48 @@ struct RayTracedShadowFilterPushConstants {
     float texelsPerUnit = 0.0f;
     // sunConeTangent of the sun's angular diameter.
     float tanSunRadius = 0.0f;
+    // Radius pass only: 1 when the temporal pass ran this frame.
+    uint32_t temporal = 0;
+    // Radius pass only: 1 for the history-length debug view.
+    uint32_t debugHistoryLength = 0;
 };
 static_assert(offsetof(RayTracedShadowFilterPushConstants, direction) == 8);
 static_assert(offsetof(RayTracedShadowFilterPushConstants, texelsPerUnit) == 16);
 static_assert(offsetof(RayTracedShadowFilterPushConstants, tanSunRadius) == 20);
-static_assert(sizeof(RayTracedShadowFilterPushConstants) == 24);
+static_assert(offsetof(RayTracedShadowFilterPushConstants, temporal) == 24);
+static_assert(offsetof(RayTracedShadowFilterPushConstants, debugHistoryLength) == 28);
+static_assert(sizeof(RayTracedShadowFilterPushConstants) == 32);
+
+// The temporal pass's push block, 128 bytes so it fits the smallest push
+// constant range a device may have. Mirrors TemporalPushConstants in
+// src/shaders/ray_traced_shadow_temporal.comp.
+struct RayTracedShadowTemporalPushConstants {
+    // Last frame's view-projection times the inverse of this frame's jittered
+    // one: this frame's NDC to last frame's clip space for a still surface.
+    glm::mat4 reprojection{1.0f};
+    // Row 3 of the inverse jittered view-projection, whose dot with an NDC point
+    // is one over its view depth.
+    glm::vec4 viewDepthRow{0.0f};
+    glm::uvec2 fullExtent{0u};
+    glm::vec2 inverseFullExtent{0.0f};
+    glm::uvec2 traceExtent{0u};
+    uint32_t traceScale = 1;
+    // RayTracedShadowSettings::temporalMaxFrames.
+    float maxFrames = 1.0f;
+    // rayTracedShadowHistoryUsable for this frame.
+    uint32_t historyUsable = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+};
+static_assert(offsetof(RayTracedShadowTemporalPushConstants, viewDepthRow) == 64);
+static_assert(offsetof(RayTracedShadowTemporalPushConstants, fullExtent) == 80);
+static_assert(offsetof(RayTracedShadowTemporalPushConstants, inverseFullExtent) == 88);
+static_assert(offsetof(RayTracedShadowTemporalPushConstants, traceExtent) == 96);
+static_assert(offsetof(RayTracedShadowTemporalPushConstants, traceScale) == 104);
+static_assert(offsetof(RayTracedShadowTemporalPushConstants, maxFrames) == 108);
+static_assert(offsetof(RayTracedShadowTemporalPushConstants, historyUsable) == 112);
+static_assert(sizeof(RayTracedShadowTemporalPushConstants) == 128);
 
 // The pre-skin dispatch's push block, all device addresses. Mirrors
 // PreSkinPushConstants in src/shaders/skin_positions.comp, whose reflected
