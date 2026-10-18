@@ -68,6 +68,13 @@ const float kRtTemporalDepthTolerance = 0.02;
 // The neighbourhood the history is clamped to: the 3x3 trace texels around
 // it whose camera distance is within this fraction of its own.
 const float kRtTemporalNeighbourTolerance = 0.05;
+// A surface moving m trace texels a frame keeps at most maxFrames / (1 + m *
+// kRtTemporalMotionScale) frames of history, and never fewer than
+// kRtTemporalMinMovingFrames.
+const float kRtTemporalMotionScale = 2.0;
+const float kRtTemporalMinMovingFrames = 1.0;
+// The filter's radius shrinks with the history length n as n^-exponent.
+const float kRtTemporalRadiusExponent = 0.25;
 
 // The soft shadow filter, ray_traced_shadow_radius.comp and
 // ray_traced_shadow_blur.comp. Most trace texels the blur reaches either side of

@@ -53,8 +53,14 @@ void main()
     // The visibility the blur smooths: this frame's ray, or with the temporal
     // pass the mean of every frame's, carrying this frame's back-facing mark.
     float visibility = centre.x;
+    // How many frames that mean is of. Each is another ray per texel, so a
+    // longer history needs less blur -- but not the square root less that
+    // independent rays would: measured, that left the mean of 16 frames too
+    // noisy on wide penumbrae (kRtTemporalRadiusExponent).
+    float historyFrames = 1.0;
     if (pc.temporal != 0u && centre.x >= 0.0) {
         vec4 history = texelFetch(uHistory, texel, 0);
+        historyFrames = max(history.y, 1.0);
         bool marked = centre.x >= kRtMaskBackFacingBias;
         visibility = pc.debugHistoryLength != 0u
                          ? history.y / float(kRtTemporalMaxFrames)
@@ -88,7 +94,8 @@ void main()
             float acrossX = rtWorldPerTexel(centre.w, pc.texelsPerUnit, rtDistanceStep(texel, ivec2(1, 0), centre.w));
             float acrossY = rtWorldPerTexel(centre.w, pc.texelsPerUnit, rtDistanceStep(texel, ivec2(0, 1), centre.w));
             radius = vec2(rtPenumbraRadius(occluderDistance, pc.tanSunRadius, acrossX),
-                          rtPenumbraRadius(occluderDistance, pc.tanSunRadius, acrossY));
+                          rtPenumbraRadius(occluderDistance, pc.tanSunRadius, acrossY)) *
+                     pow(historyFrames, -kRtTemporalRadiusExponent);
         }
     }
     imageStore(uFilterDestination, texel, vec4(visibility, radius.y, radius.x, centre.w));

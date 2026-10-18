@@ -914,46 +914,77 @@ a different trace grid, sun size or sub-rect, when the view was reset (whatever
 resets the TAA history: a camera cut, a scene change), and when the images were
 just created; `rayTracedShadowHistoryUsable` is that rule, tested on the CPU.
 
+**Less blur as history builds.** Each frame of history is another ray per
+texel, so the radius pass shrinks the filter's radius with the history length
+n, by n^-0.25 (`kRtTemporalRadiusExponent`). Not the n^-0.5 independent rays
+would justify: measured on sunlit's wide penumbrae, that left the mean of 16
+frames too noisy -- the still view went from 0.059 to 0.070 -- while the quarter
+power costs the still view a little (0.059 to 0.063) for less blur over the
+whole frame (whole-frame MAE 0.0017 to 0.0015) and a better penumbra under
+motion.
+
+**Shorter history the faster a surface moves.** Each bilinear read blurs the
+history wherever it lands between texels, and a long history read through many
+moving frames has been blurred as many times: under a fast orbit, one- and
+two-pixel shadows washed out, about 1100 leaking pixels on default and on stress
+where the filter alone has 6 and 10. So a texel moving m trace texels a frame
+keeps at most maxFrames / (1 + 2m) frames (`kRtTemporalMotionScale`), never
+fewer than one (`kRtTemporalMinMovingFrames`). Swept on that orbit, leaks on
+default and stress:
+
+| Motion cap | default | stress |
+| --- | --- | --- |
+| none | 1113 | 1084 |
+| scale 0.5, at least 2 frames | 372 | 343 |
+| scale 2, at least 2 frames | 235 | 309 |
+| scale 2, at least 1 frame | 16 | 45 |
+
+The last keeps a fast-moving texel to the filter alone. A floor of two frames
+keeps more of the penumbra gain under fast motion but trails thin shadows; one
+frame gives the gain up where the camera moves fast and keeps it where it moves
+at a usual pace (below).
+
 **Error against the reference**, as for the filter: frame N of a fixed-step run,
 a two-degree sun, against the 64-ray reference of the same frame, Debug with
-validation and `--sync-validation`, zero errors and hazards in all 75 runs.
+validation and `--sync-validation`, zero errors and hazards in every run.
 Penumbra MAE, full resolution and half:
 
 | Scene | Filter only | Temporal, frame 1 | frame 4 | frame 16 | frame 32 |
 | --- | --- | --- | --- | --- | --- |
-| sunlit, still | 0.070 / 0.102 | 0.070 / 0.101 | 0.063 / 0.074 | 0.059 / 0.070 | **0.059 / 0.070** |
-| default, still | 0.178 / 0.216 | 0.182 / 0.215 | 0.102 / 0.164 | 0.093 / 0.157 | **0.091 / 0.157** |
+| sunlit, still | 0.070 / 0.102 | 0.070 / 0.101 | 0.064 / 0.074 | 0.063 / 0.072 | **0.063 / 0.073** |
+| default, still | 0.178 / 0.216 | 0.182 / 0.215 | 0.106 / 0.164 | 0.096 / 0.157 | **0.093 / 0.157** |
 | stress, still | 0.205 / 0.225 | 0.209 / 0.230 | 0.111 / 0.187 | 0.108 / 0.186 | **0.112 / 0.187** |
-| Sponza, still | 0.092 / 0.146 | 0.094 / 0.145 | 0.070 / 0.092 | 0.064 / 0.087 | **0.062 / 0.091** |
+| Sponza, still | 0.092 / 0.146 | 0.094 / 0.145 | 0.067 / 0.091 | 0.064 / 0.084 | **0.063 / 0.090** |
 
 Still means `--freeze-animation` and the preset camera. On the scenes whose
 penumbrae are contact shadows a texel or two wide -- default and stress, where
-the filter alone could not reach -- full resolution halves the error, and it
-gets there by the fourth frame: past that, what is left is the blur's own bias,
-which the history-length radius in P4.3b is for. Half resolution gains less; its
-upsample at shadow edges stays.
+the filter alone could not reach -- full resolution halves the error, by the
+fourth frame. Half resolution gains less; its upsample at shadow edges stays.
 
 Moving, at frame 30 (penumbra MAE / whole-frame MAE / light leaks, full
 resolution):
 
 | Scene | Filter only | Temporal |
 | --- | --- | --- |
-| sunlit, animated | 0.070 / 0.0020 / 1 | 0.062 / 0.0019 / 34 |
-| default, animated | 0.172 / 0.0009 / 8 | **0.109 / 0.0008 / 3** |
+| sunlit, animated | 0.070 / 0.0020 / 1 | 0.066 / 0.0016 / 32 |
+| default, animated | 0.172 / 0.0009 / 8 | **0.113 / 0.0008 / 5** |
 | stress, animated | 0.204 / 0.0012 / 16 | **0.117 / 0.0012 / 8** |
-| Sponza, animated | 0.092 / 0.0001 / 1 | 0.063 / 0.0001 / 1 |
-| sunlit, orbiting | 0.063 / 0.0030 / 4 | 0.051 / 0.0027 / 19 |
-| default, orbiting | 0.109 / 0.0022 / 6 | 0.098 / 0.0040 / 1113 |
-| stress, orbiting | 0.141 / 0.0025 / 10 | 0.108 / 0.0059 / 1084 |
+| Sponza, animated | 0.092 / 0.0001 / 1 | **0.064 / 0.0001 / 0** |
+| sunlit, orbiting slowly | 0.070 / 0.0019 / 1 | 0.065 / 0.0022 / 9 |
+| default, orbiting slowly | 0.163 / 0.0010 / 6 | **0.118 / 0.0019 / 105** |
+| stress, orbiting slowly | 0.204 / 0.0013 / 5 | **0.170 / 0.0016 / 32** |
+| sunlit, orbiting fast | 0.063 / 0.0030 / 4 | 0.064 / 0.0031 / 3 |
+| default, orbiting fast | 0.109 / 0.0022 / 6 | 0.107 / 0.0022 / 16 |
+| stress, orbiting fast | 0.141 / 0.0025 / 10 | 0.140 / 0.0026 / 45 |
 
 Animated is the presets' own animation with the camera still: casters move over
-receivers that do not, and the clamp keeps it clean. Orbiting is `--camera-orbit
-0.05` with animation frozen, 0.05 radians (about 2.9 degrees) a frame -- the
-near wall on stress moves more than 190 pixels a frame. Penumbrae
-still improve, but thin shadows wash out: the leaks are one- and two-pixel
-features, rows of slits and a contact line under a cylinder, whose history is
-resampled bilinearly every frame and whose 3x3 always holds a lit ray for the
-clamp. That is TAA's blur under motion, and it is P4.3b's.
+receivers that do not, and the clamp keeps it clean. Orbiting is
+`--camera-orbit` with animation frozen, slowly at 0.01 radians a frame (about 34
+degrees a second at 60 frames a second) and fast at 0.05 (about 170), where the
+near wall on stress moves more than 190 pixels a frame. A slow orbit keeps most
+of the gain and pays for it in tens to a hundred leaking pixels, thin shadows
+softened as they slide; a fast one falls back to the filter alone, neither
+better nor worse.
 
 ## Debug views and settings
 
@@ -1147,9 +1178,11 @@ under that isolation differ from the traced image on 1000 pixels rather than
   shadow's penumbra is a texel or two wide, too narrow to blur without bending
   it, so there the one ray per texel stays noise; accumulating halves it (the
   temporal tables).
-- **Thin shadows wash out under fast camera motion** while frames accumulate:
-  the history is resampled bilinearly every frame, and a one-pixel shadow's 3x3
-  always holds a lit ray, so the clamp cannot hold it (the orbiting rows).
+- **Accumulation backs off under camera motion.** A texel's history shortens
+  with how fast it moves, down to the filter alone for fast motion, because
+  bilinear rereads of a long history wash thin shadows out. A slow orbit still
+  softens one- and two-pixel shadows somewhat as they slide (tens to a hundred
+  leaking pixels a frame on these scenes).
 - **Reprojection follows the camera only.** The history is reprojected before
   the main pass has velocity, so a moving surface's own history is rejected by
   depth and starts over rather than following it; and under TAA the history,

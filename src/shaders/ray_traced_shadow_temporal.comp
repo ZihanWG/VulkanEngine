@@ -83,6 +83,8 @@ void main()
 
     float historyMean = 0.0;
     float historyLength = 0.0;
+    // How far the surface moved across the trace grid since last frame.
+    float motionTexels = 0.0;
     if (pc.historyUsable != 0u) {
         // The product is last frame's clip position scaled by the homogeneous
         // w the inverse left on the world point, 1 / viewDepth: xy / w does not
@@ -94,6 +96,7 @@ void main()
             // pixel t * traceScale, whose centre is half a pixel in.
             vec2 previousPixel = (previousClip.xy / previousClip.w * 0.5 + 0.5) * vec2(pc.fullExtent) - 0.5;
             vec2 previousTexel = previousPixel / float(pc.traceScale);
+            motionTexels = length(previousTexel - vec2(texel));
             ivec2 base = ivec2(floor(previousTexel));
             vec2 fraction = previousTexel - vec2(base);
             float weightSum = 0.0;
@@ -143,7 +146,12 @@ void main()
     }
     historyMean = clamp(historyMean, neighbourMin, neighbourMax);
 
-    float frames = min(historyLength + 1.0, pc.maxFrames);
+    // Each bilinear read blurs the history a little wherever it lands between
+    // texels, and a long history read through many moving frames has been
+    // blurred as many times: one-pixel shadows wash out. So the history is
+    // shorter the faster its surface moves across the screen.
+    float motionCap = max(kRtTemporalMinMovingFrames, pc.maxFrames / (1.0 + motionTexels * kRtTemporalMotionScale));
+    float frames = min(historyLength + 1.0, min(pc.maxFrames, motionCap));
     float mean = mix(historyMean, rtUnmarked(trace.x), 1.0 / frames);
     imageStore(uHistoryCurrent, texel, vec4(mean, frames, viewDepth, 0.0));
 }
