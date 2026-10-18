@@ -2572,10 +2572,15 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         if (rayTracedShadowSettings_.debugHitDistance && frameRayTracedShadowMaskActive_) {
             flags |= renderer::kRtShadowFlagDebugHitDistance;
         }
-        if (rayTracedShadowSettings_.debugPenumbraRadius && frameRayTracedShadowFilterActive_) {
+        // The history-length view wins over the penumbra-radius view: its radius
+        // pass writes the length and leaves every radius zero, so the resolve's
+        // radius view would show black in its place.
+        const bool debugHistoryLength =
+            rayTracedShadowSettings_.debugHistoryLength && frameRayTracedShadowTemporalActive_;
+        if (rayTracedShadowSettings_.debugPenumbraRadius && frameRayTracedShadowFilterActive_ && !debugHistoryLength) {
             flags |= renderer::kRtShadowFlagDebugPenumbraRadius;
         }
-        if (rayTracedShadowSettings_.debugHistoryLength && frameRayTracedShadowTemporalActive_) {
+        if (debugHistoryLength) {
             flags |= renderer::kRtShadowFlagDebugHistoryLength;
         }
         // The frame index the sampling noise moves by. Zero unless frames

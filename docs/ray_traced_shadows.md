@@ -1033,7 +1033,7 @@ better nor worse.
 | `rayTracedShadows.debugReferenceSamples` | 0 | rays per pixel for the reference, clamped to [0, 64]; turns the mask on, at full resolution |
 | `rayTracedShadows.debugHitDistance` | false | the mask carries how far each ray went, shown as the visibility term: dark near, white where nothing was hit. Turns the filter off, which writes over the hit distance |
 | `rayTracedShadows.debugPenumbraRadius` | false | the mask carries the filter's radius, the larger of its two axes, shown as the visibility term: black where the filter left a texel alone, white at 16 texels. Only while the filter runs |
-| `rayTracedShadows.debugHistoryLength` | false | the mask carries each texel's history length, unblurred: black where it just started over, white at 64 frames. Only while frames accumulate |
+| `rayTracedShadows.debugHistoryLength` | false | the mask carries each texel's history length, unblurred: black where it just started over, white at 64 frames. Only while frames accumulate; wins over the penumbra-radius view |
 
 The CI sweep renders it enabled (cascades skipped), enabled with both debug
 views, `renderCascades` and `rebuildEveryFrame`, enabled on a still scene

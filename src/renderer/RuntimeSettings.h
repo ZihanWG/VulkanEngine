@@ -649,7 +649,8 @@ struct RayTracedShadowSettings {
     // The mask carries each texel's history length instead of the visibility,
     // shown on its own: black where it just started over, white at
     // renderer::kRtTemporalMaxFrames frames. Only while temporal accumulation
-    // runs, and it replaces the filter's output.
+    // runs, and it replaces the filter's output; it wins over
+    // debugPenumbraRadius when both are on.
     bool debugHistoryLength = false;
 
     [[nodiscard]] bool operator==(const RayTracedShadowSettings&) const = default;
