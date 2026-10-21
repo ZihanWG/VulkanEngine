@@ -309,6 +309,7 @@ bool Renderer::buildSampleScene([[maybe_unused]] std::string& status)
         showSkinnedMesh_ = false;
 
         pinSampleSceneCamera();
+        applySampleSceneLighting();
 
         status = "Loaded sample scene: " + modelPath.string() + " with " + std::to_string(importedMeshes_.size()) +
                  " mesh slot(s), " + std::to_string(renderObjects_.size()) + " render object(s), and " +
@@ -329,6 +330,7 @@ void Renderer::pinSampleSceneCamera()
             sceneBounds.merge(object.worldBounds());
         }
     }
+    sampleSceneBounds_ = sceneBounds;
 
     // An interior shot down the scene's long axis, not framedCamera's fit of the
     // whole volume -- that one shows Sponza from outside the building, which is
@@ -347,6 +349,29 @@ void Renderer::pinSampleSceneCamera()
     };
     Logger::info("Sample scene camera: position " + vec3(camera_.position) + ", target " + vec3(camera_.target) +
                  ", near " + std::to_string(camera_.nearPlane) + ", far " + std::to_string(camera_.farPlane) + ".");
+}
+
+void Renderer::applySampleSceneLighting()
+{
+    // The default scene's sun is a dim grey at intensity 1, tuned for an open
+    // showcase with nothing over it. Inside the building almost none of it
+    // reaches a surface the camera sees, so the frame was carried by the demo
+    // swarm and by ambient alone, and read as dark and multicoloured.
+    //
+    // Steep, so it falls through the roof opening onto the atrium floor, and
+    // tilted across the long axis so the sunlit band lands on one arcade's
+    // columns rather than along the line of sight, where it would be hidden
+    // behind them.
+    directionalLightSettings_.direction = glm::normalize(glm::vec3{0.22f, -1.0f, 0.34f});
+    directionalLightSettings_.color = kSampleSceneSunColor;
+    directionalLightSettings_.intensity = 12.0f;
+
+    const auto vec3 = [](const glm::vec3& v) {
+        return "(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
+    };
+    Logger::info("Sample scene lighting: bounds " + vec3(sampleSceneBounds_.min) + " - " +
+                 vec3(sampleSceneBounds_.max) + ", sun intensity " +
+                 std::to_string(directionalLightSettings_.intensity) + ".");
 }
 
 void Renderer::resetPortfolioShowcaseObjectsToPreset()

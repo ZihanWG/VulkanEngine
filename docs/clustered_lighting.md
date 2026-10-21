@@ -166,7 +166,10 @@ the renderer.
   froxel occupancy directly.
 - **Lights (Clustered) panel:** toggles the clustered path on/off (the brute-force
   comparison) and the heatmap, drives the demo light count (0–512), and animates the
-  swarm. The count slider is the clustered-path stress test.
+  swarm. The count slider is the clustered-path stress test. On the sample scene
+  (`--scene sponza`) the swarm is replaced by 12 static amber lamps placed from the
+  scene bounds along the two arcades, sharing a warm palette with that scene's sun;
+  the panel's "Sample scene lamps" checkbox brings the swarm back.
 - **GPU profiler:** `ClusterBuild` and `LightCull` appear as per-pass timing rows
   when the passes run on the graphics queue. With async compute active -- the
   default where the device has an async queue -- they are not timed (see

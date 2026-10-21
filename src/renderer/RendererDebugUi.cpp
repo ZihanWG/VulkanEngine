@@ -1302,6 +1302,10 @@ void Renderer::drawLightsDebugUi()
     ImGui::SetItemTooltip("Heatmap tints each froxel by its light count (blue=few, red=many).");
 
     ImGui::SeparatorText("Demo light swarm");
+    if (sampleSceneLoaded_) {
+        ImGui::Checkbox("Sample scene lamps (replace the swarm)", &sampleSceneLampsEnabled_);
+        ImGui::SetItemTooltip("12 static amber lamps along the arcades. Off brings the swarm below back.");
+    }
     ImGui::SliderInt("Light count", &demoLightCount_, 0, 512);
     ImGui::Checkbox("Animate##demoLights", &animateLights_);
     ImGui::SliderFloat("Intensity##demoLights", &demoLightIntensity_, 0.0f, 40.0f, "%.1f");

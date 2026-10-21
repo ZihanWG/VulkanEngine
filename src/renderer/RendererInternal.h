@@ -290,6 +290,11 @@ const glm::vec4 kAmbientLightColor{0.15f, 0.15f, 0.15f, 1.0f};
 const glm::vec4 kPortfolioLightDirection{-0.38f, -0.78f, -0.48f, 0.0f};
 const glm::vec4 kPortfolioLightColor{1.08f, 1.03f, 0.94f, 1.0f};
 const glm::vec4 kPortfolioAmbientLightColor{0.20f, 0.22f, 0.24f, 1.0f};
+// The sample scene's palette: one warm-white sun and one amber lamp colour, so
+// every light in the building agrees on what "warm" means. The demo swarm's
+// spread of saturated hues tinted each curtain and column a different colour.
+const glm::vec3 kSampleSceneSunColor{1.0f, 0.93f, 0.80f};
+const glm::vec3 kSampleSceneLampColor{1.0f, 0.68f, 0.38f};
 // Portfolio material-slot indices and occlusion-test scene constants now live in
 // renderer/SceneBuilder.h alongside the scene-layout logic that consumes them.
 
