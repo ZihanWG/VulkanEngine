@@ -30,6 +30,19 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 | **Architecture** | Render graph (logical handles + conservative barrier inference), RAII Vulkan RHI, task-parallel frame prep on a job system, per-pass GPU timestamp profiler, ImGui scene/material editor |
 | **Engineering** | C++20, Catch2 unit tests, Linux + Windows + macOS CI, AddressSanitizer/UBSan, clang-tidy/clang-format |
 
+## Performance
+
+GPU frame time on the Sponza sample scene (`--scene sponza`, 103 primitives, 25 materials) at each output resolution, every runtime setting at its default (cascaded shadow maps for the sun; ray-traced sun shadows are opt-in and were off). NVIDIA GeForce RTX 3080 Ti Laptop GPU, Release build, lights and animation frozen, every frame sampled for 60 s after a 15 s warm-up, p10 of `Frame total`:
+
+| Resolution | Default clocks | ≈ fps | Clocks pinned at 800 MHz | ≈ fps |
+| --- | --- | --- | --- | --- |
+| 1280x720 | 2.82 ms | 354 | 4.55 ms | 220 |
+| 1920x1080 | 4.66 ms | 214 | 8.12 ms | 123 |
+| 2560x1440 | 7.73 ms | 129 | 11.72 ms | 85 |
+| 3840x2160 | 14.88 ms | 67 | 21.66 ms | 46 |
+
+The fps columns are 1000 / GPU frame time: the GPU-bound ceiling, not a presented frame rate. With default clocks the laptop GPU ran thermally limited throughout (86-87 °C, graphics clock 1275-1460 MHz against a 2100 MHz boost), so these are sustained figures for this machine rather than peak ones. `MainHDRPass` is 67-82% of the frame and grows with pixel count, though below linearly: 9x the pixels from 720p to 4K costs it 4.4-4.7x. Each series repeated its 1280x720 point at the end and came back within 1.9% (pinned) and 2.4% (default clocks), so read the table as absolute figures to about ±2%; feature costs elsewhere in this README come from interleaved A/B series held to a 1% control. Method and harness: [docs/profiling.md](docs/profiling.md).
+
 ## Architecture
 
 The renderer is GPU-driven: visibility, light assignment, and shading are decided on the GPU each frame.
