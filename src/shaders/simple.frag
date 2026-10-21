@@ -240,6 +240,11 @@ void main()
     vec3 normalTS = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
     mat3 tbn = mat3(normalize(vTangent), normalize(vBitangent), normalize(vNormal));
     vec3 normal = normalize(tbn * normalTS);
+    // Back faces of double-sided materials shade with the reversed normal; see
+    // simple_bindless.frag.
+    if (!gl_FrontFacing) {
+        normal = -normal;
+    }
     vec3 lightDirection = normalize(-vLightDirection);
     vec3 viewDirection = normalize(vCameraPosition - vWorldPosition);
     vec3 halfVector = normalize(viewDirection + lightDirection);
