@@ -146,6 +146,36 @@ void Renderer::updateDemoLights(float elapsedSeconds)
         return;
     }
 
+    if (sampleSceneLoaded_ && sampleSceneLampsEnabled_ && sampleSceneBounds_.valid()) {
+        // Lamps hung in the two ground-floor arcades, in one amber colour, and
+        // static. The swarm orbits the origin in saturated hues, which inside the
+        // building put a different tint on every curtain and column and left
+        // the far end of the atrium unlit.
+        //
+        // Placed from the bounds along the long axis, as interiorCamera frames
+        // it, so the rows follow the building rather than authored coordinates.
+        const renderer::Aabb& bounds = sampleSceneBounds_;
+        const glm::vec3 center = (bounds.min + bounds.max) * 0.5f;
+        const glm::vec3 extent = bounds.max - bounds.min;
+        const bool alongX = extent.x >= extent.z;
+        const glm::vec3 axis = alongX ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 0.0f, 1.0f);
+        const glm::vec3 across = alongX ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+        const float halfLength = (alongX ? extent.x : extent.z) * 0.5f;
+        const float halfWidth = (alongX ? extent.z : extent.x) * 0.5f;
+        const float lampHeight = bounds.min.y + 0.25f * extent.y;
+
+        constexpr int kLampsPerArcade = 6;
+        for (int lamp = 0; lamp < kLampsPerArcade; ++lamp) {
+            const float t = -0.6f + 1.2f * static_cast<float>(lamp) / static_cast<float>(kLampsPerArcade - 1);
+            for (const float side : {-1.0f, 1.0f}) {
+                glm::vec3 position = center + axis * (t * halfLength) + across * (side * 0.4f * halfWidth);
+                position.y = lampHeight;
+                clusteredLighting_.addPointLight(position, kSampleSceneLampColor, 28.0f, 8.0f);
+            }
+        }
+        return;
+    }
+
     const int lightCount = std::clamp(demoLightCount_, 0, 512);
     for (int lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
         const float radius = 2.0f + 4.0f * hash01(lightIndex, 0.0f);

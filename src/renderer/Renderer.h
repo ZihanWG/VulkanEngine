@@ -648,6 +648,9 @@ private:
     [[nodiscard]] bool buildSampleScene(std::string& status);
     // The interior shot for the sample scene, derived from the imported bounds.
     void pinSampleSceneCamera();
+    // A sun that reaches the atrium floor through the roof opening, in one warm
+    // colour shared with the lamps updateDemoLights places along the arcades.
+    void applySampleSceneLighting();
     // Constructs a SceneBuilder borrowing the renderer's shared meshes, material
     // array, and debug-id allocator. Cheap; call per scene-build operation.
     [[nodiscard]] renderer::SceneBuilder makeSceneBuilder();
@@ -1682,6 +1685,13 @@ private:
     // rather than assume it -- see RendererStartupOverrides::loadSampleScene.
     bool sampleSceneRequested_ = false;
     bool sampleSceneLoaded_ = false;
+    // The imported scene's world bounds, kept so the sample scene's lamps can be
+    // placed relative to the building rather than at authored coordinates.
+    renderer::Aabb sampleSceneBounds_{};
+    // The sample scene lights itself with warm lamps along its arcades instead
+    // of the demo swarm. Off brings the swarm back, e.g. to stress the cluster
+    // path on real geometry. Session-only, like the swarm's own controls.
+    bool sampleSceneLampsEnabled_ = true;
 
     // Point lights cost six tiles each against 64 total, so how many may cast is
     // a budget the user can see and set rather than an implicit cap.

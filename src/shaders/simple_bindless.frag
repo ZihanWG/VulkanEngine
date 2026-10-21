@@ -1014,7 +1014,15 @@ void main()
     // rendered as dark specks. Single-sided draws cull back faces, so the flip
     // never fires for them.
     vec3 vertexNormal = gl_FrontFacing ? normalize(vNormal) : -normalize(vNormal);
-    vec3 normalTS = texture(uNormalTextures[nonuniformEXT(vTextureIndices.y)], vUV).xyz * 2.0 - 1.0;
+    // Z is rebuilt from XY, never read. Cooked normal maps are BC5, which stores
+    // only red and green, so blue samples as 0 and `.z * 2 - 1` read -1: every
+    // cooked normal-mapped surface shaded with its normal turned into the
+    // surface, facing away from the sun, the lamps and the sky. An uncompressed
+    // map gets the same answer to within its own quantisation. simple.frag
+    // decodes the same way.
+    vec3 normalTS;
+    normalTS.xy = texture(uNormalTextures[nonuniformEXT(vTextureIndices.y)], vUV).xy * 2.0 - 1.0;
+    normalTS.z = sqrt(max(1.0 - dot(normalTS.xy, normalTS.xy), 0.0));
     mat3 tbn = mat3(normalize(vTangent), normalize(vBitangent), normalize(vNormal));
     vec3 normal = normalize(tbn * normalTS);
     if (!gl_FrontFacing) {
