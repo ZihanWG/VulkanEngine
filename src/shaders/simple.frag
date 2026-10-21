@@ -237,7 +237,11 @@ void main()
     float roughness = clamp(vMaterialParams.y * textureRoughness, 0.04, 1.0);
     float multiScatterStrength = vMaterialParams.z;
 
-    vec3 normalTS = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
+    // Z rebuilt from XY, because cooked normal maps are BC5 and have no blue
+    // channel to read. See simple_bindless.frag, which decodes the same way.
+    vec3 normalTS;
+    normalTS.xy = texture(uNormalMap, vUV).xy * 2.0 - 1.0;
+    normalTS.z = sqrt(max(1.0 - dot(normalTS.xy, normalTS.xy), 0.0));
     mat3 tbn = mat3(normalize(vTangent), normalize(vBitangent), normalize(vNormal));
     vec3 normal = normalize(tbn * normalTS);
     // Back faces of double-sided materials shade with the reversed normal; see

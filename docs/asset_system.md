@@ -137,7 +137,12 @@ colour and as a roughness map gets different formats and different mip filtering
 | `normal` | `BC5_UNORM_BLOCK` | linear |
 
 BC5 for normals spends the same 16 bytes per block on XY that BC7 would spend on
-RGBA, and the shader reconstructs Z. BC7 and BC5 device support is reported
+RGBA, and the shader reconstructs Z as `sqrt(1 - x^2 - y^2)`. It must: a BC5
+texel samples blue as 0, so decoding `.xyz * 2 - 1` reads Z as -1 and turns the
+normal into the surface. That is what the main pass did until it was caught on
+Sponza, where every cooked normal-mapped surface faced away from the sun, the
+lamps and the sky, and the scene rendered dark. Uncompressed maps decode the
+same way, to within their quantisation. BC7 and BC5 device support is reported
 separately (`BlockCompressionCaps`), because a device can have one without the
 other; when a slot's format is unsupported, `chooseTextureFormat()` returns
 RGBA8 and the caller loads the original image instead of the cooked file. The
