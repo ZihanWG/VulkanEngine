@@ -1007,9 +1007,19 @@ void main()
     float roughness = clamp(vMaterialParams.y * textureRoughness, 0.04, 1.0);
     float multiScatterStrength = vMaterialParams.z;
 
+    // Double-sided materials draw with culling off, so a back face reaches here
+    // with its interpolated normal pointing away from the camera. glTF says to
+    // shade it with the reversed normal; without that a leaf seen from behind
+    // took its irradiance, specular and lights from the wrong hemisphere and
+    // rendered as dark specks. Single-sided draws cull back faces, so the flip
+    // never fires for them.
+    vec3 vertexNormal = gl_FrontFacing ? normalize(vNormal) : -normalize(vNormal);
     vec3 normalTS = texture(uNormalTextures[nonuniformEXT(vTextureIndices.y)], vUV).xyz * 2.0 - 1.0;
     mat3 tbn = mat3(normalize(vTangent), normalize(vBitangent), normalize(vNormal));
     vec3 normal = normalize(tbn * normalTS);
+    if (!gl_FrontFacing) {
+        normal = -normal;
+    }
     vec3 lightDirection = normalize(-vLightDirection);
     vec3 viewDirection = normalize(vCameraPosition - vWorldPosition);
     vec3 halfVector = normalize(viewDirection + lightDirection);
@@ -1068,7 +1078,7 @@ void main()
             // what a fade got before the prepass wrote its depth.
             bool lodFading = (vLodIndex & kLodInstanceFading) != 0u;
             float masked = (rayTracedFlags & kRtShadowFlagScreenMask) != 0u && !lodFading
-                               ? rayTracedShadowFromMask(normalize(vNormal), lightDirection)
+                               ? rayTracedShadowFromMask(vertexNormal, lightDirection)
                                : kRtMaskNotTraced;
             rayTracedFromMask = masked >= 0.0;
             if (rayTracedFromMask) {
@@ -1077,7 +1087,7 @@ void main()
                 shadowFactor = rayTracedSunVisibility(pc.frameConstants,
                                                       pc.objectFrameData,
                                                       vWorldPosition,
-                                                      normalize(vNormal),
+                                                      vertexNormal,
                                                       lightDirection,
                                                       gl_FragCoord.xy);
             }
@@ -1314,7 +1324,7 @@ void main()
                 float inlineVisibility = rayTracedSunVisibility(pc.frameConstants,
                                                                 pc.objectFrameData,
                                                                 vWorldPosition,
-                                                                normalize(vNormal),
+                                                                vertexNormal,
                                                                 lightDirection,
                                                                 gl_FragCoord.xy);
                 verdict = (inlineVisibility > 0.5) == (shadowFactor > 0.5) ? vec3(0.2, 0.85, 0.3)
