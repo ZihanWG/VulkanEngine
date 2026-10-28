@@ -32,16 +32,16 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 
 ## Performance
 
-GPU frame time on the Sponza sample scene (`--scene sponza`, 103 primitives, 25 materials) at each output resolution, with the sun shadowed by cascaded shadow maps (the default) and by ray-traced shadows (`rayTracedShadows.enabled`, opt-in, needs `VK_KHR_ray_query`); every other runtime setting at its default. NVIDIA GeForce RTX 3080 Ti Laptop GPU at default clocks, Release build, lights and animation frozen, every frame sampled for 60 s after a 15 s warm-up, p10 of `Frame total`:
+GPU frame time on the Sponza sample scene (`--scene sponza`, 103 primitives, 25 materials) at each output resolution, with the sun shadowed by cascaded shadow maps (the default) and by ray-traced shadows (`rayTracedShadows.enabled`, opt-in, needs `VK_KHR_ray_query`); every other runtime setting at its default. NVIDIA GeForce RTX 3080 Ti Laptop GPU at default clocks, Release build, lights and animation frozen, every frame sampled for 60 s after a 15 s warm-up in each of two runs per configuration, p10 of `Frame total`:
 
 | Resolution | Cascaded shadows | ≈ fps | Ray-traced shadows | ≈ fps | Change |
 | --- | --- | --- | --- | --- | --- |
-| 1280x720 | 2.84 ms | 352 | 2.31 ms | 434 | −18.7% |
-| 1920x1080 | 4.95 ms | 202 | 4.02 ms | 249 | −18.8% |
-| 2560x1440 | 8.00 ms | 125 | 6.67 ms | 150 | −16.6% |
-| 3840x2160 | 15.68 ms | 64 | 13.32 ms | 75 | −15.1% |
+| 1280x720 | 2.27 ms | 440 | 2.06 ms | 484 | −9.2% |
+| 1920x1080 | 3.78 ms | 264 | 3.58 ms | 279 | −5.3% |
+| 2560x1440 | 6.58 ms | 152 | 6.41 ms | 156 | −2.5% |
+| 3840x2160 | 12.89 ms | 78 | 12.85 ms | 78 | −0.3% |
 
-The fps columns are 1000 / GPU frame time: the GPU-bound ceiling, not a presented frame rate. The laptop GPU ran thermally limited throughout (86-89 °C, graphics clock 1200-1550 MHz against a 2100 MHz boost), so these are sustained figures for this machine rather than peak ones. The saving is all in `MainHDRPass`, where one ray query replaces the cascade selection and PCF taps per shaded fragment; that pass is 58-77% of the frame and grows with pixel count, though below linearly: 9x the pixels from 720p to 4K costs it about 5x. Each resolution was measured as one cascaded run followed directly by one traced run, and a cascaded 1280x720 run repeated at the end of the series came back within 0.7%. The traced run always went second, on a hotter card, so any bias is against it. Method and harness: [docs/profiling.md](docs/profiling.md); the ray-traced path itself: [docs/ray_traced_shadows.md](docs/ray_traced_shadows.md).
+The fps columns are 1000 / GPU frame time: the GPU-bound ceiling, not a presented frame rate. The laptop GPU ran warm throughout (81-85 °C, graphics clock 1550-1970 MHz against a 2100 MHz boost), so these are sustained figures for this machine rather than peak ones. The saving is in `MainHDRPass`, where one ray query replaces the cascade selection and PCF taps per shaded fragment, and it shrinks as the resolution rises: at 3840x2160 the two paths are level, with the traced median 0.1% slower. That pass is 56-71% of the frame and grows with pixel count, though below linearly: 9x the pixels from 720p to 4K costs it about 5x. Each resolution was measured as its own interleaved series (cascaded, traced, cascaded, traced), and the repeated cascaded run came back within 0.17-0.80% at every resolution. Method and harness: [docs/profiling.md](docs/profiling.md); the ray-traced path itself: [docs/ray_traced_shadows.md](docs/ray_traced_shadows.md).
 
 ## Architecture
 
