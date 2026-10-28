@@ -120,6 +120,16 @@ RTX 3080 Ti Laptop, clocks pinned 800/7001, `--scene sponza` with its animation
 frozen, 1280x720, p10 over every frame of A/B/A/B series with the control
 repeated (`docs/profiling.md` explains both flags).
 
+**Every series in this section predates the normal-map fix.** Until then the
+main pass read a BC5 normal map's missing blue channel as Z = -1, so most of
+Sponza's normal-mapped surfaces faced away from the sun. The traced path only
+casts its ray where the shading normal faces the sun, while the cascades are
+filtered on every fragment, so these series most likely overstate the saving.
+After the fix, at default clocks, the traced frame saves 9.2% at 1280x720 and
+falls to level at 3840x2160 (the README's performance table, one interleaved
+series per resolution). The rows below are kept as the record of what each step
+cost against the frame it was measured on.
+
 **The first two series are re-measured against fixed cascades.** They were
 first taken while the cascade fit clamped its near plane (see Verification
 below). On Sponza the cascades then drew 144 of the 293 caster draws they
