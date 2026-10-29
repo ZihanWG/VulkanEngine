@@ -217,6 +217,7 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     csm.shadowDistance = std::clamp(csm.shadowDistance, csm.nearPlane + 0.001f, csm.farPlane);
 
     debugUi.uiScale = std::clamp(debugUi.uiScale, ui::kMinDebugUiScale, ui::kMaxDebugUiScale);
+    debugUi.inspectorTab = std::min(debugUi.inspectorTab, kInspectorTabCount - 1U);
     debugUi.renderTargetPreviewExposure = std::clamp(debugUi.renderTargetPreviewExposure, 0.05f, 8.0f);
     debugUi.renderTargetPreviewScale = std::clamp(debugUi.renderTargetPreviewScale, 0.25f, 2.0f);
     // activeCascadeCount() == clamp(cascadeCount, 1, max); after the clamp above
@@ -619,11 +620,8 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*debugUi, "advancedMode", settings.debugUi.advancedMode);
         readFloat(*debugUi, "uiScale", settings.debugUi.uiScale);
         readBool(*debugUi, "showRenderGraphPanel", settings.debugUi.showRenderGraphPanel);
-        readBool(*debugUi, "showSceneHierarchyPanel", settings.debugUi.showSceneHierarchyPanel);
-        readBool(*debugUi, "showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel);
-        readBool(*debugUi, "showTextureDebugPanel", settings.debugUi.showTextureDebugPanel);
-        readBool(*debugUi, "showRenderTargetDebugPanel", settings.debugUi.showRenderTargetDebugPanel);
-        readBool(*debugUi, "showIrradianceProbePanel", settings.debugUi.showIrradianceProbePanel);
+        readBool(*debugUi, "showInspector", settings.debugUi.showInspector);
+        readUint32(*debugUi, "inspectorTab", settings.debugUi.inspectorTab);
         readBool(*debugUi, "showGpuTimingGraphs", settings.debugUi.showGpuTimingGraphs);
         readBool(*debugUi, "showCullingStats", settings.debugUi.showCullingStats);
         readBool(*debugUi, "showExposureGraphs", settings.debugUi.showExposureGraphs);
@@ -807,11 +805,8 @@ Json toJson(const RuntimeSettings& settings)
          Json{{"advancedMode", settings.debugUi.advancedMode},
               {"uiScale", settings.debugUi.uiScale},
               {"showRenderGraphPanel", settings.debugUi.showRenderGraphPanel},
-              {"showSceneHierarchyPanel", settings.debugUi.showSceneHierarchyPanel},
-              {"showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel},
-              {"showTextureDebugPanel", settings.debugUi.showTextureDebugPanel},
-              {"showRenderTargetDebugPanel", settings.debugUi.showRenderTargetDebugPanel},
-              {"showIrradianceProbePanel", settings.debugUi.showIrradianceProbePanel},
+              {"showInspector", settings.debugUi.showInspector},
+              {"inspectorTab", settings.debugUi.inspectorTab},
               {"showGpuTimingGraphs", settings.debugUi.showGpuTimingGraphs},
               {"showCullingStats", settings.debugUi.showCullingStats},
               {"showExposureGraphs", settings.debugUi.showExposureGraphs},

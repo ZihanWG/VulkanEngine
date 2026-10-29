@@ -238,9 +238,12 @@ Dear ImGui exposes renderer controls and inspection panels for:
   virtual shadow maps, punctual shadows, mesh LOD, render scale and dynamic
   resolution, skeletal animation, and the scene presets
 
-The main panel's menu bar opens the side windows (`Windows`, which also tiles
-them right of the panel with `Arrange windows`), toggles the optional sections
-(`Sections`), and sets the UI scale (`View`). The scale follows the window
+Besides the main panel there is one other window, the Inspector, whose tabs
+hold the scene hierarchy, material, texture and render-target views and the
+irradiance probes. It opens only on request (its button, or `Windows`), never
+with advanced mode, and a viewport pick switches an open Inspector to the
+material tab. The main panel's menu bar also toggles the optional sections
+(`Sections`) and sets the UI scale (`View`). The scale follows the window
 height -- 1x at 1080 rows, so a 1440p window draws at 1.33x -- times a persisted
 `debugUi.uiScale` multiplier. `F1` hides the whole debug UI for the session.
 

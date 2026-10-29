@@ -13,30 +13,18 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <string>
 
 namespace ve {
 
 namespace {
 
-// The side windows, in their grid order. One table so the Windows menu, the
-// placement and the draw loop cannot disagree about which windows exist.
-// Spelled through an alias: clang-format 18 and 22 disagree on the spacing of
-// a pointer-to-member declarator, and an alias leaves neither anything to move.
-using DebugUiFlag = bool DebugUiSettings::*;
-
-struct DebugSidePanel {
-    const char* title;
-    DebugUiFlag visible;
-    // Hidden outside advanced mode, like the tabs that lead to them.
-    bool advancedOnly;
-};
-
-constexpr std::array<DebugSidePanel, 5> kDebugSidePanels{{
-    {"Scene Hierarchy", &DebugUiSettings::showSceneHierarchyPanel, true},
-    {"Material Inspector", &DebugUiSettings::showMaterialInspectorPanel, true},
-    {"Texture Debug Views", &DebugUiSettings::showTextureDebugPanel, true},
-    {"Render Target Debug Views", &DebugUiSettings::showRenderTargetDebugPanel, true},
-    {"Irradiance Probes", &DebugUiSettings::showIrradianceProbePanel, false},
+constexpr std::array<const char*, kInspectorTabCount> kInspectorTabNames{{
+    "Scene",
+    "Material",
+    "Textures",
+    "Render Targets",
+    "Probes",
 }};
 
 constexpr float kDebugPanelMargin = 16.0f;
@@ -62,13 +50,15 @@ void Renderer::buildDebugUi()
 
     // First run only: the layout file takes over from then on, so moving or
     // resizing the panel sticks across restarts. Arrange windows puts it back.
+    const bool forcePlacement = arrangeDebugPanelsRequested_;
+    arrangeDebugPanelsRequested_ = false;
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const ImGuiCond mainCondition = arrangeDebugPanelsRequested_ ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+    const ImGuiCond mainCondition = forcePlacement ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kDebugPanelMargin, viewport->WorkPos.y + kDebugPanelMargin),
                             mainCondition);
     ImGui::SetNextWindowSize(ImVec2(mainDebugPanelWidth(), viewport->WorkSize.y - 2.0f * kDebugPanelMargin),
                              mainCondition);
-    if (arrangeDebugPanelsRequested_) {
+    if (forcePlacement) {
         ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always);
     }
     ImGui::Begin("VulkanEngine Debug", nullptr, ImGuiWindowFlags_MenuBar);
@@ -78,8 +68,14 @@ void Renderer::buildDebugUi()
 
     ImGui::Checkbox("Advanced mode", &debugUiSettings_.advancedMode);
     ImGui::SetItemTooltip("Off: only the common look and render-scale knobs.\n"
-                          "On: reveals the Scene and Diagnostics tabs, the profiler and culling\n"
-                          "readouts, and the side windows (Windows menu).");
+                          "On: reveals the Scene and Diagnostics tabs and the profiler and\n"
+                          "culling readouts. It never opens a window.");
+    ImGui::SameLine();
+    if (ImGui::Button(debugUiSettings_.showInspector ? "Hide Inspector" : "Inspector")) {
+        debugUiSettings_.showInspector = !debugUiSettings_.showInspector;
+    }
+    ImGui::SetItemTooltip("Scene hierarchy, material, texture and render-target views and the\n"
+                          "irradiance probes, as tabs of one window beside this panel.");
     ImGui::SameLine();
     ImGui::TextDisabled("(F1 hides the UI)");
 
@@ -154,88 +150,91 @@ void Renderer::buildDebugUi()
         ImGui::EndTabBar();
     }
 
+    // Where the panel actually ends, which the layout file may have changed.
+    const float mainPanelRight = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x;
     ImGui::End();
 
-    // Side windows rather than sections of the main panel: their previews and
-    // tables need more room than a tab gives them, and anything appended below
-    // the fold of a scrolling panel is clipped rather than drawn. The irradiance
-    // probe window is not behind the advanced-mode gate, because its atlas
-    // previews are how that subsystem is checked at all.
-    const bool forcePlacement = arrangeDebugPanelsRequested_;
-    arrangeDebugPanelsRequested_ = false;
-    const auto panelOpen = [this](const DebugSidePanel& panel) {
-        return debugUiSettings_.*panel.visible && (!panel.advancedOnly || debugUiSettings_.advancedMode);
-    };
-    const auto openCount =
-        static_cast<uint32_t>(std::count_if(kDebugSidePanels.begin(), kDebugSidePanels.end(), panelOpen));
-    uint32_t openSlot = 0;
-    for (uint32_t index = 0; index < kDebugSidePanels.size(); ++index) {
-        const DebugSidePanel& panel = kDebugSidePanels[index];
-        if (!panelOpen(panel)) {
-            continue;
-        }
-        // Arrange packs the open windows; a first appearance takes the window's
-        // fixed slot, so two windows opened at different times never coincide.
-        if (forcePlacement) {
-            placeDebugSidePanel(openSlot, openCount, true);
-        } else {
-            placeDebugSidePanel(index, static_cast<uint32_t>(kDebugSidePanels.size()), false);
-        }
-        ++openSlot;
-        if (ImGui::Begin(panel.title, &(debugUiSettings_.*panel.visible))) {
-            switch (index) {
-            case 0:
-                drawSceneHierarchyDebugUi();
-                break;
-            case 1:
-                drawMaterialInspectorDebugUi();
-                break;
-            case 2:
-                drawTextureDebugUi();
-                break;
-            case 3:
-                drawRenderTargetDebugUi();
-                break;
-            default:
-                drawIrradianceProbesDebugUi();
-                break;
-            }
-        }
-        ImGui::End();
-    }
+    drawInspectorWindow(forcePlacement, mainPanelRight);
 
     clampRuntimeSettings();
 }
 
-void Renderer::placeDebugSidePanel(uint32_t slot, uint32_t slotCount, bool force)
+void Renderer::openInspector(InspectorTab tab)
 {
-    // The area right of the main panel, in up to two columns. Every side window
-    // scrolls, so a smaller cell costs a scroll rather than a clipped widget.
+    debugUiSettings_.showInspector = true;
+    requestedInspectorTab_ = static_cast<int>(tab);
+}
+
+// One window with tabs where there used to be five windows. They opened
+// together whenever advanced mode was switched on -- the saved settings of an
+// existing install still held the old default-open flags -- and landed on top
+// of each other and of the main panel. The previews and tables still need more
+// room than a tab of the main panel gives them, so this stays a window; it is
+// just one, opened only on request, and advanced mode does not touch it.
+void Renderer::drawInspectorWindow(bool forcePlacement, float mainPanelRight)
+{
+    if (!debugUiSettings_.showInspector) {
+        return;
+    }
+
+    // Right of the main panel and full height. Capped in width so on a wide
+    // window the scene stays visible beside it.
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const float left = viewport->WorkPos.x + 2.0f * kDebugPanelMargin + mainDebugPanelWidth();
-    const float top = viewport->WorkPos.y + kDebugPanelMargin;
-    const float areaWidth =
-        std::max(viewport->WorkPos.x + viewport->WorkSize.x - kDebugPanelMargin - left, ImGui::GetFontSize() * 20.0f);
-    const float areaHeight = viewport->WorkSize.y - 2.0f * kDebugPanelMargin;
-
-    const uint32_t count = std::max(slotCount, 1U);
-    const uint32_t columns = count > 1U ? 2U : 1U;
-    const uint32_t rows = (count + columns - 1U) / columns;
-    const float cellWidth =
-        (areaWidth - static_cast<float>(columns - 1U) * kDebugPanelMargin) / static_cast<float>(columns);
-    const float cellHeight =
-        (areaHeight - static_cast<float>(rows - 1U) * kDebugPanelMargin) / static_cast<float>(rows);
-    const uint32_t column = slot % columns;
-    const uint32_t row = slot / columns;
-
-    const ImGuiCond condition = force ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
-    ImGui::SetNextWindowPos(ImVec2(left + static_cast<float>(column) * (cellWidth + kDebugPanelMargin),
-                                   top + static_cast<float>(row) * (cellHeight + kDebugPanelMargin)),
-                            condition);
-    ImGui::SetNextWindowSize(ImVec2(cellWidth, cellHeight), condition);
-    if (force) {
+    const float left = mainPanelRight + kDebugPanelMargin;
+    const float available = viewport->WorkPos.x + viewport->WorkSize.x - kDebugPanelMargin - left;
+    const float width = std::max(std::min(available, ImGui::GetFontSize() * 56.0f), ImGui::GetFontSize() * 24.0f);
+    const ImGuiCond condition = forcePlacement ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+    ImGui::SetNextWindowPos(ImVec2(left, viewport->WorkPos.y + kDebugPanelMargin), condition);
+    ImGui::SetNextWindowSize(ImVec2(width, viewport->WorkSize.y - 2.0f * kDebugPanelMargin), condition);
+    if (forcePlacement) {
         ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always);
     }
+
+    // The tab bar does not persist its selection, so the saved tab is
+    // requested once, the first time the window draws this session.
+    if (!inspectorTabRestored_) {
+        inspectorTabRestored_ = true;
+        if (requestedInspectorTab_ < 0) {
+            requestedInspectorTab_ = static_cast<int>(debugUiSettings_.inspectorTab);
+        }
+    }
+
+    if (ImGui::Begin("Inspector", &debugUiSettings_.showInspector)) {
+        if (ImGui::BeginTabBar("InspectorTabs")) {
+            for (uint32_t index = 0; index < kInspectorTabCount; ++index) {
+                const ImGuiTabItemFlags flags = requestedInspectorTab_ == static_cast<int>(index)
+                                                    ? ImGuiTabItemFlags_SetSelected
+                                                    : ImGuiTabItemFlags_None;
+                if (!ImGui::BeginTabItem(kInspectorTabNames[index], nullptr, flags)) {
+                    continue;
+                }
+                debugUiSettings_.inspectorTab = index;
+                switch (static_cast<InspectorTab>(index)) {
+                case InspectorTab::Scene:
+                    drawSceneHierarchyDebugUi();
+                    break;
+                case InspectorTab::Material:
+                    drawMaterialInspectorDebugUi();
+                    break;
+                case InspectorTab::Textures:
+                    drawTextureDebugUi();
+                    break;
+                case InspectorTab::RenderTargets:
+                    drawRenderTargetDebugUi();
+                    break;
+                case InspectorTab::Probes:
+                    drawIrradianceProbesDebugUi();
+                    break;
+                }
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+        // Only consumed once the tab bar has actually drawn; a collapsed
+        // window keeps the request for when it is expanded.
+        requestedInspectorTab_ = -1;
+    }
+    ImGui::End();
 }
 
 void Renderer::drawDebugMenuBar()
@@ -245,24 +244,20 @@ void Renderer::drawDebugMenuBar()
     }
 
     if (ImGui::BeginMenu("Windows")) {
-        for (const DebugSidePanel& panel : kDebugSidePanels) {
-            const bool enabled = !panel.advancedOnly || debugUiSettings_.advancedMode;
-            ImGui::MenuItem(panel.title, nullptr, &(debugUiSettings_.*panel.visible), enabled);
-            if (!enabled) {
-                ImGui::SetItemTooltip("Needs advanced mode.");
+        ImGui::MenuItem("Inspector", nullptr, &debugUiSettings_.showInspector);
+        ImGui::Separator();
+        for (uint32_t index = 0; index < kInspectorTabCount; ++index) {
+            const std::string label = std::string("Inspector > ") + kInspectorTabNames[index];
+            if (ImGui::MenuItem(label.c_str())) {
+                openInspector(static_cast<InspectorTab>(index));
             }
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Arrange windows")) {
             arrangeDebugPanelsRequested_ = true;
         }
-        ImGui::SetItemTooltip("Put the main panel back on the left and tile the open\n"
-                              "side windows to its right, uncollapsed.");
-        if (ImGui::MenuItem("Close all side windows")) {
-            for (const DebugSidePanel& panel : kDebugSidePanels) {
-                debugUiSettings_.*panel.visible = false;
-            }
-        }
+        ImGui::SetItemTooltip("Put the main panel back on the left and the Inspector\n"
+                              "beside it, both uncollapsed.");
         ImGui::EndMenu();
     }
 
@@ -320,7 +315,7 @@ void Renderer::drawControlsDebugUi()
     ImGui::SeparatorText("Interface");
     ImGui::BulletText("F1: hide / show the debug UI");
     ImGui::BulletText("Ctrl + click a slider: type an exact value");
-    ImGui::BulletText("Windows > Arrange windows: tidy the side windows");
+    ImGui::BulletText("Windows > Arrange windows: put the panel and the Inspector back");
 
     ImGui::SeparatorText("Capture");
     ImGui::BulletText("F11: toggle portfolio capture mode");

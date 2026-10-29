@@ -136,11 +136,8 @@ RuntimeSettings makeNonDefaultSettings()
 
     settings.debugUi.uiScale = 1.25f;
     settings.debugUi.showRenderGraphPanel = false;
-    settings.debugUi.showSceneHierarchyPanel = true;
-    settings.debugUi.showMaterialInspectorPanel = true;
-    settings.debugUi.showTextureDebugPanel = true;
-    settings.debugUi.showRenderTargetDebugPanel = true;
-    settings.debugUi.showIrradianceProbePanel = true;
+    settings.debugUi.showInspector = true;
+    settings.debugUi.inspectorTab = static_cast<uint32_t>(ve::InspectorTab::RenderTargets);
     settings.debugUi.showGpuTimingGraphs = false;
     settings.debugUi.showCullingStats = false;
     settings.debugUi.showExposureGraphs = false;
@@ -267,11 +264,8 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
 
     CHECK(loaded.debugUi.uiScale == Catch::Approx(original.debugUi.uiScale));
     CHECK(loaded.debugUi.showRenderGraphPanel == original.debugUi.showRenderGraphPanel);
-    CHECK(loaded.debugUi.showSceneHierarchyPanel == original.debugUi.showSceneHierarchyPanel);
-    CHECK(loaded.debugUi.showMaterialInspectorPanel == original.debugUi.showMaterialInspectorPanel);
-    CHECK(loaded.debugUi.showTextureDebugPanel == original.debugUi.showTextureDebugPanel);
-    CHECK(loaded.debugUi.showRenderTargetDebugPanel == original.debugUi.showRenderTargetDebugPanel);
-    CHECK(loaded.debugUi.showIrradianceProbePanel == original.debugUi.showIrradianceProbePanel);
+    CHECK(loaded.debugUi.showInspector == original.debugUi.showInspector);
+    CHECK(loaded.debugUi.inspectorTab == original.debugUi.inspectorTab);
     CHECK(loaded.debugUi.showGpuTimingGraphs == original.debugUi.showGpuTimingGraphs);
     CHECK(loaded.debugUi.showCullingStats == original.debugUi.showCullingStats);
     CHECK(loaded.debugUi.showExposureGraphs == original.debugUi.showExposureGraphs);
