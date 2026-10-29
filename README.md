@@ -174,7 +174,7 @@ Focused technical write-ups for each major subsystem (start with [docs/README.md
 1. Configure once: `cmake --preset debug` (Visual Studio users see [docs/build.md](docs/build.md) for the multi-config generator).
 2. Build: `cmake --build build/debug`.
 3. Run `./build/debug/VulkanEngine`. On macOS you can instead double-click `tools/macos/run_vulkan_engine.command`, which sources the Vulkan SDK for you.
-4. In `VulkanEngine Debug`, open `Debug Views`, then show the `GPU Profiler`, `Render Graph`, `Scene Hierarchy`, and `Material Inspector` panels.
+4. In `VulkanEngine Debug`, tick `Advanced mode`, then open `Scene Hierarchy` and `Material Inspector` from the `Windows` menu (`Windows` → `Arrange windows` tiles them beside the panel). `F1` hides the debug UI; `View` → `UI scale` resizes it.
 5. Open the `Lights (Clustered)` panel: drive `Light count` up to a few hundred, toggle `Cluster heatmap`, and toggle `Use clustered culling` off to compare against the brute-force path. Watch the `ClusterBuild` and `LightCull` rows in the `GPU Profiler`.
 6. Use the `Scene` tab → `Scene Presets` → `Load Occlusion Test Scene` and watch the `Performance` tab's `GPU Culling` section: `Occlusion culled` counts phase-1 rejections and `Phase-2 rescued` counts disocclusions the re-test brought back (two-phase Hi-Z occlusion is on by default).
 7. Press `F11` to enable portfolio mode; press `F12` only when intentionally updating the committed portfolio screenshots.

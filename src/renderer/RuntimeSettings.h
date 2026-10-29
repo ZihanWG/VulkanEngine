@@ -281,15 +281,21 @@ struct DebugUiSettings {
     // knobs (tone mapping, bloom, SSAO, TAA, exposure); when true it reveals the
     // scene, GPU, diagnostics sections and the side panels.
     bool advancedMode = false;
+    // Multiplier on the automatic, window-height-derived UI scale; see
+    // ui::effectiveDebugUiScale. 1.0 keeps the automatic size.
+    float uiScale = 1.0f;
     bool showRenderGraphPanel = true;
-    bool showSceneHierarchyPanel = true;
-    bool showMaterialInspectorPanel = true;
-    bool showTextureDebugPanel = true;
-    bool showRenderTargetDebugPanel = true;
+    // The side windows start closed and are opened from the main panel's
+    // Windows menu. Defaulting them open put five windows on top of each other
+    // (and of the main panel) the first time advanced mode was switched on.
+    bool showSceneHierarchyPanel = false;
+    bool showMaterialInspectorPanel = false;
+    bool showTextureDebugPanel = false;
+    bool showRenderTargetDebugPanel = false;
     // Irradiance-probe controls and atlas previews. A window of its own because
     // the main debug panel is taller than the display and its previews would be
     // clipped rather than drawn.
-    bool showIrradianceProbePanel = true;
+    bool showIrradianceProbePanel = false;
     bool showGpuTimingGraphs = true;
     bool showCullingStats = true;
     bool showExposureGraphs = true;

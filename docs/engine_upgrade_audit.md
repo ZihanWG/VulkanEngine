@@ -238,6 +238,12 @@ Dear ImGui exposes renderer controls and inspection panels for:
   virtual shadow maps, punctual shadows, mesh LOD, render scale and dynamic
   resolution, skeletal animation, and the scene presets
 
+The main panel's menu bar opens the side windows (`Windows`, which also tiles
+them right of the panel with `Arrange windows`), toggles the optional sections
+(`Sections`), and sets the UI scale (`View`). The scale follows the window
+height -- 1x at 1080 rows, so a 1440p window draws at 1.33x -- times a persisted
+`debugUi.uiScale` multiplier. `F1` hides the whole debug UI for the session.
+
 Portfolio capture mode is a runtime preset for presentation screenshots. It is
 not an offline renderer, and F12 should only be used when intentionally updating
 screenshots.

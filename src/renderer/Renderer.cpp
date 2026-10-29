@@ -519,7 +519,7 @@ void Renderer::drawFrame()
         // lines of it and none of it was timed, which matters because the debug
         // UI is built on every frame a measurement run records.
         const ScopedCpuTimer timer = cpuScope(CpuScope::DebugUi);
-        imguiLayer_.beginFrame();
+        imguiLayer_.beginFrame(debugUiSettings_.uiScale);
         buildDebugUi();
         drawViewportGizmo();
         imguiLayer_.endFrame();
@@ -703,6 +703,9 @@ void Renderer::handleEvent(const SDL_Event& event)
     }
     if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.key == SDLK_F12) {
         requestPortfolioScreenshot();
+    }
+    if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.key == SDLK_F1) {
+        debugUiHidden_ = !debugUiHidden_;
     }
 
     const bool uiWantsMouse = imguiLayer_.wantsMouseCapture();

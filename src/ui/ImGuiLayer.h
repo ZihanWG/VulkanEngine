@@ -8,9 +8,11 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <unordered_map>
 
 typedef union SDL_Event SDL_Event;
+struct ImGuiStyle;
 
 namespace ve {
 
@@ -43,7 +45,9 @@ public:
     void shutdown();
 
     void handleEvent(const SDL_Event& event);
-    void beginFrame();
+    // userScale is the persisted multiplier on the automatic, window-height
+    // derived scale (ui::effectiveDebugUiScale); fonts and paddings follow it.
+    void beginFrame(float userScale = 1.0f);
     void endFrame();
     void render(VkCommandBuffer commandBuffer);
     void onSwapchainRecreated(VkFormat colorFormat, uint32_t imageCount);
@@ -62,6 +66,8 @@ public:
     }
 
 private:
+    void applyScale(float scale);
+
     struct TexturePreviewKey {
         VkImageView imageView = VK_NULL_HANDLE;
         VkSampler sampler = VK_NULL_HANDLE;
@@ -96,6 +102,8 @@ private:
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     VkFormat colorFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t imageCount_ = 0;
+    std::unique_ptr<ImGuiStyle> baseStyle_;
+    float appliedScale_ = 1.0f;
     std::unordered_map<TexturePreviewKey, VkDescriptorSet, TexturePreviewKeyHash> texturePreviewDescriptors_;
     std::unordered_map<TexturePreviewKey, VkDescriptorSet, TexturePreviewKeyHash> renderTargetPreviewDescriptors_;
     // ImGui stores this as a raw pointer, so the string has to outlive the

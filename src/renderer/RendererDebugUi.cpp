@@ -6,33 +6,78 @@
 // live in RendererInternal.h, which is included by both translation units.
 #include "renderer/Renderer.h"
 #include "renderer/RendererInternal.h"
+#include "ui/UiScale.h"
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 
 namespace ve {
+
+namespace {
+
+// The side windows, in their grid order. One table so the Windows menu, the
+// placement and the draw loop cannot disagree about which windows exist.
+struct DebugSidePanel {
+    const char* title;
+    bool DebugUiSettings::* visible;
+    // Hidden outside advanced mode, like the tabs that lead to them.
+    bool advancedOnly;
+};
+
+constexpr std::array<DebugSidePanel, 5> kDebugSidePanels{{
+    {"Scene Hierarchy", &DebugUiSettings::showSceneHierarchyPanel, true},
+    {"Material Inspector", &DebugUiSettings::showMaterialInspectorPanel, true},
+    {"Texture Debug Views", &DebugUiSettings::showTextureDebugPanel, true},
+    {"Render Target Debug Views", &DebugUiSettings::showRenderTargetDebugPanel, true},
+    {"Irradiance Probes", &DebugUiSettings::showIrradianceProbePanel, false},
+}};
+
+constexpr float kDebugPanelMargin = 16.0f;
+
+// In font-size units so the panel widens with the UI scale instead of
+// clipping its own labels.
+float mainDebugPanelWidth()
+{
+    return ImGui::GetFontSize() * 36.0f;
+}
+
+} // namespace
 
 void Renderer::buildDebugUi()
 {
     if (!imguiLayer_.initialized()) {
         return;
     }
+    if (debugUiHidden_) {
+        clampRuntimeSettings();
+        return;
+    }
 
     // First run only: the layout file takes over from then on, so moving or
-    // resizing the panel sticks across restarts.
+    // resizing the panel sticks across restarts. Arrange windows puts it back.
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 16.0f, viewport->WorkPos.y + 16.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(460.0f, std::min(viewport->WorkSize.y - 32.0f, 780.0f)), ImGuiCond_FirstUseEver);
-    ImGui::Begin("VulkanEngine Debug");
+    const ImGuiCond mainCondition = arrangeDebugPanelsRequested_ ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + kDebugPanelMargin, viewport->WorkPos.y + kDebugPanelMargin),
+                            mainCondition);
+    ImGui::SetNextWindowSize(ImVec2(mainDebugPanelWidth(), viewport->WorkSize.y - 2.0f * kDebugPanelMargin),
+                             mainCondition);
+    if (arrangeDebugPanelsRequested_) {
+        ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always);
+    }
+    ImGui::Begin("VulkanEngine Debug", nullptr, ImGuiWindowFlags_MenuBar);
 
+    drawDebugMenuBar();
     drawStatusStrip();
 
     ImGui::Checkbox("Advanced mode", &debugUiSettings_.advancedMode);
     ImGui::SetItemTooltip("Off: only the common look and render-scale knobs.\n"
                           "On: reveals the Scene and Diagnostics tabs, the profiler and culling\n"
-                          "readouts, and the side panels.");
+                          "readouts, and the side windows (Windows menu).");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(F1 hides the UI)");
 
     // Tabs rather than one column of sections. There are twenty-seven of them and
     // every one used to be default-open, so the window was taller than the display
@@ -87,7 +132,6 @@ void Renderer::buildDebugUi()
         }
 
         if (debugUiSettings_.advancedMode && ImGui::BeginTabItem("Diagnostics")) {
-            drawDebugViewToggles();
             if (debugUiSettings_.showRenderGraphPanel &&
                 ImGui::CollapsingHeader("Render Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
                 drawRenderGraphDebugUi();
@@ -108,59 +152,153 @@ void Renderer::buildDebugUi()
 
     ImGui::End();
 
-    // Side panels are controlled by the toggles under Advanced, so only surface them
-    // in advanced mode (their show* flags default to true).
-    // Its own window rather than a section of the main panel, and not behind the
-    // advanced-mode gate.
-    //
-    // The main panel's sections are all default-open, so it is already taller
-    // than the display; anything appended to it lands below the fold, where ImGui
-    // clips it rather than drawing it. That is not merely inconvenient here --
-    // the atlas previews are how this subsystem is checked at all, and a preview
-    // that is never drawn cannot be looked at or reasoned about.
-    if (debugUiSettings_.showIrradianceProbePanel) {
-        if (ImGui::Begin("Irradiance Probes", &debugUiSettings_.showIrradianceProbePanel)) {
-            drawIrradianceProbesDebugUi();
+    // Side windows rather than sections of the main panel: their previews and
+    // tables need more room than a tab gives them, and anything appended below
+    // the fold of a scrolling panel is clipped rather than drawn. The irradiance
+    // probe window is not behind the advanced-mode gate, because its atlas
+    // previews are how that subsystem is checked at all.
+    const bool forcePlacement = arrangeDebugPanelsRequested_;
+    arrangeDebugPanelsRequested_ = false;
+    const auto panelOpen = [this](const DebugSidePanel& panel) {
+        return debugUiSettings_.*panel.visible && (!panel.advancedOnly || debugUiSettings_.advancedMode);
+    };
+    const auto openCount =
+        static_cast<uint32_t>(std::count_if(kDebugSidePanels.begin(), kDebugSidePanels.end(), panelOpen));
+    uint32_t openSlot = 0;
+    for (uint32_t index = 0; index < kDebugSidePanels.size(); ++index) {
+        const DebugSidePanel& panel = kDebugSidePanels[index];
+        if (!panelOpen(panel)) {
+            continue;
+        }
+        // Arrange packs the open windows; a first appearance takes the window's
+        // fixed slot, so two windows opened at different times never coincide.
+        if (forcePlacement) {
+            placeDebugSidePanel(openSlot, openCount, true);
+        } else {
+            placeDebugSidePanel(index, static_cast<uint32_t>(kDebugSidePanels.size()), false);
+        }
+        ++openSlot;
+        if (ImGui::Begin(panel.title, &(debugUiSettings_.*panel.visible))) {
+            switch (index) {
+            case 0:
+                drawSceneHierarchyDebugUi();
+                break;
+            case 1:
+                drawMaterialInspectorDebugUi();
+                break;
+            case 2:
+                drawTextureDebugUi();
+                break;
+            case 3:
+                drawRenderTargetDebugUi();
+                break;
+            default:
+                drawIrradianceProbesDebugUi();
+                break;
+            }
         }
         ImGui::End();
-    }
-
-    if (debugUiSettings_.advancedMode) {
-        if (debugUiSettings_.showSceneHierarchyPanel) {
-            if (ImGui::Begin("Scene Hierarchy", &debugUiSettings_.showSceneHierarchyPanel)) {
-                drawSceneHierarchyDebugUi();
-            }
-            ImGui::End();
-        }
-
-        if (debugUiSettings_.showMaterialInspectorPanel) {
-            if (ImGui::Begin("Material Inspector", &debugUiSettings_.showMaterialInspectorPanel)) {
-                drawMaterialInspectorDebugUi();
-            }
-            ImGui::End();
-        }
-
-        if (debugUiSettings_.showTextureDebugPanel) {
-            if (ImGui::Begin("Texture Debug Views", &debugUiSettings_.showTextureDebugPanel)) {
-                drawTextureDebugUi();
-            }
-            ImGui::End();
-        }
-
-        if (debugUiSettings_.showRenderTargetDebugPanel) {
-            if (ImGui::Begin("Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel)) {
-                drawRenderTargetDebugUi();
-            }
-            ImGui::End();
-        }
     }
 
     clampRuntimeSettings();
 }
 
+void Renderer::placeDebugSidePanel(uint32_t slot, uint32_t slotCount, bool force)
+{
+    // The area right of the main panel, in up to two columns. Every side window
+    // scrolls, so a smaller cell costs a scroll rather than a clipped widget.
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float left = viewport->WorkPos.x + 2.0f * kDebugPanelMargin + mainDebugPanelWidth();
+    const float top = viewport->WorkPos.y + kDebugPanelMargin;
+    const float areaWidth =
+        std::max(viewport->WorkPos.x + viewport->WorkSize.x - kDebugPanelMargin - left, ImGui::GetFontSize() * 20.0f);
+    const float areaHeight = viewport->WorkSize.y - 2.0f * kDebugPanelMargin;
+
+    const uint32_t count = std::max(slotCount, 1U);
+    const uint32_t columns = count > 1U ? 2U : 1U;
+    const uint32_t rows = (count + columns - 1U) / columns;
+    const float cellWidth =
+        (areaWidth - static_cast<float>(columns - 1U) * kDebugPanelMargin) / static_cast<float>(columns);
+    const float cellHeight =
+        (areaHeight - static_cast<float>(rows - 1U) * kDebugPanelMargin) / static_cast<float>(rows);
+    const uint32_t column = slot % columns;
+    const uint32_t row = slot / columns;
+
+    const ImGuiCond condition = force ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+    ImGui::SetNextWindowPos(ImVec2(left + static_cast<float>(column) * (cellWidth + kDebugPanelMargin),
+                                   top + static_cast<float>(row) * (cellHeight + kDebugPanelMargin)),
+                            condition);
+    ImGui::SetNextWindowSize(ImVec2(cellWidth, cellHeight), condition);
+    if (force) {
+        ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always);
+    }
+}
+
+void Renderer::drawDebugMenuBar()
+{
+    if (!ImGui::BeginMenuBar()) {
+        return;
+    }
+
+    if (ImGui::BeginMenu("Windows")) {
+        for (const DebugSidePanel& panel : kDebugSidePanels) {
+            const bool enabled = !panel.advancedOnly || debugUiSettings_.advancedMode;
+            ImGui::MenuItem(panel.title, nullptr, &(debugUiSettings_.*panel.visible), enabled);
+            if (!enabled) {
+                ImGui::SetItemTooltip("Needs advanced mode.");
+            }
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Arrange windows")) {
+            arrangeDebugPanelsRequested_ = true;
+        }
+        ImGui::SetItemTooltip("Put the main panel back on the left and tile the open\n"
+                              "side windows to its right, uncollapsed.");
+        if (ImGui::MenuItem("Close all side windows")) {
+            for (const DebugSidePanel& panel : kDebugSidePanels) {
+                debugUiSettings_.*panel.visible = false;
+            }
+        }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Sections")) {
+        ImGui::BeginDisabled(!debugUiSettings_.advancedMode);
+        ImGui::MenuItem("GPU Profiler", nullptr, &debugUiSettings_.showGpuTimingGraphs);
+        ImGui::MenuItem("Culling stats", nullptr, &debugUiSettings_.showCullingStats);
+        ImGui::MenuItem("Render Graph", nullptr, &debugUiSettings_.showRenderGraphPanel);
+        ImGui::EndDisabled();
+        ImGui::MenuItem("Exposure graphs", nullptr, &debugUiSettings_.showExposureGraphs);
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("View")) {
+        ImGui::MenuItem("Advanced mode", nullptr, &debugUiSettings_.advancedMode);
+        if (ImGui::MenuItem("Hide UI", "F1")) {
+            debugUiHidden_ = true;
+        }
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
+        ImGui::SliderFloat("UI scale",
+                           &debugUiSettings_.uiScale,
+                           ui::kMinDebugUiScale,
+                           ui::kMaxDebugUiScale,
+                           "%.2fx",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("On top of the automatic size, which follows the window height\n"
+                              "(1x at 1080 rows). Ctrl+click to type a value.");
+        if (ImGui::MenuItem("Reset UI scale", nullptr, false, debugUiSettings_.uiScale != 1.0f)) {
+            debugUiSettings_.uiScale = 1.0f;
+        }
+        ImGui::EndMenu();
+    }
+
+    ImGui::EndMenuBar();
+}
+
 void Renderer::drawControlsDebugUi()
 {
-    if (!ImGui::CollapsingHeader("Controls")) {
+    if (!ImGui::CollapsingHeader("Controls", ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
     }
 
@@ -175,24 +313,14 @@ void Renderer::drawControlsDebugUi()
     ImGui::BulletText("Middle-drag: pan");
     ImGui::BulletText("Scroll wheel: zoom / dolly");
 
+    ImGui::SeparatorText("Interface");
+    ImGui::BulletText("F1: hide / show the debug UI");
+    ImGui::BulletText("Ctrl + click a slider: type an exact value");
+    ImGui::BulletText("Windows > Arrange windows: tidy the side windows");
+
     ImGui::SeparatorText("Capture");
     ImGui::BulletText("F11: toggle portfolio capture mode");
     ImGui::BulletText("F12: save portfolio screenshot");
-}
-
-void Renderer::drawDebugViewToggles()
-{
-    if (!ImGui::CollapsingHeader("Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
-    ImGui::Checkbox("Show Render Graph panel", &debugUiSettings_.showRenderGraphPanel);
-    ImGui::Checkbox("Show Scene Hierarchy panel", &debugUiSettings_.showSceneHierarchyPanel);
-    ImGui::Checkbox("Show Material Inspector", &debugUiSettings_.showMaterialInspectorPanel);
-    ImGui::Checkbox("Show Texture Debug Views", &debugUiSettings_.showTextureDebugPanel);
-    ImGui::Checkbox("Show Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel);
-    ImGui::Checkbox("Show GPU Profiler panel", &debugUiSettings_.showGpuTimingGraphs);
-    ImGui::Checkbox("Show Culling stats", &debugUiSettings_.showCullingStats);
-    ImGui::Checkbox("Show Exposure graphs", &debugUiSettings_.showExposureGraphs);
 }
 
 // Always visible, above the tabs. Changing a parameter and then having to go
@@ -304,10 +432,14 @@ void Renderer::drawRenderScaleDebugUi()
         ImGui::SliderFloat("Gain##sharpenDelta", &sharpenDeltaGain_, 1.0f, 64.0f, "%.0fx");
     }
 
-    ImGui::TextDisabled("Shades the scene at a fraction of the window and upscales in the composite.");
-    ImGui::TextDisabled("The frame is fragment-bound, so cost tracks the shaded-pixel count almost");
-    ImGui::TextDisabled("linearly. The ImGui overlay stays native. Pairs with TAA, which recovers");
-    ImGui::TextDisabled("some of the lost detail across frames.");
+    // Wrapped at the panel edge rather than hand-broken: fixed line breaks
+    // clipped as soon as the UI scale widened the glyphs.
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("Shades the scene at a fraction of the window and upscales in the composite. "
+                        "The frame is fragment-bound, so cost tracks the shaded-pixel count almost "
+                        "linearly. The ImGui overlay stays native. Pairs with TAA, which recovers "
+                        "some of the lost detail across frames.");
+    ImGui::PopTextWrapPos();
 
     ImGui::SeparatorText("Dynamic resolution");
 
@@ -2151,7 +2283,7 @@ void Renderer::drawSceneHierarchyDebugUi()
     ImGui::SameLine();
     ImGui::Text("Main batches: %zu", meshDrawBatches_.size());
 
-    ImGui::BeginChild("SceneHierarchyList", ImVec2(0.0f, 280.0f), true);
+    ImGui::BeginChild("SceneHierarchyList", ImVec2(0.0f, ImGui::GetFontSize() * 21.0f), true);
     const ImGuiTreeNodeFlags sceneFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (ImGui::TreeNodeEx("Scene", sceneFlags)) {
         for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
@@ -2818,9 +2950,11 @@ void Renderer::drawRenderTargetMetadataTable()
             ImGui::TableSetupColumn("Format");
             ImGui::TableSetupColumn("Mips", ImGuiTableColumnFlags_WidthFixed);
             ImGui::TableSetupColumn("Layers", ImGuiTableColumnFlags_WidthFixed);
-            ImGui::TableSetupColumn("Usage");
             ImGui::TableSetupColumn("Preview", ImGuiTableColumnFlags_WidthFixed);
             ImGui::TableSetupColumn("Sampled as");
+            // Last and unwrapped: wrapped into a narrow middle column the
+            // sentence ran one letter per line and made every row screen-tall.
+            ImGui::TableSetupColumn("Usage");
             ImGui::TableHeadersRow();
 
             const auto addMetadataRow = [](const RenderTargetDebugMetadata& metadata) {
@@ -2836,11 +2970,11 @@ void Renderer::drawRenderTargetMetadataTable()
                 ImGui::TableNextColumn();
                 ImGui::Text("%u", metadata.arrayLayers);
                 ImGui::TableNextColumn();
-                ImGui::TextWrapped("%s", metadata.usage.c_str());
-                ImGui::TableNextColumn();
                 ImGui::TextUnformatted(metadata.previewable ? "yes" : "no");
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(metadata.sampledAs.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(metadata.usage.c_str());
             };
 
             if (postProcess_.sceneColor().image() != VK_NULL_HANDLE) {
@@ -3715,8 +3849,14 @@ void Renderer::drawHistoryPlot(const DebugHistory& history, float height) const
     std::array<float, kDebugHistoryCapacity> values{};
     const size_t sampleCount = history.copyChronological(values);
     const float scaleMax = std::max(history.max(), 0.001f);
-    ImGui::PlotLines(
-        "##history", values.data(), static_cast<int>(sampleCount), 0, nullptr, 0.0f, scaleMax, ImVec2(180.0f, height));
+    ImGui::PlotLines("##history",
+                     values.data(),
+                     static_cast<int>(sampleCount),
+                     0,
+                     nullptr,
+                     0.0f,
+                     scaleMax,
+                     ImVec2(ImGui::GetFontSize() * 14.0f, height * ImGui::GetFontSize() / 13.0f));
 }
 
 } // namespace ve

@@ -1067,7 +1067,11 @@ private:
     void buildDebugUi();
     // buildDebugUi() panel sections (see RendererDebugUi.cpp); each owns its
     // CollapsingHeader, matching the existing drawXxxDebugUi pattern.
-    void drawDebugViewToggles();
+    // Menu bar of the main panel: side windows, section toggles, UI scale.
+    void drawDebugMenuBar();
+    // Places a side window in a grid right of the main panel: only where the
+    // layout file has no position for it, unless force (Arrange windows).
+    void placeDebugSidePanel(uint32_t slot, uint32_t slotCount, bool force);
     void drawControlsDebugUi();
     // Frame time, resolution and draw counts, drawn above the tab bar so they
     // stay visible whichever tab is open.
@@ -1947,6 +1951,10 @@ private:
     bool ssaoAvailable_ = false;
     bool gpuProfilerEnabled_ = true;
     bool portfolioCaptureMode_ = false;
+    // F1. Session-only, not persisted: a hidden UI on the next launch would
+    // look like a broken build.
+    bool debugUiHidden_ = false;
+    bool arrangeDebugPanelsRequested_ = false;
     bool occlusionTestSceneActive_ = false;
     bool cornellBoxSceneActive_ = false;
     bool sunlitYardSceneActive_ = false;

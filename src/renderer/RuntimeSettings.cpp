@@ -10,6 +10,7 @@
 #include "renderer/RenderScale.h"
 #include "renderer/VirtualShadowMap.h"
 #include "renderer/VolumetricFog.h"
+#include "ui/UiScale.h"
 
 #include <json.hpp>
 
@@ -215,6 +216,7 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
     csm.shadowDistance = std::clamp(csm.shadowDistance, csm.nearPlane + 0.001f, csm.farPlane);
 
+    debugUi.uiScale = std::clamp(debugUi.uiScale, ui::kMinDebugUiScale, ui::kMaxDebugUiScale);
     debugUi.renderTargetPreviewExposure = std::clamp(debugUi.renderTargetPreviewExposure, 0.05f, 8.0f);
     debugUi.renderTargetPreviewScale = std::clamp(debugUi.renderTargetPreviewScale, 0.25f, 2.0f);
     // activeCascadeCount() == clamp(cascadeCount, 1, max); after the clamp above
@@ -615,6 +617,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
 
     if (const Json* debugUi = objectMember(json, "debugUi")) {
         readBool(*debugUi, "advancedMode", settings.debugUi.advancedMode);
+        readFloat(*debugUi, "uiScale", settings.debugUi.uiScale);
         readBool(*debugUi, "showRenderGraphPanel", settings.debugUi.showRenderGraphPanel);
         readBool(*debugUi, "showSceneHierarchyPanel", settings.debugUi.showSceneHierarchyPanel);
         readBool(*debugUi, "showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel);
@@ -802,6 +805,7 @@ Json toJson(const RuntimeSettings& settings)
               {"enableShaderHotReload", settings.enableShaderHotReload}}},
         {"debugUi",
          Json{{"advancedMode", settings.debugUi.advancedMode},
+              {"uiScale", settings.debugUi.uiScale},
               {"showRenderGraphPanel", settings.debugUi.showRenderGraphPanel},
               {"showSceneHierarchyPanel", settings.debugUi.showSceneHierarchyPanel},
               {"showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel},
