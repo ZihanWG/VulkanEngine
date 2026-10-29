@@ -64,7 +64,7 @@ consecutive frames starting at frame `FIRST` and writes them to `DIR` as
 the directory as a looping GIF.
 
 ```
-./build/release/VulkanEngine --scene sponza --deterministic --window-size 960x540 \
+./build/release/VulkanEngine --scene sponza --deterministic --window-size 3840x2160 \
     --camera-orbit -0.0004 --capture-sequence 30 150 --capture-output-dir /tmp/frames
 python tools/make_gif.py /tmp/frames screenshots/demo.gif --fps 30 --width 800 --no-dither
 ```
@@ -84,6 +84,23 @@ changed in four places:
 
 These are the clip's settings, not new defaults: the defaults feed the golden
 pixel gate and every measured number.
+
+Render well above the GIF's size and let `--width` downscale: that is
+supersampling, and it is what makes the clip sharp, at almost no cost in GIF
+size. Edge variance of the same 800x450 frame, against the file it came from:
+
+| Rendered at | Edge variance at 800x450 | GIF |
+| --- | --- | --- |
+| 960x540 | 1456 | 17.1 MiB |
+| 1920x1080 | 3092 | 19.8 MiB |
+| 2560x1440 | 3566 | 20.6 MiB |
+| 3840x2160 | 3849 | 20.9 MiB |
+
+The README clip is the 3840x2160 render. The gain falls off -- 1440p to 2160p
+is hard to see -- but the GIF barely grows, so only capture time and disk pay
+for it: 150 frames took about 5 minutes at 1440p and 12 at 2160p on an RTX
+3080 Ti Laptop. A larger GIF is the wrong lever: 1280x720 from the same frames
+is 47.1 MiB.
 
 - `--camera-orbit` pivots around the camera's target, and the Sponza preset puts
   that target half the building ahead, so the camera sweeps a wide arc: 0.01
@@ -106,9 +123,9 @@ pixel gate and every measured number.
   time whatever the capture cost.
 - Start a few dozen frames in, so TAA history, auto exposure and streaming have
   settled before the first captured frame.
-- The PNG writer does not compress: one 1920x1080 frame is about 8 MB, so a
-  six-second clip at 1080p is well over a gigabyte of intermediate files.
-  Capturing at the GIF's own size (960x540 above) keeps that to a quarter.
+- The intermediate PNGs are large: the writer's fixed-Huffman deflate gives
+  about 4.9 MB a frame at 1920x1080 and 19 MB at 3840x2160, so the 150-frame
+  4K capture above is 2.7 GB on disk.
 - `make_gif.py` maps every frame onto one shared palette built from frames
   across the whole clip, so flat regions do not shimmer between frames, and
   `--width` scales on encode if the capture was taken larger.
@@ -138,6 +155,6 @@ The CPU reads and writes the PNG later, after the frame loop's existing timeline
 ## Limitations
 
 - Capture resolution is the current swapchain extent.
-- PNG writing uses a small internal RGBA8 writer with uncompressed deflate blocks, so files are larger than optimized PNGs.
+- PNG writing uses a small internal RGBA8 writer with row filtering and fixed-Huffman deflate, so files are larger than optimized PNGs.
 - Unsupported swapchain transfer-source usage disables screenshot capture with a UI/status warning.
 - Supported swapchain capture formats are `R8G8B8A8` and `B8G8R8A8`, UNORM or sRGB.
