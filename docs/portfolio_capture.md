@@ -55,6 +55,45 @@ with a debug panel across it is not a portfolio shot. Only the regression captur
 (`--capture-frame`) can be asked for the other side of it, with
 `--capture-include-ui`; see [headless_ci.md](headless_ci.md).
 
+## Animated Captures
+
+An animated clip comes from a scripted run rather than from F12:
+`--capture-sequence FIRST COUNT --capture-output-dir DIR` reads back `COUNT`
+consecutive frames starting at frame `FIRST` and writes them to `DIR` as
+`frame_0000.png` onwards, and [`tools/make_gif.py`](../tools/make_gif.py) encodes
+the directory as a looping GIF.
+
+```
+./build/release/VulkanEngine --scene sponza --deterministic --window-size 960x540 \
+    --camera-orbit 0.01 --capture-sequence 60 180 --capture-output-dir /tmp/frames
+python tools/make_gif.py /tmp/frames screenshots/demo.gif --fps 30
+```
+
+- The scene is the one the run was launched with, not the portfolio showcase:
+  `--scene` picks it, `--camera-orbit` turns the preset's camera by a fixed angle
+  per frame, and `--freeze-animation` holds the lights and animated objects still
+  if only the camera should move.
+- `--deterministic` is required. Each captured frame stalls the loop for a
+  readback and an uncompressed PNG write, and on the wall clock every animation
+  would jump by however long that took; on the fixed-step clock each frame is
+  one 1/60 s step of scene time, so the clip plays smoothly at 60 fps of scene
+  time whatever the capture cost.
+- Start a few dozen frames in, so TAA history, auto exposure and streaming have
+  settled before the first captured frame.
+- The PNG writer does not compress: one 1920x1080 frame is about 8 MB, so a
+  six-second clip at 1080p is well over a gigabyte of intermediate files.
+  Capturing at the GIF's own size (960x540 above) keeps that to a quarter.
+- `make_gif.py` maps every frame onto one shared palette built from frames
+  across the whole clip, so flat regions do not shimmer between frames, and
+  `--width` scales on encode if the capture was taken larger.
+
+The copy is the same one `--capture-frame` records, before the ImGui overlay
+unless `--capture-include-ui` is given. Every in-flight frame slot owns its own
+readback buffer, and a slot's PNG is written after the timeline wait that
+retires it and before the slot records again, so consecutive captures add no
+synchronization. The run fails with exit code 3 unless every frame of the range
+was written.
+
 ## Reflection Scope
 
 Reflections are environment-based specular IBL plus screen-space reflections (see [ssr.md](ssr.md)); SSR is on by default, so polished materials pick up scene detail the cubemap cannot supply. There are no planar reflections, ray-traced reflections, local reflection probes, or real glass transmission/refraction, and SSR only finds what is on screen. Smooth metallic objects sample the prefiltered environment cubemap through the split-sum BRDF path, so polished materials are kept small and secondary in the portfolio PBR material showcase.

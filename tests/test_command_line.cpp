@@ -518,6 +518,117 @@ TEST_CASE("Asking for the overlay without a capture is rejected", "[command-line
     REQUIRE_FALSE(parse({"--capture-include-ui"}, config));
 }
 
+// --- Frame sequence capture -----------------------------------------------
+
+TEST_CASE("No frame sequence is captured unless asked for", "[command-line][capture]")
+{
+    LaunchOptions config{};
+    REQUIRE(parse({}, config));
+    REQUIRE(config.captureSequenceFirst == 0);
+    REQUIRE(config.captureSequenceCount == 0);
+    REQUIRE(config.captureOutputDir.empty());
+}
+
+TEST_CASE("A frame sequence parses its range and directory", "[command-line][capture]")
+{
+    LaunchOptions config{};
+    REQUIRE(parse({"--deterministic", "--capture-sequence", "30", "120", "--capture-output-dir", "frames"}, config));
+    REQUIRE(config.captureSequenceFirst == 30);
+    REQUIRE(config.captureSequenceCount == 120);
+    REQUIRE(config.captureOutputDir == "frames");
+    REQUIRE(config.captureFrame == 0);
+}
+
+TEST_CASE("A frame sequence needs both its range and its directory", "[command-line][capture]")
+{
+    LaunchOptions rangeOnly{};
+    REQUIRE_FALSE(parse({"--deterministic", "--capture-sequence", "30", "120"}, rangeOnly));
+
+    LaunchOptions directoryOnly{};
+    REQUIRE_FALSE(parse({"--deterministic", "--capture-output-dir", "frames"}, directoryOnly));
+}
+
+TEST_CASE("A frame sequence requires the fixed-step clock", "[command-line][capture]")
+{
+    // On the wall clock every animation would jump by however long each
+    // frame's readback and PNG write took.
+    LaunchOptions config{};
+    REQUIRE_FALSE(parse({"--capture-sequence", "30", "120", "--capture-output-dir", "frames"}, config));
+}
+
+TEST_CASE("A frame sequence range must be positive and bounded", "[command-line][capture]")
+{
+    const auto parseRange = [](const char* first, const char* count) {
+        LaunchOptions config{};
+        return parse({"--deterministic", "--capture-sequence", first, count, "--capture-output-dir", "frames"}, config);
+    };
+
+    REQUIRE_FALSE(parseRange("0", "10"));
+    REQUIRE_FALSE(parseRange("1", "0"));
+    REQUIRE_FALSE(parseRange("1", "10000"));
+    REQUIRE_FALSE(parseRange("1", "-5"));
+    REQUIRE_FALSE(parseRange("1x", "10"));
+    REQUIRE_FALSE(parseRange("1", "10frames"));
+    REQUIRE(parseRange("1", "9999"));
+
+    // Only one of the two values given.
+    LaunchOptions truncated{};
+    REQUIRE_FALSE(parse({"--deterministic", "--capture-sequence", "30"}, truncated));
+}
+
+TEST_CASE("A frame sequence and a single capture cannot be combined", "[command-line][capture]")
+{
+    LaunchOptions config{};
+    REQUIRE_FALSE(parse({"--deterministic",
+                         "--capture-frame",
+                         "30",
+                         "--capture-output",
+                         "out.png",
+                         "--capture-sequence",
+                         "30",
+                         "10",
+                         "--capture-output-dir",
+                         "frames"},
+                        config));
+}
+
+TEST_CASE("A frame sequence must end within the frame budget", "[command-line][capture]")
+{
+    // Frames 91..100: the last one is exactly the budget, which the grace
+    // window covers just as it does for a single capture.
+    LaunchOptions endsOnBudget{};
+    REQUIRE(parse({"--deterministic",
+                   "--capture-sequence",
+                   "91",
+                   "10",
+                   "--capture-output-dir",
+                   "frames",
+                   "--exit-after-frames",
+                   "100"},
+                  endsOnBudget));
+
+    // Frames 92..101: one past it.
+    LaunchOptions endsPastBudget{};
+    REQUIRE_FALSE(parse({"--deterministic",
+                         "--capture-sequence",
+                         "92",
+                         "10",
+                         "--capture-output-dir",
+                         "frames",
+                         "--exit-after-frames",
+                         "100"},
+                        endsPastBudget));
+}
+
+TEST_CASE("The overlay can be asked for in a frame sequence", "[command-line][capture]")
+{
+    LaunchOptions config{};
+    REQUIRE(parse(
+        {"--deterministic", "--capture-sequence", "1", "10", "--capture-output-dir", "frames", "--capture-include-ui"},
+        config));
+    REQUIRE(config.captureIncludeUi);
+}
+
 // ---------------------------------------------------------------------------
 // --settings: which runtime settings file a run reads.
 //

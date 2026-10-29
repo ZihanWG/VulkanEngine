@@ -184,6 +184,12 @@ void Application::initialize()
             renderer_->requestVsmPagePoolDumpAt(config_.captureFrame, config_.vsmDumpPool);
         }
     }
+    if (config_.captureSequenceFirst != 0) {
+        renderer_->requestFrameSequenceCaptureAt(config_.captureSequenceFirst,
+                                                 config_.captureSequenceCount,
+                                                 config_.captureOutputDir,
+                                                 config_.captureIncludeUi);
+    }
 
     window_->setEventCallback([this](const SDL_Event& event) {
         if (renderer_) {
@@ -196,6 +202,11 @@ void Application::mainLoop()
 {
     uint32_t framesDrawn = 0;
     double firstFrameMs = 0.0;
+    // The frame the grace window below counts from: the single capture frame,
+    // or the last frame of a sequence.
+    const uint64_t lastCaptureFrame = config_.captureSequenceFirst != 0
+                                          ? config_.captureSequenceFirst + config_.captureSequenceCount - 1
+                                          : config_.captureFrame;
 
     while (!window_->shouldClose()) {
         window_->pollEvents();
@@ -229,15 +240,16 @@ void Application::mainLoop()
 
         // A pending capture outranks the frame budget, because exiting at exactly
         // the capture frame would drop the readback -- it lands a few frames
-        // later. parseArguments guarantees captureFrame <= exitAfterFrames, so
-        // this can only ever extend the run by the grace window below.
+        // later. parseArguments guarantees the last capture frame is within
+        // exitAfterFrames, so this can only ever extend the run by the grace
+        // window below.
         if (config_.exitAfterFrames != 0 && framesDrawn >= config_.exitAfterFrames && !captureOutstanding) {
             break;
         }
 
         // Bounds that extension. Without it, a capture that can never be
         // recorded (an unsupported swapchain format, say) would spin.
-        if (captureOutstanding && framesDrawn >= config_.captureFrame + kCaptureReadbackGraceFrames) {
+        if (captureOutstanding && framesDrawn >= lastCaptureFrame + kCaptureReadbackGraceFrames) {
             Logger::error("Frame capture never completed; giving up after " + std::to_string(framesDrawn) + " frames.");
             break;
         }
@@ -280,6 +292,11 @@ int Application::reportValidationTally() const
     if (config_.captureFrame != 0 && !captureCompleted_) {
         Logger::error("Failing because the requested frame capture was never written to " + config_.captureOutput +
                       ".");
+        return kCaptureFailureExitCode;
+    }
+    if (config_.captureSequenceFirst != 0 && !captureCompleted_) {
+        Logger::error("Failing because the requested frame sequence was never completely written to " +
+                      config_.captureOutputDir + ".");
         return kCaptureFailureExitCode;
     }
 

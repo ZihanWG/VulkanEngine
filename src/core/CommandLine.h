@@ -202,6 +202,16 @@ struct LaunchOptions {
     uint64_t captureFrame = 0;
     std::string captureOutput;
 
+    // Capture captureSequenceCount consecutive frames from captureSequenceFirst
+    // (1-based) into captureOutputDir as frame_0000.png onwards
+    // (--capture-sequence FIRST COUNT, --capture-output-dir DIR). The frames of
+    // an animated clip, for tools/make_gif.py. Requires --deterministic: a
+    // readback-and-PNG-write per frame slows the loop by an order of magnitude,
+    // and on the wall clock every animation would jump by however long that took.
+    uint64_t captureSequenceFirst = 0;
+    uint32_t captureSequenceCount = 0;
+    std::string captureOutputDir;
+
     // Take the capture AFTER the ImGui overlay instead of before it.
     //
     // Off by default because a regression capture wants the rendered frame and

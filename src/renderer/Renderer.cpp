@@ -1004,14 +1004,23 @@ bool Renderer::hasPendingPortfolioScreenshotReadback() const
 
 void Renderer::processPortfolioScreenshotReadback(uint32_t frameIndex)
 {
-    const bool wasPending = screenshotCapture_.hasPending();
-    screenshotCapture_.processReadback(frameIndex);
+    const bool written = screenshotCapture_.processReadback(frameIndex);
 
     // The readback lags the recorded frame by the in-flight frame count, so
     // completion is detected here rather than assumed at the recorded frame.
-    if (frameCaptureRecorded_ && wasPending && !screenshotCapture_.hasPending()) {
-        frameCaptureComplete_ = true;
-        Logger::info("Frame capture written: " + frameCaptureOutputPath_.string());
+    // Counted by files actually written: a copy that was never queued or a PNG
+    // that failed to save leaves the capture incomplete, and the run fails.
+    if (written && frameCaptureFramesWritten_ < frameCaptureFramesRecorded_) {
+        ++frameCaptureFramesWritten_;
+        if (frameCaptureFramesWritten_ == frameCapture_.frameCount) {
+            frameCaptureComplete_ = true;
+            if (frameCapture_.sequence) {
+                Logger::info("Frame sequence capture written: " + std::to_string(frameCapture_.frameCount) +
+                             " frame(s) -> " + frameCapture_.output.string());
+            } else {
+                Logger::info("Frame capture written: " + frameCapture_.output.string());
+            }
+        }
     }
 }
 
@@ -1022,11 +1031,29 @@ void Renderer::requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path
         return;
     }
 
-    frameCaptureTargetFrame_ = frameNumber;
-    frameCaptureOutputPath_ = std::move(outputPath);
+    frameCapture_ = renderer::FrameCaptureRequest{frameNumber, 1, std::move(outputPath), false};
     frameCaptureIncludesUi_ = includeUi;
     Logger::info("Frame capture requested at frame " + std::to_string(frameNumber) + " -> " +
-                 frameCaptureOutputPath_.string() + (includeUi ? " (including the ImGui overlay)" : ""));
+                 frameCapture_.output.string() + (includeUi ? " (including the ImGui overlay)" : ""));
+}
+
+void Renderer::requestFrameSequenceCaptureAt(uint64_t firstFrame,
+                                             uint32_t frameCount,
+                                             std::filesystem::path outputDirectory,
+                                             bool includeUi)
+{
+    if (firstFrame == 0 || frameCount == 0 || frameCount > renderer::kMaxFrameSequenceLength ||
+        outputDirectory.empty()) {
+        Logger::error("A frame sequence capture needs a first frame of at least 1, a frame count in [1, " +
+                      std::to_string(renderer::kMaxFrameSequenceLength) + "] and a non-empty output directory.");
+        return;
+    }
+
+    frameCapture_ = renderer::FrameCaptureRequest{firstFrame, frameCount, std::move(outputDirectory), true};
+    frameCaptureIncludesUi_ = includeUi;
+    Logger::info("Frame sequence capture requested for frames " + std::to_string(firstFrame) + ".." +
+                 std::to_string(frameCapture_.lastFrame()) + " -> " + frameCapture_.output.string() +
+                 (includeUi ? " (including the ImGui overlay)" : ""));
 }
 
 void Renderer::requestRayTracedShadowDumpAt(uint64_t frameNumber, std::filesystem::path outputPath)
@@ -1678,9 +1705,8 @@ void Renderer::updateCpuFrameTime()
 
     // Armed here because the clock has just advanced, so frameCount() is this
     // frame's number -- the same number the caller asked for.
-    if (frameCaptureTargetFrame_ != 0 && !frameCaptureRecorded_ &&
-        frameClock_.frameCount() == frameCaptureTargetFrame_) {
-        frameCapturePending_ = true;
+    if (frameCapture_.covers(frameClock_.frameCount())) {
+        frameCapturePendingFrame_ = frameClock_.frameCount();
     }
 
     cpuFrameDeltaMs_ = static_cast<float>(frameClock_.deltaSeconds() * 1000.0);
