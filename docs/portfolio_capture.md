@@ -71,7 +71,19 @@ python tools/make_gif.py /tmp/frames screenshots/demo.gif --fps 30 --width 800 -
 
 That is how [`screenshots/sponza_atrium.gif`](../screenshots/sponza_atrium.gif)
 was made, except that the README clip keeps every fourth frame and plays them
-forward and then back at 15 fps, so it loops without a jump.
+forward and then back at 15 fps, so it loops without a jump, and that it ran
+with `--settings` pointing at a copy of `config/runtime_settings.example.json`
+changed in four places:
+
+| Key | Default | Clip | Why |
+| --- | --- | --- | --- |
+| `taa.enabled` | `false` | `true` | Without it the curtain weave moirés and edges stair-step, which reads as over-sharpened. The composite sharpen only runs when upscaling, so it is not the cause at scale 1.0. |
+| `toneMapping.toneMapper` | `Reinhard` | `ACES` | Reinhard leaves the interior dim: mean luma 36.8/255 by default, 51.4 with a 0.30 exposure target, 89.0 with ACES at that target. |
+| `toneMapping.enableAutoExposure` | `true` | `false` | Auto exposure is still adapting at frame 30 and then follows the content, so the clip brightened from 67 to 93 mean luma end to end, which pumps in a loop. |
+| `toneMapping.manualExposure` | `1.0` | `2.2` | About where auto exposure settles during this shot: 93.7 and 88.3 mean luma at the two ends. |
+
+These are the clip's settings, not new defaults: the defaults feed the golden
+pixel gate and every measured number.
 
 - `--camera-orbit` pivots around the camera's target, and the Sponza preset puts
   that target half the building ahead, so the camera sweeps a wide arc: 0.01
@@ -81,7 +93,8 @@ forward and then back at 15 fps, so it loops without a jump.
 - A moving camera changes nearly every pixel every frame, so GIF size is roughly
   frames x pixels. On this 148-frame, 800-wide clip `--no-dither` saved only
   10% (39.9 -> 35.8 MiB) with no visible banding; keeping every second frame of
-  that at 15 fps halved it (17.9 MiB). Frame count and width are the levers.
+  that at 15 fps halved it (17.9 MiB, before the settings below; 17.1 MiB with
+  them). Frame count and width are the levers.
 - The scene is the one the run was launched with, not the portfolio showcase:
   `--scene` picks it, `--camera-orbit` turns the preset's camera by a fixed angle
   per frame, and `--freeze-animation` holds the lights and animated objects still
