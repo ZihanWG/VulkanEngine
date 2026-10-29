@@ -20,9 +20,13 @@ namespace {
 
 // The side windows, in their grid order. One table so the Windows menu, the
 // placement and the draw loop cannot disagree about which windows exist.
+// Spelled through an alias: clang-format 18 and 22 disagree on the spacing of
+// a pointer-to-member declarator, and an alias leaves neither anything to move.
+using DebugUiFlag = bool DebugUiSettings::*;
+
 struct DebugSidePanel {
     const char* title;
-    bool DebugUiSettings::* visible;
+    DebugUiFlag visible;
     // Hidden outside advanced mode, like the tabs that lead to them.
     bool advancedOnly;
 };
