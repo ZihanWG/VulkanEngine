@@ -10,9 +10,9 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 
 ## Demo
 
-![Clustered lighting demo](screenshots/clustered_lighting_demo.gif)
+![Sponza atrium](screenshots/sponza_atrium.gif)
 
-*Hundreds of dynamic point/spot lights via clustered (Forward+) shading, with the per-froxel light-count heatmap. Implementation details in [docs/clustered_lighting.md](docs/clustered_lighting.md).*
+*Sponza (glTF) lit by a warm sun through the roof opening, with cascaded shadows, and amber lamps shaded through the clustered (Forward+) path. Recorded frame by frame on the fixed-step clock with `--capture-sequence`; see [docs/portfolio_capture.md](docs/portfolio_capture.md#animated-captures). The clustered-lighting stress demo with its per-froxel light-count heatmap is in [docs/clustered_lighting.md](docs/clustered_lighting.md).*
 
 ## Highlights
 

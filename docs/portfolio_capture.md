@@ -65,10 +65,23 @@ the directory as a looping GIF.
 
 ```
 ./build/release/VulkanEngine --scene sponza --deterministic --window-size 960x540 \
-    --camera-orbit 0.01 --capture-sequence 60 180 --capture-output-dir /tmp/frames
-python tools/make_gif.py /tmp/frames screenshots/demo.gif --fps 30
+    --camera-orbit -0.0004 --capture-sequence 30 150 --capture-output-dir /tmp/frames
+python tools/make_gif.py /tmp/frames screenshots/demo.gif --fps 30 --width 800 --no-dither
 ```
 
+That is how [`screenshots/sponza_atrium.gif`](../screenshots/sponza_atrium.gif)
+was made, except that the README clip keeps every fourth frame and plays them
+forward and then back at 15 fps, so it loops without a jump.
+
+- `--camera-orbit` pivots around the camera's target, and the Sponza preset puts
+  that target half the building ahead, so the camera sweeps a wide arc: 0.01
+  rad/frame leaves the building within a few seconds, and 0.0012 crosses the
+  curtains into the side aisle by frame 180. -0.0004 stays in the atrium and
+  drifts towards the hanging brazier.
+- A moving camera changes nearly every pixel every frame, so GIF size is roughly
+  frames x pixels. On this 148-frame, 800-wide clip `--no-dither` saved only
+  10% (39.9 -> 35.8 MiB) with no visible banding; keeping every second frame of
+  that at 15 fps halved it (17.9 MiB). Frame count and width are the levers.
 - The scene is the one the run was launched with, not the portfolio showcase:
   `--scene` picks it, `--camera-orbit` turns the preset's camera by a fixed angle
   per frame, and `--freeze-animation` holds the lights and animated objects still
