@@ -106,14 +106,15 @@ void Renderer::recordPortfolioScreenshotCopy(VkCommandBuffer commandBuffer, uint
 
 void Renderer::recordFrameCaptureCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
-    if (!frameCapturePending_) {
+    if (frameCapturePendingFrame_ == 0) {
         return;
     }
 
     // Consumed whether or not the copy is possible: retrying on a later frame
     // would silently capture a different frame than the one that was asked for,
     // which is worse than failing loudly for a regression capture.
-    frameCapturePending_ = false;
+    const uint64_t frame = frameCapturePendingFrame_;
+    frameCapturePendingFrame_ = 0;
 
     if (!swapchain_.supportsTransferSrc()) {
         Logger::error("Frame capture failed: swapchain transfer-source usage is unsupported.");
@@ -130,14 +131,18 @@ void Renderer::recordFrameCaptureCopy(VkCommandBuffer commandBuffer, uint32_t im
     // After the overlay the image is already in PRESENT_SRC, and it has to go
     // back there: nothing draws into it again, and present rejects any other
     // layout.
-    screenshotCapture_.recordCopy(commandBuffer,
-                                  currentFrame_,
-                                  swapchain_,
-                                  imageIndex,
-                                  frameCaptureOutputPath_,
-                                  frameCaptureIncludesUi_ ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-                                                          : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    frameCaptureRecorded_ = true;
+    const bool queued = screenshotCapture_.recordCopy(
+        commandBuffer,
+        currentFrame_,
+        swapchain_,
+        imageIndex,
+        frameCapture_.outputPathFor(frame),
+        frameCaptureIncludesUi_ ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    if (!queued) {
+        Logger::error("Frame capture failed: frame " + std::to_string(frame) + " could not be queued for readback.");
+        return;
+    }
+    ++frameCaptureFramesRecorded_;
 }
 
 VkPipeline Renderer::mainPipelineFor(bool doubleSided) const

@@ -77,6 +77,7 @@ add_executable(VulkanEngineTests
     test_asset_load_stats.cpp
     test_frame_clock.cpp
     test_command_line.cpp
+    test_frame_capture_request.cpp
     test_image_compare.cpp
     test_png_writer.cpp
     test_pfm_writer.cpp

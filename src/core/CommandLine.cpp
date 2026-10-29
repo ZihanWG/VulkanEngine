@@ -1,6 +1,7 @@
 #include "core/CommandLine.h"
 
 #include "core/Logger.h"
+#include "renderer/FrameCaptureRequest.h"
 
 #include <cctype>
 #include <charconv>
@@ -206,6 +207,40 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--capture-sequence") {
+            if (index + 2 >= argc) {
+                Logger::error("--capture-sequence requires a first frame and a frame count.");
+                return false;
+            }
+            const std::string_view firstValue(argv[++index]);
+            const std::string_view countValue(argv[++index]);
+            uint64_t first = 0;
+            uint32_t count = 0;
+            const auto firstResult = std::from_chars(firstValue.data(), firstValue.data() + firstValue.size(), first);
+            const auto countResult = std::from_chars(countValue.data(), countValue.data() + countValue.size(), count);
+            if (firstResult.ec != std::errc{} || firstResult.ptr != firstValue.data() + firstValue.size() ||
+                first == 0 || countResult.ec != std::errc{} ||
+                countResult.ptr != countValue.data() + countValue.size() || count == 0 ||
+                count > renderer::kMaxFrameSequenceLength) {
+                Logger::error("--capture-sequence expects a positive first frame and a frame count in [1, " +
+                              std::to_string(renderer::kMaxFrameSequenceLength) + "], got: " + std::string(firstValue) +
+                              " " + std::string(countValue));
+                return false;
+            }
+            options.captureSequenceFirst = first;
+            options.captureSequenceCount = count;
+            continue;
+        }
+
+        if (argument == "--capture-output-dir") {
+            if (index + 1 >= argc) {
+                Logger::error("--capture-output-dir requires a directory path.");
+                return false;
+            }
+            options.captureOutputDir = argv[++index];
+            continue;
+        }
+
         if (argument == "--capture-include-ui") {
             options.captureIncludeUi = true;
             continue;
@@ -376,9 +411,39 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
         return false;
     }
 
-    if (options.captureIncludeUi && options.captureFrame == 0) {
-        Logger::error("--capture-include-ui requires --capture-frame.");
+    const bool sequence = options.captureSequenceFirst != 0;
+    if (sequence != !options.captureOutputDir.empty()) {
+        Logger::error("--capture-sequence and --capture-output-dir must be given together.");
         return false;
+    }
+
+    // Two requests would have to share one set of readback slots and one
+    // completion signal; neither run needs the other badly enough for that.
+    if (sequence && options.captureFrame != 0) {
+        Logger::error("--capture-sequence and --capture-frame cannot be combined.");
+        return false;
+    }
+
+    // Required rather than implied, so the command line says what the clip is:
+    // a fixed-step run, not the wall-clock one a desktop session shows.
+    if (sequence && !options.deterministic) {
+        Logger::error("--capture-sequence requires --deterministic, so each frame advances the clock by one step "
+                      "however long its readback took.");
+        return false;
+    }
+
+    if (options.captureIncludeUi && options.captureFrame == 0 && !sequence) {
+        Logger::error("--capture-include-ui requires --capture-frame or --capture-sequence.");
+        return false;
+    }
+
+    if (sequence && options.exitAfterFrames != 0) {
+        const uint64_t lastFrame = options.captureSequenceFirst + options.captureSequenceCount - 1;
+        if (lastFrame > options.exitAfterFrames) {
+            Logger::error("--capture-sequence ends at frame " + std::to_string(lastFrame) +
+                          ", past --exit-after-frames (" + std::to_string(options.exitAfterFrames) + ").");
+            return false;
+        }
     }
 
     // Without this the loop would have to choose between honouring the budget

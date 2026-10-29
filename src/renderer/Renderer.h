@@ -18,6 +18,7 @@
 #include "renderer/DepthPyramid.h"
 #include "renderer/DrawItemBatching.h"
 #include "renderer/FrameCapacity.h"
+#include "renderer/FrameCaptureRequest.h"
 #include "renderer/DynamicResolution.h"
 #include "renderer/FrameClock.h"
 #include "renderer/OcclusionYield.h"
@@ -239,6 +240,15 @@ public:
     // includeUi records the copy after the ImGui pass instead of before it, which
     // is the only way a scripted run can see the debug panel at all.
     void requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath, bool includeUi = false);
+    // Captures `frameCount` consecutive frames from `firstFrame` into
+    // `outputDirectory` as frame_0000.png onwards (--capture-sequence). The same
+    // readback as a single capture, armed on every frame of the range; each
+    // in-flight slot has its own readback buffer, and its file is written after
+    // the fence wait that retires the slot, before the slot records again.
+    void requestFrameSequenceCaptureAt(uint64_t firstFrame,
+                                       uint32_t frameCount,
+                                       std::filesystem::path outputDirectory,
+                                       bool includeUi = false);
     // Dumps the VSM page pool to a PNG (plus a page manifest) at the end of this
     // frame. Diagnostic: it stalls the device, so it runs once and never on a
     // frame anyone is timing.
@@ -281,16 +291,17 @@ public:
         meshletAnalysisEnabled_ = enabled;
     }
 
-    // True once the requested capture has been read back and written. The
+    // True once every requested frame has been read back and written. The
     // readback lags the recorded frame by the in-flight frame count, so a caller
-    // must keep drawing until this goes true rather than exiting at frameNumber.
+    // must keep drawing until this goes true rather than exiting at the last
+    // requested frame.
     [[nodiscard]] bool frameCaptureComplete() const
     {
         return frameCaptureComplete_;
     }
     [[nodiscard]] bool frameCaptureRequested() const
     {
-        return frameCaptureTargetFrame_ != 0;
+        return frameCapture_.active();
     }
 
     // Whether the render graph's declaration/recording backstop found anything,
@@ -1199,14 +1210,15 @@ private:
 
     // Regression frame capture. Separate from the portfolio screenshot state
     // above because it deliberately skips the showcase-preset policy.
-    std::filesystem::path frameCaptureOutputPath_;
-    uint64_t frameCaptureTargetFrame_ = 0;
+    renderer::FrameCaptureRequest frameCapture_;
     uint64_t vsmPagePoolDumpTargetFrame_ = 0;
     std::filesystem::path vsmPagePoolDumpPath_;
     uint64_t rayTracedShadowDumpTargetFrame_ = 0;
     std::filesystem::path rayTracedShadowDumpPath_;
-    bool frameCapturePending_ = false;
-    bool frameCaptureRecorded_ = false;
+    // The frame armed for a copy in this frame's recording, 0 when none is.
+    uint64_t frameCapturePendingFrame_ = 0;
+    uint32_t frameCaptureFramesRecorded_ = 0;
+    uint32_t frameCaptureFramesWritten_ = 0;
     bool frameCaptureComplete_ = false;
 
     void recordFrameCaptureCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex);

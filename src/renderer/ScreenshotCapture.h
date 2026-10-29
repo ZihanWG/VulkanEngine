@@ -52,7 +52,10 @@ public:
     // the graph's present transition, so it has to put the image back into
     // PRESENT_SRC or the present call rejects it -- which is exactly what
     // validation reported the first time this ran.
-    void recordCopy(VkCommandBuffer commandBuffer,
+    //
+    // Returns whether the copy was queued: false when this slot's previous
+    // readback has not been written yet, or the slots are not initialized.
+    bool recordCopy(VkCommandBuffer commandBuffer,
                     uint32_t frameIndex,
                     rhi::VulkanSwapchain& swapchain,
                     uint32_t imageIndex,
@@ -60,7 +63,8 @@ public:
                     VkImageLayout restoreLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
     // Downloads a previously queued readback (if ready) and writes it to PNG.
-    void processReadback(uint32_t frameIndex);
+    // Returns whether a file was written by this call.
+    bool processReadback(uint32_t frameIndex);
 
     [[nodiscard]] const std::string& status() const
     {

@@ -107,7 +107,7 @@ bool ScreenshotCapture::hasPending() const
     return false;
 }
 
-void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
+bool ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
                                    uint32_t frameIndex,
                                    rhi::VulkanSwapchain& swapchain,
                                    uint32_t imageIndex,
@@ -117,7 +117,7 @@ void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
     if (frameIndex >= readbacks_.size()) {
         status_ = "Screenshot failed: frame readback slots are not initialized.";
         Logger::warn(status_);
-        return;
+        return false;
     }
 
     const VkExtent2D extent = swapchain.extent();
@@ -127,7 +127,7 @@ void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
     if (readback.pending) {
         status_ = "Screenshot capture skipped: previous readback is still pending.";
         Logger::warn(status_);
-        return;
+        return false;
     }
 
     const VkDeviceSize byteSize = static_cast<VkDeviceSize>(extent.width) * extent.height * 4U;
@@ -246,19 +246,21 @@ void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
     }
     readback.pending = true;
     status_ = "Screenshot readback queued from final composite before ImGui overlay.";
+    return true;
 }
 
-void ScreenshotCapture::processReadback(uint32_t frameIndex)
+bool ScreenshotCapture::processReadback(uint32_t frameIndex)
 {
     if (frameIndex >= readbacks_.size()) {
-        return;
+        return false;
     }
 
     Readback& readback = readbacks_[frameIndex];
     if (!readback.pending || !readback.buffer.valid()) {
-        return;
+        return false;
     }
 
+    bool written = false;
     try {
         std::vector<std::byte> pixels(static_cast<size_t>(readback.buffer.size()));
         readback.buffer.download(std::span<std::byte>(pixels.data(), pixels.size()));
@@ -274,6 +276,7 @@ void ScreenshotCapture::processReadback(uint32_t frameIndex)
         }
 
         lastSavedPath_ = readback.timestampedPath;
+        written = true;
         status_ = "Saved screenshot: " + readback.timestampedPath.string();
         Logger::info(status_);
     } catch (const std::exception& error) {
@@ -282,6 +285,7 @@ void ScreenshotCapture::processReadback(uint32_t frameIndex)
     }
 
     readback.pending = false;
+    return written;
 }
 
 } // namespace ve::renderer

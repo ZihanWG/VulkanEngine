@@ -192,6 +192,14 @@ That extension is bounded: `--capture-frame` may not exceed
 checked before the validation tally — a run that did not produce the image it was
 asked for has not passed, whatever validation thought of it.
 
+`--capture-sequence FIRST COUNT --capture-output-dir DIR` is the same capture
+armed on `COUNT` consecutive frames, written as `DIR/frame_0000.png` onwards for
+an animated clip; see [portfolio_capture.md](portfolio_capture.md#animated-captures).
+It requires `--deterministic`, cannot be combined with `--capture-frame`, and its
+last frame is what the frame budget and the grace window are measured against.
+Both forms count completion by files actually written, so a copy that could not
+be queued or a PNG that failed to save fails the run instead of passing it.
+
 ### Pixel determinism
 
 Three runs of `--deterministic --capture-frame 60` produce **byte-identical
