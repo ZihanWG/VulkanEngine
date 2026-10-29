@@ -5,6 +5,7 @@
 #include "core/Window.h"
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
+#include "ui/UiScale.h"
 
 #include <SDL3/SDL.h>
 #include <backends/imgui_impl_sdl3.h>
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <stdexcept>
 #include <system_error>
 #include <string>
@@ -71,6 +73,15 @@ void ImGuiLayer::initialize(Window& window,
         }
     }
     ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 4.0f;
+    style.FrameRounding = 3.0f;
+    style.GrabRounding = 3.0f;
+    style.TabRounding = 3.0f;
+    // Kept unscaled: ScaleAllSizes multiplies in place, so rescaling the live
+    // style on every change would compound.
+    baseStyle_ = std::make_unique<ImGuiStyle>(style);
+    appliedScale_ = 1.0f;
 
     if (!ImGui_ImplSDL3_InitForVulkan(window.nativeHandle())) {
         throw std::runtime_error(std::string("ImGui SDL3 backend initialization failed: ") + SDL_GetError());
@@ -105,6 +116,7 @@ void ImGuiLayer::shutdown()
         platformInitialized_ = false;
     }
 
+    baseStyle_.reset();
     if (contextInitialized_) {
         ImGui::DestroyContext();
         contextInitialized_ = false;
@@ -123,7 +135,7 @@ void ImGuiLayer::handleEvent(const SDL_Event& event)
     }
 }
 
-void ImGuiLayer::beginFrame()
+void ImGuiLayer::beginFrame(float userScale)
 {
     if (!initialized()) {
         return;
@@ -131,8 +143,26 @@ void ImGuiLayer::beginFrame()
 
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    // After the SDL backend has written this frame's display size, before
+    // NewFrame reads the style.
+    applyScale(effectiveDebugUiScale(ImGui::GetIO().DisplaySize.y, userScale));
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
+}
+
+void ImGuiLayer::applyScale(float scale)
+{
+    // A window drag-resized by one row should not re-layout every frame.
+    if (!baseStyle_ || std::abs(scale - appliedScale_) < 0.01f) {
+        return;
+    }
+    ImGuiStyle scaled = *baseStyle_;
+    scaled.ScaleAllSizes(scale);
+    // 1.92 rasterises glyphs on demand, so the font stays sharp at any size
+    // rather than being a stretched 13 px atlas.
+    scaled.FontScaleMain = scale;
+    ImGui::GetStyle() = scaled;
+    appliedScale_ = scale;
 }
 
 void ImGuiLayer::endFrame()

@@ -1,4 +1,5 @@
 #include "renderer/RuntimeSettings.h"
+#include "ui/UiScale.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -133,11 +134,13 @@ RuntimeSettings makeNonDefaultSettings()
     settings.rayTracedShadows.debugCompareCascades = true;
     settings.rayTracedShadows.debugMaskSource = true;
 
+    settings.debugUi.uiScale = 1.25f;
     settings.debugUi.showRenderGraphPanel = false;
-    settings.debugUi.showSceneHierarchyPanel = false;
-    settings.debugUi.showMaterialInspectorPanel = false;
-    settings.debugUi.showTextureDebugPanel = false;
-    settings.debugUi.showRenderTargetDebugPanel = false;
+    settings.debugUi.showSceneHierarchyPanel = true;
+    settings.debugUi.showMaterialInspectorPanel = true;
+    settings.debugUi.showTextureDebugPanel = true;
+    settings.debugUi.showRenderTargetDebugPanel = true;
+    settings.debugUi.showIrradianceProbePanel = true;
     settings.debugUi.showGpuTimingGraphs = false;
     settings.debugUi.showCullingStats = false;
     settings.debugUi.showExposureGraphs = false;
@@ -262,11 +265,13 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.enableAsyncCompute == original.enableAsyncCompute);
     CHECK(loaded.enableBindlessMaterialTextures == original.enableBindlessMaterialTextures);
 
+    CHECK(loaded.debugUi.uiScale == Catch::Approx(original.debugUi.uiScale));
     CHECK(loaded.debugUi.showRenderGraphPanel == original.debugUi.showRenderGraphPanel);
     CHECK(loaded.debugUi.showSceneHierarchyPanel == original.debugUi.showSceneHierarchyPanel);
     CHECK(loaded.debugUi.showMaterialInspectorPanel == original.debugUi.showMaterialInspectorPanel);
     CHECK(loaded.debugUi.showTextureDebugPanel == original.debugUi.showTextureDebugPanel);
     CHECK(loaded.debugUi.showRenderTargetDebugPanel == original.debugUi.showRenderTargetDebugPanel);
+    CHECK(loaded.debugUi.showIrradianceProbePanel == original.debugUi.showIrradianceProbePanel);
     CHECK(loaded.debugUi.showGpuTimingGraphs == original.debugUi.showGpuTimingGraphs);
     CHECK(loaded.debugUi.showCullingStats == original.debugUi.showCullingStats);
     CHECK(loaded.debugUi.showExposureGraphs == original.debugUi.showExposureGraphs);
@@ -486,4 +491,25 @@ TEST_CASE("The example settings file matches what the engine writes", "[settings
     std::filesystem::remove(normalizedPath, removeError);
 
     CHECK(normalized == written);
+}
+
+TEST_CASE("Debug UI scale follows the window height and the user multiplier", "[settings][ui]")
+{
+    using ve::ui::effectiveDebugUiScale;
+
+    // 1080 rows is the size ImGui's defaults were drawn for; shorter windows
+    // never shrink below it, taller ones grow with the height up to 3x.
+    CHECK(effectiveDebugUiScale(1080.0f, 1.0f) == Catch::Approx(1.0f));
+    CHECK(effectiveDebugUiScale(720.0f, 1.0f) == Catch::Approx(1.0f));
+    CHECK(effectiveDebugUiScale(1440.0f, 1.0f) == Catch::Approx(1440.0f / 1080.0f));
+    CHECK(effectiveDebugUiScale(2160.0f, 1.0f) == Catch::Approx(2.0f));
+    CHECK(effectiveDebugUiScale(8640.0f, 1.0f) == Catch::Approx(3.0f));
+
+    // Before the platform backend has reported a size the base stays at 1.
+    CHECK(effectiveDebugUiScale(0.0f, 1.0f) == Catch::Approx(1.0f));
+
+    // The multiplier rides on top, clamped to its persisted range.
+    CHECK(effectiveDebugUiScale(1440.0f, 1.5f) == Catch::Approx(2.0f));
+    CHECK(effectiveDebugUiScale(1080.0f, 10.0f) == Catch::Approx(ve::ui::kMaxDebugUiScale));
+    CHECK(effectiveDebugUiScale(1080.0f, 0.0f) == Catch::Approx(ve::ui::kMinDebugUiScale));
 }
