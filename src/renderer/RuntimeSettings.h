@@ -276,26 +276,33 @@ struct PunctualShadowSettings {
 // class-selection rule.
 inline constexpr float kMaxPunctualAssignmentHysteresis = 0.5f;
 
+// Tabs of the debug UI's Inspector window, in display order. Persisted by
+// index, so append rather than reorder.
+enum class InspectorTab : uint32_t {
+    Scene,
+    Material,
+    Textures,
+    RenderTargets,
+    Probes,
+};
+inline constexpr uint32_t kInspectorTabCount = 5;
+
 struct DebugUiSettings {
     // Master toggle: when false the debug window shows only the common post-process
     // knobs (tone mapping, bloom, SSAO, TAA, exposure); when true it reveals the
-    // scene, GPU, diagnostics sections and the side panels.
+    // scene, GPU and diagnostics sections. It never opens or closes a window.
     bool advancedMode = false;
     // Multiplier on the automatic, window-height-derived UI scale; see
     // ui::effectiveDebugUiScale. 1.0 keeps the automatic size.
     float uiScale = 1.0f;
     bool showRenderGraphPanel = true;
-    // The side windows start closed and are opened from the main panel's
-    // Windows menu. Defaulting them open put five windows on top of each other
-    // (and of the main panel) the first time advanced mode was switched on.
-    bool showSceneHierarchyPanel = false;
-    bool showMaterialInspectorPanel = false;
-    bool showTextureDebugPanel = false;
-    bool showRenderTargetDebugPanel = false;
-    // Irradiance-probe controls and atlas previews. A window of its own because
-    // the main debug panel is taller than the display and its previews would be
-    // clipped rather than drawn.
-    bool showIrradianceProbePanel = false;
+    // The Inspector window: scene hierarchy, material, texture and render-target
+    // views and the irradiance probes, as tabs of one window. Opened only on
+    // request. It replaced five per-panel show flags whose saved values still
+    // read true in existing settings files; those keys are no longer read.
+    bool showInspector = false;
+    // An InspectorTab, as its index.
+    uint32_t inspectorTab = 0;
     bool showGpuTimingGraphs = true;
     bool showCullingStats = true;
     bool showExposureGraphs = true;

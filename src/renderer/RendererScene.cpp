@@ -1638,7 +1638,8 @@ void Renderer::loadCornellBoxScene()
     // The whole point of the scene, so it arrives switched on.
     giSettings_.enabled = true;
     giSettings_.debugPattern = false;
-    debugUiSettings_.showIrradianceProbePanel = true;
+    // Loading this preset is the explicit request: the probes are what it shows.
+    openInspector(InspectorTab::Probes);
     clampRuntimeSettings();
 
     cornellBoxSceneStatus_ =

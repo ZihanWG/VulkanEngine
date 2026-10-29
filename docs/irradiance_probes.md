@@ -489,15 +489,12 @@ Accumulation, over a 26-second run with the lights orbiting:
 
 ## Controls
 
-Its own window, **Irradiance Probes**, and not behind the advanced-mode gate.
-The reason was that the main panel was one column of default-open sections and
-therefore taller than the display, so anything appended landed below the fold
-where ImGui clips it rather than drawing it — and the atlas previews are how this
-subsystem is checked at all.
-
-The main panel is tabbed now, so that particular argument no longer holds. The
-window stays separate anyway, because the previews want to be visible *while* the
-probe controls are being changed, which a tab cannot do.
+The **Probes** tab of the Inspector window, not a section of the main panel,
+and not behind the advanced-mode gate. The atlas previews are how this subsystem
+is checked at all, and they want to stay visible *while* the probe controls are
+changed, so the controls and the previews share one tab beside the main panel
+rather than competing for the main panel's height. Loading the Cornell box
+preset opens the Inspector on this tab.
 
 | Control | Effect |
 | --- | --- |

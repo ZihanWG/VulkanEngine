@@ -910,6 +910,11 @@ void Renderer::pickObjectAtCursor(float pixelX, float pixelY)
 
     // Clicking empty space clears the selection.
     selectedRenderObjectIndex_ = hitIndex;
+    // A pick usually means "show me this material". Only when the Inspector is
+    // already open: a click in the viewport should never pop a window up.
+    if (hitIndex != kInvalidRenderObjectIndex && debugUiSettings_.showInspector) {
+        requestedInspectorTab_ = static_cast<int>(InspectorTab::Material);
+    }
     invalidateDepthPyramid();
 }
 

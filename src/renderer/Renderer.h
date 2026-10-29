@@ -1067,11 +1067,14 @@ private:
     void buildDebugUi();
     // buildDebugUi() panel sections (see RendererDebugUi.cpp); each owns its
     // CollapsingHeader, matching the existing drawXxxDebugUi pattern.
-    // Menu bar of the main panel: side windows, section toggles, UI scale.
+    // Menu bar of the main panel: Inspector, section toggles, UI scale.
     void drawDebugMenuBar();
-    // Places a side window in a grid right of the main panel: only where the
-    // layout file has no position for it, unless force (Arrange windows).
-    void placeDebugSidePanel(uint32_t slot, uint32_t slotCount, bool force);
+    // The tabbed Inspector beside the main panel, whose right edge is
+    // mainPanelRight. forcePlacement is the frame after Arrange windows;
+    // otherwise the layout file keeps the Inspector's position.
+    void drawInspectorWindow(bool forcePlacement, float mainPanelRight);
+    // Shows the Inspector and switches it to tab on its next draw.
+    void openInspector(InspectorTab tab);
     void drawControlsDebugUi();
     // Frame time, resolution and draw counts, drawn above the tab bar so they
     // stay visible whichever tab is open.
@@ -1955,6 +1958,9 @@ private:
     // look like a broken build.
     bool debugUiHidden_ = false;
     bool arrangeDebugPanelsRequested_ = false;
+    // An InspectorTab to select on the Inspector's next draw, or -1.
+    int requestedInspectorTab_ = -1;
+    bool inspectorTabRestored_ = false;
     bool occlusionTestSceneActive_ = false;
     bool cornellBoxSceneActive_ = false;
     bool sunlitYardSceneActive_ = false;
