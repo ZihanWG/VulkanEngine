@@ -1,5 +1,9 @@
 # Clustered (Forward+) Lighting
 
+![Clustered lighting demo](../screenshots/clustered_lighting_demo.gif)
+
+*Hundreds of dynamic point/spot lights via clustered (Forward+) shading, with the per-froxel light-count heatmap.*
+
 The renderer evaluates many dynamic point and spot lights by assigning lights to
 a view-space froxel grid in compute, then shading each fragment against only the
 lights in its froxel. This keeps a forward HDR pipeline while scaling to hundreds
