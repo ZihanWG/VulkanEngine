@@ -835,7 +835,7 @@ private:
     [[nodiscard]] bool isDepthPyramidBuildRequired() const;
     [[nodiscard]] const char* occlusionYieldStateName() const;
     void ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer);
-    void recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool midFrame = false);
+    void recordMidFrameDepthPyramidCommands(VkCommandBuffer commandBuffer);
     [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();
     bool readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     bool readGpuCullCounters(uint32_t frameIndex, renderer::GpuCullCounters& counters);

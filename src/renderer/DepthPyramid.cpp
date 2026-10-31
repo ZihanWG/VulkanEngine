@@ -270,26 +270,39 @@ void DepthPyramid::ensureShaderReadLayout(VkCommandBuffer commandBuffer)
     layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
-void DepthPyramid::recordCommands(VkCommandBuffer commandBuffer,
-                                  uint32_t frameIndex,
-                                  const glm::mat4& frameViewProjection,
-                                  const glm::vec3& frameCameraPosition,
-                                  bool midFrame)
+bool DepthPyramid::buildReady() const
 {
-    if (!buildAvailable_ || image_.image() == VK_NULL_HANDLE || pipeline_.pipeline() == VK_NULL_HANDLE ||
-        pipeline_.layout() == VK_NULL_HANDLE || descriptorSets_.empty() || mipImageViews_.empty() || mipLevels_ == 0) {
+    return buildAvailable_ && image_.image() != VK_NULL_HANDLE && pipeline_.pipeline() != VK_NULL_HANDLE &&
+           pipeline_.layout() != VK_NULL_HANDLE && !descriptorSets_.empty() && !mipImageViews_.empty() &&
+           mipLevels_ != 0;
+}
+
+void DepthPyramid::recordMidFrameCommands(VkCommandBuffer commandBuffer,
+                                          uint32_t frameIndex,
+                                          const glm::mat4& frameViewProjection,
+                                          const glm::vec3& frameCameraPosition)
+{
+    if (!buildReady()) {
         valid_ = false;
         return;
     }
 
-    const renderer::GpuProfileScope profileScope(
-        gpuProfiler_, frameIndex, commandBuffer, midFrame ? "DepthPyramidMid" : "DepthPyramid");
-    if (midFrame) {
-        renderGraph_.beginDepthPyramidMidPass();
-    } else {
-        renderGraph_.beginDepthPyramidPass();
-    }
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, frameIndex, commandBuffer, "DepthPyramidMid");
+    renderGraph_.beginDepthPyramidMidPass();
     rhi::debug::beginLabel(commandBuffer, "DepthPyramid");
+    recordBuild(commandBuffer, frameViewProjection, frameCameraPosition);
+    rhi::debug::endLabel(commandBuffer);
+    renderGraph_.endDepthPyramidMidPass();
+}
+
+void DepthPyramid::recordBuild(VkCommandBuffer commandBuffer,
+                               const glm::mat4& frameViewProjection,
+                               const glm::vec3& frameCameraPosition)
+{
+    if (!buildReady()) {
+        valid_ = false;
+        return;
+    }
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_.pipeline());
 
@@ -346,13 +359,6 @@ void DepthPyramid::recordCommands(VkCommandBuffer commandBuffer,
     valid_ = true;
     viewProjection_ = frameViewProjection;
     cameraPosition_ = frameCameraPosition;
-
-    rhi::debug::endLabel(commandBuffer);
-    if (midFrame) {
-        renderGraph_.endDepthPyramidMidPass();
-    } else {
-        renderGraph_.endDepthPyramidPass();
-    }
 }
 
 } // namespace ve::renderer

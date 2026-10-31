@@ -772,8 +772,6 @@ void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
 
     const bool indirectCountPathActive = frameIndirectCountPathActive(frameIndex);
 
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, frameIndex, commandBuffer, "MainGpuCullingPass");
-    renderGraph_.beginMainGpuCullingPass();
     rhi::debug::beginLabel(commandBuffer, "GpuCulling");
     depthPyramid_.ensureShaderReadLayout(commandBuffer);
     vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kGpuCullCountBufferSize, 0);
@@ -823,7 +821,6 @@ void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
         recordMainVisibleCountReadback(commandBuffer, frameIndex);
     }
     rhi::debug::endLabel(commandBuffer);
-    renderGraph_.endMainGpuCullingPass();
 }
 
 void GpuCulling::recordLodTransitionStateBarrier(VkCommandBuffer commandBuffer)

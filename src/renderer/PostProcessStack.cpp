@@ -477,6 +477,25 @@ void PostProcessStack::bindGraphExecutors(const glm::mat4& jitteredProjection,
                               {"BloomBlurVertical", "BloomBlurVertical", [this](RenderGraphPassContext& context) {
                                    recordBloomBlurCommands(context.commandBuffer(), false);
                                }});
+    // The mip chain, one pass per level. Only the selected chain survives
+    // culling, so the other's bindings are never called. The graph's scopes
+    // time the levels as one downsample and one upsample number.
+    for (uint32_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
+        renderGraph_.bindExecutor(
+            RenderGraphBuiltinPass::BloomDownsample,
+            level,
+            {"BloomDownsampleMip" + std::to_string(level), nullptr, [this, level](RenderGraphPassContext& context) {
+                 recordBloomDownsampleCommands(context.commandBuffer(), level);
+             }});
+    }
+    for (uint32_t level = 0; level < bloomMipUpsampleImages_.size(); ++level) {
+        renderGraph_.bindExecutor(
+            RenderGraphBuiltinPass::BloomUpsample,
+            level,
+            {"BloomUpsampleMip" + std::to_string(level), nullptr, [this, level](RenderGraphPassContext& context) {
+                 recordBloomUpsampleCommands(context.commandBuffer(), level);
+             }});
+    }
     renderGraph_.bindExecutor(RenderGraphBuiltinPass::Luminance,
                               {"LuminancePass", "LuminancePass", [this](RenderGraphPassContext& context) {
                                    recordLuminanceCommands(context.commandBuffer());
@@ -2358,124 +2377,92 @@ bool PostProcessStack::willRecordMipChainBloom() const
            bloomDownsamplePipeline_.pipeline() != VK_NULL_HANDLE && bloomDownsamplePipeline_.layout() != VK_NULL_HANDLE;
 }
 
-void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer)
+void PostProcessStack::recordBloomDownsampleCommands(VkCommandBuffer commandBuffer, uint32_t level)
 {
-    if (!willRecordMipChainBloom()) {
+    // Level 0 reads the sub-rected scene colour, so its source texel is one
+    // texel of the *allocation* and its UVs need scaling; deeper levels read a
+    // mip that was written in full.
+    const bool readsSceneColor = level == 0;
+    const ActivePostProcessSource source = activePostProcessSource();
+    const VkExtent2D sourceExtent = readsSceneColor ? source.allocatedExtent
+                                                    : VkExtent2D{bloomMipDownsampleImages_[level - 1].extent().width,
+                                                                 bloomMipDownsampleImages_[level - 1].extent().height};
+    const glm::vec2 sourceUvScale =
+        readsSceneColor ? source.uvScale
+                        : RenderResolution::subRectUvScale(bloomMipExtent(bloomChainSourceExtent(), level - 1),
+                                                           bloomMipExtent(sceneAllocatedExtent(), level - 1));
+    // Viewport is the level's *written* size; the image is the allocated one.
+    const VkExtent2D outputSize = bloomMipExtent(bloomChainSourceExtent(), level);
+
+    setViewportAndScissor(commandBuffer, outputSize);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomDownsamplePipeline_.pipeline());
+    const VkDescriptorSet descriptorSet = activeBloomMipDownsampleDescriptorSet(level);
+    if (descriptorSet == VK_NULL_HANDLE) {
+        return;
+    }
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            bloomDownsamplePipeline_.layout(),
+                            0,
+                            1,
+                            &descriptorSet,
+                            0,
+                            nullptr);
+    const BloomDownsamplePushConstants pushConstants{
+        glm::vec2{1.0f / static_cast<float>(sourceExtent.width), 1.0f / static_cast<float>(sourceExtent.height)},
+        bloomSettings_.threshold,
+        level == 0 ? 1u : 0u,
+        sourceUvScale};
+    vkCmdPushConstants(commandBuffer,
+                       bloomDownsamplePipeline_.layout(),
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(BloomDownsamplePushConstants)),
+                       &pushConstants);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+}
+
+void PostProcessStack::recordBloomUpsampleCommands(VkCommandBuffer commandBuffer, uint32_t level)
+{
+    if (bloomMipUpsampleDescriptorSets_.size() != bloomMipUpsampleImages_.size() ||
+        bloomUpsamplePipeline_.pipeline() == VK_NULL_HANDLE || bloomUpsamplePipeline_.layout() == VK_NULL_HANDLE) {
         return;
     }
 
-    rhi::debug::beginLabel(commandBuffer, "BloomMipChain");
+    const VkExtent2D outputSize = bloomMipExtent(bloomChainSourceExtent(), level);
+    const VkExtent3D lowerExtent = level + 1u == bloomMipDownsampleImages_.size() - 1u
+                                       ? bloomMipDownsampleImages_[level + 1u].extent()
+                                       : bloomMipUpsampleImages_[level + 1u].extent();
+    // The two sources are different mips, so different written fractions.
+    const glm::vec2 currentUvScale = RenderResolution::subRectUvScale(bloomMipExtent(bloomChainSourceExtent(), level),
+                                                                      bloomMipExtent(sceneAllocatedExtent(), level));
+    const glm::vec2 lowerUvScale = RenderResolution::subRectUvScale(
+        bloomMipExtent(bloomChainSourceExtent(), level + 1u), bloomMipExtent(sceneAllocatedExtent(), level + 1u));
 
-    const bool downsampleProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "Bloom Downsample Chain");
-    rhi::debug::beginLabel(commandBuffer, "Bloom Downsample Chain");
-    for (uint32_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
-        // Level 0 reads the sub-rected scene colour, so its source texel is one
-        // texel of the *allocation* and its UVs need scaling; deeper levels read a
-        // mip that was written in full.
-        const bool readsSceneColor = level == 0;
-        const ActivePostProcessSource source = activePostProcessSource();
-        const VkExtent2D sourceExtent = readsSceneColor
-                                            ? source.allocatedExtent
-                                            : VkExtent2D{bloomMipDownsampleImages_[level - 1].extent().width,
-                                                         bloomMipDownsampleImages_[level - 1].extent().height};
-        const glm::vec2 sourceUvScale =
-            readsSceneColor ? source.uvScale
-                            : RenderResolution::subRectUvScale(bloomMipExtent(bloomChainSourceExtent(), level - 1),
-                                                               bloomMipExtent(sceneAllocatedExtent(), level - 1));
-        // Viewport is the level's *written* size; the image is the allocated one.
-        const VkExtent2D outputSize = bloomMipExtent(bloomChainSourceExtent(), level);
-
-        rhi::debug::beginLabel(commandBuffer, "BloomDownsampleMip" + std::to_string(level));
-        renderGraph_.beginBloomDownsamplePass(level);
-        setViewportAndScissor(commandBuffer, outputSize);
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomDownsamplePipeline_.pipeline());
-        const VkDescriptorSet descriptorSet = activeBloomMipDownsampleDescriptorSet(level);
-        if (descriptorSet == VK_NULL_HANDLE) {
-            renderGraph_.endBloomDownsamplePass();
-            rhi::debug::endLabel(commandBuffer);
-            continue;
-        }
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                bloomDownsamplePipeline_.layout(),
-                                0,
-                                1,
-                                &descriptorSet,
-                                0,
-                                nullptr);
-        const BloomDownsamplePushConstants pushConstants{
-            glm::vec2{1.0f / static_cast<float>(sourceExtent.width), 1.0f / static_cast<float>(sourceExtent.height)},
-            bloomSettings_.threshold,
-            level == 0 ? 1u : 0u,
-            sourceUvScale};
-        vkCmdPushConstants(commandBuffer,
-                           bloomDownsamplePipeline_.layout(),
-                           VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0,
-                           static_cast<uint32_t>(sizeof(BloomDownsamplePushConstants)),
-                           &pushConstants);
-        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-        renderGraph_.endBloomDownsamplePass();
-        rhi::debug::endLabel(commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
-    if (downsampleProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-
-    if (!bloomMipUpsampleImages_.empty() && bloomMipUpsampleDescriptorSets_.size() == bloomMipUpsampleImages_.size() &&
-        bloomUpsamplePipeline_.pipeline() != VK_NULL_HANDLE && bloomUpsamplePipeline_.layout() != VK_NULL_HANDLE) {
-        const bool upsampleProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "Bloom Upsample Chain");
-        rhi::debug::beginLabel(commandBuffer, "Bloom Upsample Chain");
-        for (uint32_t reverseIndex = 0; reverseIndex < bloomMipUpsampleImages_.size(); ++reverseIndex) {
-            const uint32_t level = static_cast<uint32_t>(bloomMipUpsampleImages_.size() - 1u - reverseIndex);
-            const VkExtent2D outputSize = bloomMipExtent(bloomChainSourceExtent(), level);
-            const VkExtent3D lowerExtent = level + 1u == bloomMipDownsampleImages_.size() - 1u
-                                               ? bloomMipDownsampleImages_[level + 1u].extent()
-                                               : bloomMipUpsampleImages_[level + 1u].extent();
-            // The two sources are different mips, so different written fractions.
-            const glm::vec2 currentUvScale = RenderResolution::subRectUvScale(
-                bloomMipExtent(bloomChainSourceExtent(), level), bloomMipExtent(sceneAllocatedExtent(), level));
-            const glm::vec2 lowerUvScale =
-                RenderResolution::subRectUvScale(bloomMipExtent(bloomChainSourceExtent(), level + 1u),
-                                                 bloomMipExtent(sceneAllocatedExtent(), level + 1u));
-
-            rhi::debug::beginLabel(commandBuffer, "BloomUpsampleMip" + std::to_string(level));
-            renderGraph_.beginBloomUpsamplePass(level);
-            setViewportAndScissor(commandBuffer, outputSize);
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomUpsamplePipeline_.pipeline());
-            const VkDescriptorSet descriptorSet = bloomMipUpsampleDescriptorSets_[level];
-            vkCmdBindDescriptorSets(commandBuffer,
-                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    bloomUpsamplePipeline_.layout(),
-                                    0,
-                                    1,
-                                    &descriptorSet,
-                                    0,
-                                    nullptr);
-            const BloomUpsamplePushConstants pushConstants{
-                glm::vec2{1.0f / static_cast<float>(lowerExtent.width), 1.0f / static_cast<float>(lowerExtent.height)},
-                bloomSettings_.radius,
-                0.0f,
-                currentUvScale,
-                lowerUvScale};
-            vkCmdPushConstants(commandBuffer,
-                               bloomUpsamplePipeline_.layout(),
-                               VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0,
-                               static_cast<uint32_t>(sizeof(BloomUpsamplePushConstants)),
-                               &pushConstants);
-            vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-            renderGraph_.endBloomUpsamplePass();
-            rhi::debug::endLabel(commandBuffer);
-        }
-        rhi::debug::endLabel(commandBuffer);
-        if (upsampleProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
-    }
-
-    rhi::debug::endLabel(commandBuffer);
+    setViewportAndScissor(commandBuffer, outputSize);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomUpsamplePipeline_.pipeline());
+    const VkDescriptorSet descriptorSet = bloomMipUpsampleDescriptorSets_[level];
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            bloomUpsamplePipeline_.layout(),
+                            0,
+                            1,
+                            &descriptorSet,
+                            0,
+                            nullptr);
+    const BloomUpsamplePushConstants pushConstants{
+        glm::vec2{1.0f / static_cast<float>(lowerExtent.width), 1.0f / static_cast<float>(lowerExtent.height)},
+        bloomSettings_.radius,
+        0.0f,
+        currentUvScale,
+        lowerUvScale};
+    vkCmdPushConstants(commandBuffer,
+                       bloomUpsamplePipeline_.layout(),
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(BloomUpsamplePushConstants)),
+                       &pushConstants);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 }
 
 } // namespace renderer

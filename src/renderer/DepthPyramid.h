@@ -71,15 +71,22 @@ public:
     // so the culling pass will not trust them for occlusion this frame.
     void invalidate();
 
-    // midFrame: records into the DepthPyramidMidPass graph slot (the two-phase
-    // occlusion rebuild between the phase-1 and phase-2 main passes) instead of
-    // the end-of-frame DepthPyramidPass.
-    void recordCommands(VkCommandBuffer commandBuffer,
-                        uint32_t frameIndex,
-                        const glm::mat4& frameViewProjection,
-                        const glm::vec3& frameCameraPosition,
-                        bool midFrame = false);
+    // The pyramid build's commands alone. The end-of-frame DepthPyramidPass is
+    // recorded by the graph, which wraps this in the pass's barriers, label and
+    // profiler scope; an unbuildable pyramid records nothing and is marked
+    // invalid.
+    void recordBuild(VkCommandBuffer commandBuffer,
+                     const glm::mat4& frameViewProjection,
+                     const glm::vec3& frameCameraPosition);
+    // The two-phase occlusion rebuild between the phase-1 and phase-2 main
+    // passes, still recorded in place: DepthPyramidMidPass's begin/end pair
+    // around recordBuild.
+    void recordMidFrameCommands(VkCommandBuffer commandBuffer,
+                                uint32_t frameIndex,
+                                const glm::mat4& frameViewProjection,
+                                const glm::vec3& frameCameraPosition);
     void ensureShaderReadLayout(VkCommandBuffer commandBuffer);
+    [[nodiscard]] bool buildReady() const;
 
     // --- accessors for the GPU culling code (binds image/sampler) and debug UI ---
     [[nodiscard]] VkImage image() const

@@ -1915,9 +1915,9 @@ void Renderer::ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer)
     depthPyramid_.ensureShaderReadLayout(commandBuffer);
 }
 
-void Renderer::recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool midFrame)
+void Renderer::recordMidFrameDepthPyramidCommands(VkCommandBuffer commandBuffer)
 {
-    depthPyramid_.recordCommands(commandBuffer, currentFrame_, frameViewProjection_, frameCameraPosition_, midFrame);
+    depthPyramid_.recordMidFrameCommands(commandBuffer, currentFrame_, frameViewProjection_, frameCameraPosition_);
 }
 
 void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
@@ -2763,7 +2763,7 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
     // (disoccluded) objects into the existing attachments with LOAD ops. The
     // final end-of-frame pyramid rebuild below then includes the rescued draws.
     if (frameTwoPhaseOcclusionActive_) {
-        recordDepthPyramidCommands(commandBuffer, /*midFrame=*/true);
+        recordMidFrameDepthPyramidCommands(commandBuffer);
         gpuCulling_.recordMainCullPhase2(commandBuffer,
                                          currentFrame_,
                                          isGpuCullingActive(),
@@ -3221,9 +3221,17 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                               {"RayTracingSceneBuild", "RayTracingSceneBuild", [this](RenderGraphPassContext& context) {
                                    rayTracingScene_.recordTopLevelBuild(context.commandBuffer(), currentFrame_);
                                }});
-    renderGraph_.bindExecutor(Builtin::VolumetricFog,
-                              {nullptr, "VolumetricFog", [this](RenderGraphPassContext& context) {
-                                   recordVolumetricFogPass(context.commandBuffer());
+    renderGraph_.bindExecutor(Builtin::VolumetricFog, {"", "VolumetricFog", [this](RenderGraphPassContext& context) {
+                                                           recordVolumetricFogPass(context.commandBuffer());
+                                                       }});
+    renderGraph_.bindExecutor(Builtin::MainGpuCulling,
+                              {"", "MainGpuCullingPass", [this](RenderGraphPassContext& context) {
+                                   recordGpuCullingCommands(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(Builtin::DepthPyramid,
+                              {"DepthPyramid", "DepthPyramid", [this](RenderGraphPassContext& context) {
+                                   depthPyramid_.recordBuild(
+                                       context.commandBuffer(), frameViewProjection_, frameCameraPosition_);
                                }});
     renderGraph_.bindExecutor(Builtin::ImGui, {"ImGuiPass", "ImGuiPass", [this](RenderGraphPassContext& context) {
                                                    imguiLayer_.render(context.commandBuffer());
@@ -3233,7 +3241,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                     renderScaleSettings_.sharpness,
                                     showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
 
-    std::array<renderer::RenderGraphScheduledUnit, 12> frameUnits{{
+    std::array<renderer::RenderGraphScheduledUnit, 10> frameUnits{{
         {renderGraph_.builtinPassIndex(Builtin::VsmPageMark),
          [this, commandBuffer]() {
              // Page marking reads the depth pyramid the previous frame left, so it
@@ -3265,15 +3273,14 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
              volumetricFog_.ensureVolumeInitialized(commandBuffer);
          }},
         {renderGraph_.builtinPassIndex(Builtin::MainGpuCulling),
-         [this, commandBuffer]() { recordGpuCullingCommands(commandBuffer); }},
-        {renderer::kInvalidRenderGraphHandle,
          [this, commandBuffer]() {
              // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then
              // cull every light into its froxels. Both write buffers the main HDR
              // fragment shader reads, and fog injection too when fog is on --
              // frameClusterConsumerStages_ names both. No graph pass of its own --
              // the async path submits these on the compute queue, which the
-             // renderer owns -- so it runs with the culling unit above.
+             // renderer owns -- so it is anchored on the main cull and runs right
+             // after it, or with the unit before it when the cull is not declared.
              const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
                                                   clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
              if (!clusteredLightingActive || frameAsyncComputeActive_) {
@@ -3297,19 +3304,15 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         {renderGraph_.builtinPassIndex(Builtin::MainHdr),
          [this, commandBuffer]() { recordMainPassGeometry(commandBuffer); }},
         {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::DepthPyramid),
-         [this, commandBuffer]() {
-             if (frameDepthPyramidBuildRequired_) {
-                 recordDepthPyramidCommands(commandBuffer);
-             } else {
-                 // Skipped, so whatever is in the image is from an unknown frame.
-                 // Mark it unusable rather than leaving a stale pyramid flagged
-                 // valid -- that is what re-enabling occlusion culling at runtime
-                 // would otherwise read.
+         [this]() {
+             // The build itself is the pass's callback. Skipped, whatever is in the
+             // image is from an unknown frame: mark it unusable rather than leaving
+             // a stale pyramid flagged valid -- that is what re-enabling occlusion
+             // culling at runtime would otherwise read.
+             if (!frameDepthPyramidBuildRequired_) {
                  depthPyramid_.invalidate();
              }
          }},
-        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::BloomDownsampleFirst),
-         [this, commandBuffer]() { postProcess_.recordMipChainBloomCommands(commandBuffer); }},
         {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Composite),
          [this, commandBuffer, imageIndex]() {
              // Anchored on the composite, so it runs right after the composite's
