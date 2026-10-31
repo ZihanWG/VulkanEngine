@@ -298,6 +298,10 @@ const glm::vec3 kSampleSceneLampColor{1.0f, 0.68f, 0.38f};
 // Portfolio material-slot indices and occlusion-test scene constants now live in
 // renderer/SceneBuilder.h alongside the scene-layout logic that consumes them.
 
+} // namespace
+
+// Outside the anonymous namespace so Renderer.h can name MainPassFrameState,
+// which carries one, in the signatures of the passes that share it.
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
     uint32_t cascadeIndex = 0;
@@ -354,6 +358,25 @@ struct PushConstants {
     // be scaled into it. 1.0 when nothing is upscaled.
     glm::vec2 aoUvScale{1.0f, 1.0f};
 };
+
+// What the main HDR pass sets up and the passes after it in the geometry region
+// reuse: phase 2 and the transparent pass draw with the same viewport, sets and
+// base push constants. Filled by the main pass's callback, at the point the
+// values were always computed -- the base push constants include whether
+// ambient occlusion history is usable, which GTAO changes later in the frame.
+struct MainPassFrameState {
+    VkViewport viewport{};
+    VkRect2D scissor{};
+    VkDescriptorSet globalDescriptorSet = VK_NULL_HANDLE;
+    bool bindlessMaterialTexturesActive = false;
+    bool bindlessDescriptorSetsBound = false;
+    VkBuffer indirectDrawBuffer = VK_NULL_HANDLE;
+    bool indirectCountPathActive = false;
+    VkBuffer batchVisibleCountBuffer = VK_NULL_HANDLE;
+    PushConstants basePushConstants{};
+};
+
+namespace {
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
 static_assert(offsetof(PushConstants, cascadeIndex) == 8);

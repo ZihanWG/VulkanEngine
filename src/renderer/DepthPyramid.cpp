@@ -277,24 +277,6 @@ bool DepthPyramid::buildReady() const
            mipLevels_ != 0;
 }
 
-void DepthPyramid::recordMidFrameCommands(VkCommandBuffer commandBuffer,
-                                          uint32_t frameIndex,
-                                          const glm::mat4& frameViewProjection,
-                                          const glm::vec3& frameCameraPosition)
-{
-    if (!buildReady()) {
-        valid_ = false;
-        return;
-    }
-
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, frameIndex, commandBuffer, "DepthPyramidMid");
-    renderGraph_.beginDepthPyramidMidPass();
-    rhi::debug::beginLabel(commandBuffer, "DepthPyramid");
-    recordBuild(commandBuffer, frameViewProjection, frameCameraPosition);
-    rhi::debug::endLabel(commandBuffer);
-    renderGraph_.endDepthPyramidMidPass();
-}
-
 void DepthPyramid::recordBuild(VkCommandBuffer commandBuffer,
                                const glm::mat4& frameViewProjection,
                                const glm::vec3& frameCameraPosition)

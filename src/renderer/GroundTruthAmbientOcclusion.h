@@ -75,7 +75,10 @@ public:
 
     // Records the GTAO pass (writes the visibility target owned by
     // PostProcessStack, set up by the render graph).
-    void recordCommands(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent);
+    // GTAOPass's and GTAOBlurPass's callbacks. The graph emits each pass's
+    // barriers, label and profiler scope; each opens its own rendering scope.
+    void recordTrace(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent);
+    void recordBlur(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent);
 
     [[nodiscard]] bool available() const
     {

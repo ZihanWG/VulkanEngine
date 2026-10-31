@@ -1268,7 +1268,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .gtaoEnabled = frameGtaoActive_,
         // Zero when bindless is off, not only when nothing is blended: the
         // transparent pipeline binds the bindless heap as its second descriptor
-        // set, so recordMainPassGeometry skips the pass entirely without one.
+        // set, so the pass's callback records nothing without one.
         // Declaring it anyway had the graph modelling a pass that never ran.
         .transparentDrawCount = isBindlessMaterialTextureActive()
                                     ? frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count()
@@ -1282,13 +1282,11 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             isVsmPageRenderingActive() ? static_cast<uint32_t>(virtualShadowMap_.dirtyPages().size()) : 0u,
         .volumetricFogEnabled = isVolumetricFogActive(),
         .rayTracedShadowsEnabled = isRayTracedShadowActive(),
-        // The same flag recordRayTracingSceneBuild returns on.
         .rayTracingSceneBuildEnabled = isRayTracedShadowActive() && frameRayTracingSceneBuildRequired_,
-        // The same flag recordRayTracedShadowMask returns on.
+        // The ray-traced shadow mask's passes, each under the flag its pass
+        // exists on.
         .rayTracedShadowMaskEnabled = frameRayTracedShadowMaskActive_,
-        // The same flag recordRayTracedShadowMask records the filter on.
         .rayTracedShadowFilterEnabled = frameRayTracedShadowFilterActive_,
-        // The same flag recordRayTracedShadowMask records the temporal pass on.
         .rayTracedShadowTemporalEnabled = frameRayTracedShadowTemporalActive_,
         .irradianceProbeUpdateEnabled = isIrradianceProbeUpdateActive(),
         .probeCaptureEnabled = frameProbeCaptureActive_,
@@ -1927,11 +1925,6 @@ void Renderer::ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer)
     depthPyramid_.ensureShaderReadLayout(commandBuffer);
 }
 
-void Renderer::recordMidFrameDepthPyramidCommands(VkCommandBuffer commandBuffer)
-{
-    depthPyramid_.recordMidFrameCommands(commandBuffer, currentFrame_, frameViewProjection_, frameCameraPosition_);
-}
-
 bool Renderer::cascadeNeedsRedraw(uint32_t cascadeIndex) const
 {
     // The same answer anyCascadeShadowRedrawRequired gives the graph, so no
@@ -2254,9 +2247,7 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
         return;
     }
 
-    const bool prepassProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "DepthPrepass");
-    rhi::debug::beginLabel(commandBuffer, "DepthPrepass");
-    renderGraph_.beginDepthPrepass();
+    renderGraph_.beginDepthPrepassRendering();
 
     const VkExtent2D extent = renderResolution_.extent();
     VkViewport viewport{};
@@ -2397,43 +2388,22 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
     }
     depthPrepassBatchesDrawn_ = drawnBatches;
 
-    renderGraph_.endDepthPrepass();
-    rhi::debug::endLabel(commandBuffer);
-    if (prepassProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
+    renderGraph_.endDepthPrepassRendering();
 }
 
-void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
+void Renderer::recordMainHdrPass(VkCommandBuffer commandBuffer, MainPassFrameState& state)
 {
-    // The main HDR pass, the two-phase occlusion re-test, the screen-space
-    // effects between them, and the transparent pass, in one recorder rather
-    // than four.
-    //
-    // They are one region as far as state goes: the viewport, the global
-    // descriptor set, the indirect buffers, the base push constants and
-    // whether the bindless sets are currently bound are all set up by the main
-    // pass and reused by the other three. Splitting them would mean threading
-    // nine values through a shared struct, one of them mutable, for passes the
-    // graph has no freedom to separate anyway -- the same reason the mip-chain
-    // bloom recorder covers seven declared passes.
+    // The main HDR pass sets up the drawing state phase 2 and the transparent
+    // pass reuse -- the viewport, the global descriptor set, the indirect
+    // buffers and the base push constants -- and hands it to them through
+    // `state`.
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const VkDeviceAddress frameConstantsBaseAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
     const size_t mainDrawItemCount = visibleDrawItems_.size();
     const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
                                          clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
 
-    // Before the main pass begins its own rendering: this opens and closes a
-    // render pass of its own, and the depth it leaves behind is what the main
-    // pass loads instead of clearing.
-    recordDepthPrepass(commandBuffer);
-    // Between the two: it traces from the depth the prepass left, and the main
-    // pass reads what it wrote.
-    recordRayTracedShadowMask(commandBuffer);
-
-    const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
-    rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
-    renderGraph_.beginMainHdrPass();
+    renderGraph_.beginMainHdrPassRendering();
 
     const VkExtent2D extent = renderResolution_.extent();
     VkViewport viewport{};
@@ -2574,6 +2544,15 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
                              postProcess_.ambientOcclusionHistoryValid();
     basePushConstants.aoAmbientStrength = aoOnAmbient ? 1.0f : 0.0f;
     basePushConstants.aoUvScale = renderResolution_.uvScale();
+    state = MainPassFrameState{viewport,
+                               scissor,
+                               globalDescriptorSet,
+                               bindlessMaterialTexturesActive,
+                               bindlessDescriptorSetsBound,
+                               indirectDrawBuffer,
+                               indirectCountPathActive,
+                               batchVisibleCountBuffer,
+                               basePushConstants};
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
             const PushConstants pushConstants = basePushConstants;
@@ -2768,187 +2747,169 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
         rhi::debug::endLabel(commandBuffer);
     }
 
-    renderGraph_.endMainHdrPass();
-    rhi::debug::endLabel(commandBuffer);
-    if (mainHdrProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
+    renderGraph_.endMainHdrPassRendering();
+}
 
-    // Two-phase Hi-Z occlusion: rebuild the pyramid from phase-1 depth, re-test
-    // the phase-1 occlusion candidates against it, then draw the rescued
-    // (disoccluded) objects into the existing attachments with LOAD ops. The
-    // final end-of-frame pyramid rebuild below then includes the rescued draws.
-    if (frameTwoPhaseOcclusionActive_) {
-        recordMidFrameDepthPyramidCommands(commandBuffer);
-        gpuCulling_.recordMainCullPhase2(commandBuffer,
-                                         currentFrame_,
-                                         isGpuCullingActive(),
-                                         static_cast<uint32_t>(allDrawItems_.size()),
-                                         frameFrustumPlanes_,
-                                         isMainPassMultiDrawIndirectActive());
+void Renderer::recordMainHdrPhase2Pass(VkCommandBuffer commandBuffer, const MainPassFrameState& state)
+{
+    // Two-phase Hi-Z occlusion's second draw: the objects the re-test rescued,
+    // into the existing attachments with LOAD ops. The end-of-frame pyramid
+    // rebuild then includes them.
+    const VkViewport& viewport = state.viewport;
+    const VkRect2D& scissor = state.scissor;
+    const VkDescriptorSet globalDescriptorSet = state.globalDescriptorSet;
+    const bool bindlessDescriptorSetsBound = state.bindlessDescriptorSetsBound;
+    const VkBuffer indirectDrawBuffer = state.indirectDrawBuffer;
+    const bool indirectCountPathActive = state.indirectCountPathActive;
+    const VkBuffer batchVisibleCountBuffer = state.batchVisibleCountBuffer;
+    const PushConstants& basePushConstants = state.basePushConstants;
 
-        const bool phase2ProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPhase2");
-        rhi::debug::beginLabel(commandBuffer, "MainHDRPhase2");
-        renderGraph_.beginMainHdrPhase2Pass();
+    renderGraph_.beginMainHdrPhase2Rendering();
 
-        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
-        if (bindlessDescriptorSetsBound) {
-            const std::array<VkDescriptorSet, 2> phase2Sets{
-                globalDescriptorSet,
-                bindlessTextureHeap_.descriptorSet(),
-            };
-            vkCmdBindDescriptorSets(commandBuffer,
-                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipeline_.layout(),
-                                    0,
-                                    static_cast<uint32_t>(phase2Sets.size()),
-                                    phase2Sets.data(),
-                                    0,
-                                    nullptr);
-            vkCmdPushConstants(commandBuffer,
-                               pipeline_.layout(),
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0,
-                               static_cast<uint32_t>(sizeof(PushConstants)),
-                               &basePushConstants);
-
-            const renderer::Mesh* phase2BoundMesh = nullptr;
-            VkPipeline phase2BoundPipeline = pipeline_.pipeline();
-            for (const MeshDrawBatch& batch : meshDrawBatches_) {
-                if (!batch.mesh || batch.drawItemCount == 0) {
-                    continue;
-                }
-                // Blended geometry is drawn later, by recordTransparentPass, and
-                // the phase-1 loop above skips it for that reason. Phase 2 replays
-                // the same compacted buffer against the rebuilt pyramid, so
-                // without the same guard a blended caster that phase 1 rejected as
-                // occluded gets resurrected here -- and drawn with the opaque
-                // pipeline, depth writes on and no blending, into the scene colour
-                // the transparent pass is about to composite into.
-                //
-                // Seven of the eight draw loops in this file had this guard; this
-                // was the eighth.
-                if (batch.bucket == RenderBucket::Blend) {
-                    continue;
-                }
-
-                const VkPipeline batchPipeline = mainPipelineFor(batch.doubleSided);
-                if (phase2BoundPipeline != batchPipeline) {
-                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, batchPipeline);
-                    phase2BoundPipeline = batchPipeline;
-                }
-
-                if (phase2BoundMesh != batch.mesh) {
-                    const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
-                    const VkDeviceSize vertexOffsets[] = {0};
-                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-                    vkCmdBindIndexBuffer(commandBuffer, batch.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-                    phase2BoundMesh = batch.mesh;
-                }
-
-                const VkDeviceSize indirectOffset = mainBatchCommandOffset(batch);
-                if (indirectCountPathActive && batchVisibleCountBuffer != VK_NULL_HANDLE) {
-                    vkCmdDrawIndexedIndirectCount(commandBuffer,
-                                                  indirectDrawBuffer,
-                                                  indirectOffset,
-                                                  batchVisibleCountBuffer,
-                                                  batch.visibleCountOffset,
-                                                  mainBatchCommandCapacity(batch),
-                                                  sizeof(VkDrawIndexedIndirectCommand));
-                } else {
-                    vkCmdDrawIndexedIndirect(commandBuffer,
-                                             indirectDrawBuffer,
-                                             indirectOffset,
-                                             mainBatchCommandCapacity(batch),
-                                             sizeof(VkDrawIndexedIndirectCommand));
-                }
-            }
-        }
-
-        renderGraph_.endMainHdrPhase2Pass();
-        rhi::debug::endLabel(commandBuffer);
-        if (phase2ProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
-    }
-
-    if (frameSsrActive_) {
-        ssr_.recordCommands(commandBuffer, currentFrame_, postProcess_.sceneColor().image(), extent);
-    }
-
-    if (frameGtaoActive_) {
-        gtao_.recordCommands(commandBuffer, currentFrame_, extent);
-        // The target now holds a real result, so the next frame's main pass may
-        // sample it as history.
-        postProcess_.markAmbientOcclusionWritten();
-    }
-
-    // Transparent pass. After SSR and GTAO, which both need opaque-only depth and
-    // G-buffer data, and before the TAA resolve so blended edges are still
-    // antialiased. Recorded inline because it reuses this scope's push constants,
-    // descriptor sets, and viewport rather than rebuilding them.
-    const RenderBucketRange blendRange = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)];
-    if (!blendRange.empty() && transparentPipeline_.pipeline() != VK_NULL_HANDLE &&
-        globalDescriptorSet != VK_NULL_HANDLE && bindlessMaterialTexturesActive) {
-        const renderer::GpuProfileScope transparentScope(gpuProfiler_, currentFrame_, commandBuffer, "Transparent");
-        rhi::debug::beginLabel(commandBuffer, "Transparent " + std::to_string(blendRange.count()) + " draws");
-        renderGraph_.beginTransparentPass();
-
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline_.pipeline());
-        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
-        const std::array<VkDescriptorSet, 2> transparentSets{globalDescriptorSet, bindlessTextureHeap_.descriptorSet()};
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
+    if (bindlessDescriptorSetsBound) {
+        const std::array<VkDescriptorSet, 2> phase2Sets{
+            globalDescriptorSet,
+            bindlessTextureHeap_.descriptorSet(),
+        };
         vkCmdBindDescriptorSets(commandBuffer,
                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                transparentPipeline_.layout(),
+                                pipeline_.layout(),
                                 0,
-                                static_cast<uint32_t>(transparentSets.size()),
-                                transparentSets.data(),
+                                static_cast<uint32_t>(phase2Sets.size()),
+                                phase2Sets.data(),
                                 0,
                                 nullptr);
-
-        const PushConstants transparentPushConstants = basePushConstants;
         vkCmdPushConstants(commandBuffer,
-                           transparentPipeline_.layout(),
+                           pipeline_.layout(),
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0,
                            static_cast<uint32_t>(sizeof(PushConstants)),
-                           &transparentPushConstants);
+                           &basePushConstants);
 
-        // Direct draws rather than multi-draw indirect. The GPU cull compacts
-        // visible commands within a batch, and compaction is by definition
-        // order-destroying -- it would undo the back-to-front sort these draws
-        // depend on. firstInstance still carries the object-data slot exactly as
-        // the indirect path does, so the vertex shader is unchanged.
-        const renderer::Mesh* boundTransparentMesh = nullptr;
-        for (uint32_t drawIndex = blendRange.begin; drawIndex < blendRange.end; ++drawIndex) {
-            const DrawItem& drawItem = visibleDrawItems_[drawIndex];
-            if (!drawItem.mesh || drawItem.indexCount == 0 || drawItem.frameDataIndex >= kMaxDrawItems) {
+        const renderer::Mesh* phase2BoundMesh = nullptr;
+        VkPipeline phase2BoundPipeline = pipeline_.pipeline();
+        for (const MeshDrawBatch& batch : meshDrawBatches_) {
+            if (!batch.mesh || batch.drawItemCount == 0) {
+                continue;
+            }
+            // Blended geometry is drawn later, by recordTransparentPass, and
+            // the phase-1 loop above skips it for that reason. Phase 2 replays
+            // the same compacted buffer against the rebuilt pyramid, so
+            // without the same guard a blended caster that phase 1 rejected as
+            // occluded gets resurrected here -- and drawn with the opaque
+            // pipeline, depth writes on and no blending, into the scene colour
+            // the transparent pass is about to composite into.
+            //
+            // Seven of the eight draw loops in this file had this guard; this
+            // was the eighth.
+            if (batch.bucket == RenderBucket::Blend) {
                 continue;
             }
 
-            if (boundTransparentMesh != drawItem.mesh) {
-                const VkBuffer vertexBuffers[] = {drawItem.mesh->vertexBuffer()};
-                const VkDeviceSize vertexOffsets[] = {0};
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-                vkCmdBindIndexBuffer(commandBuffer, drawItem.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-                boundTransparentMesh = drawItem.mesh;
+            const VkPipeline batchPipeline = mainPipelineFor(batch.doubleSided);
+            if (phase2BoundPipeline != batchPipeline) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, batchPipeline);
+                phase2BoundPipeline = batchPipeline;
             }
 
-            vkCmdDrawIndexed(commandBuffer,
-                             drawItem.indexCount,
-                             1,
-                             drawItem.firstIndex,
-                             drawItem.vertexOffset,
-                             drawItem.frameDataIndex);
+            if (phase2BoundMesh != batch.mesh) {
+                const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
+                const VkDeviceSize vertexOffsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, batch.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                phase2BoundMesh = batch.mesh;
+            }
+
+            const VkDeviceSize indirectOffset = mainBatchCommandOffset(batch);
+            if (indirectCountPathActive && batchVisibleCountBuffer != VK_NULL_HANDLE) {
+                vkCmdDrawIndexedIndirectCount(commandBuffer,
+                                              indirectDrawBuffer,
+                                              indirectOffset,
+                                              batchVisibleCountBuffer,
+                                              batch.visibleCountOffset,
+                                              mainBatchCommandCapacity(batch),
+                                              sizeof(VkDrawIndexedIndirectCommand));
+            } else {
+                vkCmdDrawIndexedIndirect(commandBuffer,
+                                         indirectDrawBuffer,
+                                         indirectOffset,
+                                         mainBatchCommandCapacity(batch),
+                                         sizeof(VkDrawIndexedIndirectCommand));
+            }
+        }
+    }
+
+    renderGraph_.endMainHdrPhase2Rendering();
+}
+
+void Renderer::recordTransparentPass(VkCommandBuffer commandBuffer, const MainPassFrameState& state)
+{
+    // After SSR and GTAO, which both need opaque-only depth and G-buffer data,
+    // and before the TAA resolve so blended edges are still antialiased. It
+    // reuses the main pass's push constants, descriptor sets and viewport
+    // rather than rebuilding them.
+    const VkViewport& viewport = state.viewport;
+    const VkRect2D& scissor = state.scissor;
+    const VkDescriptorSet globalDescriptorSet = state.globalDescriptorSet;
+    const PushConstants& basePushConstants = state.basePushConstants;
+    const RenderBucketRange blendRange = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)];
+    if (blendRange.empty() || transparentPipeline_.pipeline() == VK_NULL_HANDLE ||
+        globalDescriptorSet == VK_NULL_HANDLE || !state.bindlessMaterialTexturesActive) {
+        return;
+    }
+
+    renderGraph_.beginTransparentRendering();
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline_.pipeline());
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    const std::array<VkDescriptorSet, 2> transparentSets{globalDescriptorSet, bindlessTextureHeap_.descriptorSet()};
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            transparentPipeline_.layout(),
+                            0,
+                            static_cast<uint32_t>(transparentSets.size()),
+                            transparentSets.data(),
+                            0,
+                            nullptr);
+
+    const PushConstants transparentPushConstants = basePushConstants;
+    vkCmdPushConstants(commandBuffer,
+                       transparentPipeline_.layout(),
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(PushConstants)),
+                       &transparentPushConstants);
+
+    // Direct draws rather than multi-draw indirect. The GPU cull compacts
+    // visible commands within a batch, and compaction is by definition
+    // order-destroying -- it would undo the back-to-front sort these draws
+    // depend on. firstInstance still carries the object-data slot exactly as
+    // the indirect path does, so the vertex shader is unchanged.
+    const renderer::Mesh* boundTransparentMesh = nullptr;
+    for (uint32_t drawIndex = blendRange.begin; drawIndex < blendRange.end; ++drawIndex) {
+        const DrawItem& drawItem = visibleDrawItems_[drawIndex];
+        if (!drawItem.mesh || drawItem.indexCount == 0 || drawItem.frameDataIndex >= kMaxDrawItems) {
+            continue;
         }
 
-        renderGraph_.endTransparentPass();
-        rhi::debug::endLabel(commandBuffer);
+        if (boundTransparentMesh != drawItem.mesh) {
+            const VkBuffer vertexBuffers[] = {drawItem.mesh->vertexBuffer()};
+            const VkDeviceSize vertexOffsets[] = {0};
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+            vkCmdBindIndexBuffer(commandBuffer, drawItem.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+            boundTransparentMesh = drawItem.mesh;
+        }
+
+        vkCmdDrawIndexed(
+            commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, drawItem.vertexOffset, drawItem.frameDataIndex);
     }
+
+    renderGraph_.endTransparentRendering();
 }
 
 void Renderer::recordPunctualShadowCull(VkCommandBuffer commandBuffer)
@@ -3056,108 +3017,96 @@ void Renderer::recordProbeShadingParams(VkCommandBuffer commandBuffer)
     }
 }
 
-void Renderer::recordRayTracedShadowMask(VkCommandBuffer commandBuffer)
-{
-    if (!frameRayTracedShadowMaskActive_) {
-        return;
-    }
+struct Renderer::RayTracedShadowMaskFrame {
+    VkExtent2D extent{};
+    glm::uvec2 fullExtent{};
+    glm::vec2 inverseFullExtent{};
+    glm::mat4 inverseViewProjection{1.0f};
+    uint32_t traceScale = 1;
+    glm::uvec2 traceExtent{};
+    VkDeviceAddress frameConstantsAddress = 0;
+};
 
-    const VkExtent2D extent = renderResolution_.extent();
-    const glm::uvec2 fullExtent(extent.width, extent.height);
-    const glm::vec2 inverseFullExtent(1.0f / static_cast<float>(extent.width),
-                                      1.0f / static_cast<float>(extent.height));
+Renderer::RayTracedShadowMaskFrame Renderer::rayTracedShadowMaskFrame() const
+{
+    RayTracedShadowMaskFrame mask{};
+    mask.extent = renderResolution_.extent();
+    mask.fullExtent = glm::uvec2(mask.extent.width, mask.extent.height);
+    mask.inverseFullExtent =
+        glm::vec2(1.0f / static_cast<float>(mask.extent.width), 1.0f / static_cast<float>(mask.extent.height));
     // The matrix the prepass rasterised with, jitter included, so a pixel centre
     // reconstructs to the surface point the main pass shades at that pixel.
-    const glm::mat4 inverseViewProjection = glm::inverse(frameJitteredViewProjection_);
-    const uint32_t traceScale = renderer::rayTracedShadowTraceScale(rayTracedShadowSettings_.halfResolutionMask,
-                                                                    rayTracedShadowSettings_.debugReferenceSamples);
-    const glm::uvec2 traceExtent(renderer::rayTracedShadowTraceExtent(fullExtent.x, traceScale),
-                                 renderer::rayTracedShadowTraceExtent(fullExtent.y, traceScale));
-    const VkDeviceAddress frameConstantsAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
+    mask.inverseViewProjection = glm::inverse(frameJitteredViewProjection_);
+    mask.traceScale = renderer::rayTracedShadowTraceScale(rayTracedShadowSettings_.halfResolutionMask,
+                                                          rayTracedShadowSettings_.debugReferenceSamples);
+    mask.traceExtent = glm::uvec2(renderer::rayTracedShadowTraceExtent(mask.fullExtent.x, mask.traceScale),
+                                  renderer::rayTracedShadowTraceExtent(mask.fullExtent.y, mask.traceScale));
+    mask.frameConstantsAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
+    return mask;
+}
 
-    {
-        const renderer::GpuProfileScope profileScope(
-            gpuProfiler_, currentFrame_, commandBuffer, "RayTracedShadowTrace");
-        rhi::debug::beginLabel(commandBuffer, "RayTracedShadowTrace");
-        renderGraph_.beginRayTracedShadowTracePass();
-        renderer::RayTracedShadowTracePushConstants push{};
-        push.frameConstants = frameConstantsAddress;
-        push.objectFrameData = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
-        push.inverseViewProjection = inverseViewProjection;
-        push.fullExtent = fullExtent;
-        push.inverseFullExtent = inverseFullExtent;
-        push.traceExtent = traceExtent;
-        push.traceScale = traceScale;
-        push.referenceSamples = rayTracedShadowSettings_.debugReferenceSamples;
-        rayTracedShadowMask_.recordTrace(commandBuffer, push, bindlessTextureHeap_.descriptorSet());
-        renderGraph_.endRayTracedShadowTracePass();
-        rhi::debug::endLabel(commandBuffer);
-    }
-    if (frameRayTracedShadowTemporalActive_) {
-        const renderer::GpuProfileScope profileScope(
-            gpuProfiler_, currentFrame_, commandBuffer, "RayTracedShadowTemporal");
-        rhi::debug::beginLabel(commandBuffer, "RayTracedShadowTemporal");
-        renderGraph_.beginRayTracedShadowTemporalPass();
-        renderer::RayTracedShadowTemporalPushConstants push{};
-        // Last frame's matrix is still the previous one here: it is captured
-        // only after this frame is recorded. Unjittered, where the history was
-        // written at last frame's jitter: under TAA a still surface reprojects
-        // up to half a pixel off, inside the bilinear footprint.
-        push.reprojection = previousFrameViewProjection_ * inverseViewProjection;
-        push.viewDepthRow = glm::row(inverseViewProjection, 3);
-        push.fullExtent = fullExtent;
-        push.inverseFullExtent = inverseFullExtent;
-        push.traceExtent = traceExtent;
-        push.traceScale = traceScale;
-        push.maxFrames = static_cast<float>(rayTracedShadowSettings_.temporalMaxFrames);
-        push.historyUsable = frameRayTracedShadowHistoryUsable_ ? 1u : 0u;
-        rayTracedShadowMask_.recordTemporal(commandBuffer, push);
-        renderGraph_.endRayTracedShadowTemporalPass();
-        rhi::debug::endLabel(commandBuffer);
-    }
-    if (frameRayTracedShadowFilterActive_) {
-        // One profiler scope over the three dispatches: the filter's cost is the
-        // question, and each scope is two more timestamps in a pass this small.
-        const renderer::GpuProfileScope profileScope(
-            gpuProfiler_, currentFrame_, commandBuffer, "RayTracedShadowFilter");
-        rhi::debug::beginLabel(commandBuffer, "RayTracedShadowFilter");
-        renderer::RayTracedShadowFilterPushConstants push{};
-        push.traceExtent = traceExtent;
-        // The jittered projection's scale is the unjittered one's: jitter only
-        // moves the centre.
-        push.texelsPerUnit =
-            renderer::rayTracedShadowTexelsPerUnit(frameJitteredProjection_[1][1], extent.height, traceScale);
-        push.tanSunRadius = renderer::sunConeTangent(rayTracedShadowSettings_.sunAngularDiameterDegrees);
-        push.temporal = frameRayTracedShadowTemporalActive_ ? 1u : 0u;
-        push.debugHistoryLength =
-            frameRayTracedShadowTemporalActive_ && rayTracedShadowSettings_.debugHistoryLength ? 1u : 0u;
-        for (const renderer::RayTracedShadowFilterStage stage : {renderer::RayTracedShadowFilterStage::Radius,
-                                                                 renderer::RayTracedShadowFilterStage::BlurHorizontal,
-                                                                 renderer::RayTracedShadowFilterStage::BlurVertical}) {
-            push.direction =
-                stage == renderer::RayTracedShadowFilterStage::BlurVertical ? glm::ivec2(0, 1) : glm::ivec2(1, 0);
-            renderGraph_.beginRayTracedShadowFilterPass(stage);
-            rayTracedShadowMask_.recordFilter(commandBuffer, stage, push);
-            renderGraph_.endRayTracedShadowFilterPass();
-        }
-        rhi::debug::endLabel(commandBuffer);
-    }
-    {
-        const renderer::GpuProfileScope profileScope(
-            gpuProfiler_, currentFrame_, commandBuffer, "RayTracedShadowResolve");
-        rhi::debug::beginLabel(commandBuffer, "RayTracedShadowResolve");
-        renderGraph_.beginRayTracedShadowResolvePass();
-        renderer::RayTracedShadowResolvePushConstants push{};
-        push.frameConstants = frameConstantsAddress;
-        push.traceScale = traceScale;
-        push.filtered = frameRayTracedShadowFilterActive_ ? 1u : 0u;
-        push.fullExtent = fullExtent;
-        push.inverseFullExtent = inverseFullExtent;
-        push.inverseViewProjection = inverseViewProjection;
-        rayTracedShadowMask_.recordResolve(commandBuffer, push);
-        renderGraph_.endRayTracedShadowResolvePass();
-        rhi::debug::endLabel(commandBuffer);
-    }
+void Renderer::recordRayTracedShadowTrace(VkCommandBuffer commandBuffer)
+{
+    const RayTracedShadowMaskFrame mask = rayTracedShadowMaskFrame();
+    renderer::RayTracedShadowTracePushConstants push{};
+    push.frameConstants = mask.frameConstantsAddress;
+    push.objectFrameData = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    push.inverseViewProjection = mask.inverseViewProjection;
+    push.fullExtent = mask.fullExtent;
+    push.inverseFullExtent = mask.inverseFullExtent;
+    push.traceExtent = mask.traceExtent;
+    push.traceScale = mask.traceScale;
+    push.referenceSamples = rayTracedShadowSettings_.debugReferenceSamples;
+    rayTracedShadowMask_.recordTrace(commandBuffer, push, bindlessTextureHeap_.descriptorSet());
+}
+
+void Renderer::recordRayTracedShadowTemporal(VkCommandBuffer commandBuffer)
+{
+    const RayTracedShadowMaskFrame mask = rayTracedShadowMaskFrame();
+    renderer::RayTracedShadowTemporalPushConstants push{};
+    // Last frame's matrix is still the previous one here: it is captured
+    // only after this frame is recorded. Unjittered, where the history was
+    // written at last frame's jitter: under TAA a still surface reprojects
+    // up to half a pixel off, inside the bilinear footprint.
+    push.reprojection = previousFrameViewProjection_ * mask.inverseViewProjection;
+    push.viewDepthRow = glm::row(mask.inverseViewProjection, 3);
+    push.fullExtent = mask.fullExtent;
+    push.inverseFullExtent = mask.inverseFullExtent;
+    push.traceExtent = mask.traceExtent;
+    push.traceScale = mask.traceScale;
+    push.maxFrames = static_cast<float>(rayTracedShadowSettings_.temporalMaxFrames);
+    push.historyUsable = frameRayTracedShadowHistoryUsable_ ? 1u : 0u;
+    rayTracedShadowMask_.recordTemporal(commandBuffer, push);
+}
+
+void Renderer::recordRayTracedShadowFilter(VkCommandBuffer commandBuffer, renderer::RayTracedShadowFilterStage stage)
+{
+    const RayTracedShadowMaskFrame mask = rayTracedShadowMaskFrame();
+    renderer::RayTracedShadowFilterPushConstants push{};
+    push.traceExtent = mask.traceExtent;
+    // The jittered projection's scale is the unjittered one's: jitter only
+    // moves the centre.
+    push.texelsPerUnit =
+        renderer::rayTracedShadowTexelsPerUnit(frameJitteredProjection_[1][1], mask.extent.height, mask.traceScale);
+    push.tanSunRadius = renderer::sunConeTangent(rayTracedShadowSettings_.sunAngularDiameterDegrees);
+    push.temporal = frameRayTracedShadowTemporalActive_ ? 1u : 0u;
+    push.debugHistoryLength =
+        frameRayTracedShadowTemporalActive_ && rayTracedShadowSettings_.debugHistoryLength ? 1u : 0u;
+    push.direction = stage == renderer::RayTracedShadowFilterStage::BlurVertical ? glm::ivec2(0, 1) : glm::ivec2(1, 0);
+    rayTracedShadowMask_.recordFilter(commandBuffer, stage, push);
+}
+
+void Renderer::recordRayTracedShadowResolve(VkCommandBuffer commandBuffer)
+{
+    const RayTracedShadowMaskFrame mask = rayTracedShadowMaskFrame();
+    renderer::RayTracedShadowResolvePushConstants push{};
+    push.frameConstants = mask.frameConstantsAddress;
+    push.traceScale = mask.traceScale;
+    push.filtered = frameRayTracedShadowFilterActive_ ? 1u : 0u;
+    push.fullExtent = mask.fullExtent;
+    push.inverseFullExtent = mask.inverseFullExtent;
+    push.inverseViewProjection = mask.inverseViewProjection;
+    rayTracedShadowMask_.recordResolve(commandBuffer, push);
 }
 
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
@@ -3259,6 +3208,90 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                               {"", "IrradianceProbeUpdate", [this](RenderGraphPassContext& context) {
                                    irradianceProbes_.recordUpdate(context.commandBuffer(), giSettings_.debugPattern);
                                }});
+    // The geometry region, in recording order. The prepass's depth is what the
+    // main pass loads instead of clearing; the ray-traced shadow mask traces
+    // from it and the main pass reads what the mask wrote.
+    MainPassFrameState mainPassState{};
+    renderGraph_.bindExecutor(Builtin::DepthPrepass,
+                              {"DepthPrepass", "DepthPrepass", [this](RenderGraphPassContext& context) {
+                                   recordDepthPrepass(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(Builtin::RayTracedShadowTrace,
+                              {"RayTracedShadowTrace", "RayTracedShadowTrace", [this](RenderGraphPassContext& context) {
+                                   recordRayTracedShadowTrace(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(
+        Builtin::RayTracedShadowTemporal,
+        {"RayTracedShadowTemporal", "RayTracedShadowTemporal", [this](RenderGraphPassContext& context) {
+             recordRayTracedShadowTemporal(context.commandBuffer());
+         }});
+    // The three filter stages share the graph's RayTracedShadowFilter scope.
+    for (const renderer::RayTracedShadowFilterStage stage : {renderer::RayTracedShadowFilterStage::Radius,
+                                                             renderer::RayTracedShadowFilterStage::BlurHorizontal,
+                                                             renderer::RayTracedShadowFilterStage::BlurVertical}) {
+        renderGraph_.bindExecutor(Builtin::RayTracedShadowFilter,
+                                  static_cast<uint32_t>(stage),
+                                  {"", nullptr, [this, stage](RenderGraphPassContext& context) {
+                                       recordRayTracedShadowFilter(context.commandBuffer(), stage);
+                                   }});
+    }
+    renderGraph_.bindExecutor(
+        Builtin::RayTracedShadowResolve,
+        {"RayTracedShadowResolve", "RayTracedShadowResolve", [this](RenderGraphPassContext& context) {
+             recordRayTracedShadowResolve(context.commandBuffer());
+         }});
+    renderGraph_.bindExecutor(Builtin::MainHdr,
+                              {"MainHDRPass", "MainHDRPass", [this, &mainPassState](RenderGraphPassContext& context) {
+                                   recordMainHdrPass(context.commandBuffer(), mainPassState);
+                               }});
+    // Two-phase Hi-Z occlusion: rebuild the pyramid from phase-1 depth, re-test
+    // the phase-1 occlusion candidates against it, then draw the rescued objects.
+    renderGraph_.bindExecutor(Builtin::DepthPyramidMid,
+                              {"", "DepthPyramidMid", [this](RenderGraphPassContext& context) {
+                                   rhi::debug::beginLabel(context.commandBuffer(), "DepthPyramid");
+                                   depthPyramid_.recordBuild(
+                                       context.commandBuffer(), frameViewProjection_, frameCameraPosition_);
+                                   rhi::debug::endLabel(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(Builtin::MainGpuCullingPhase2,
+                              {"", "MainGpuCullingPhase2", [this](RenderGraphPassContext& context) {
+                                   gpuCulling_.recordMainCullPhase2(context.commandBuffer(),
+                                                                    currentFrame_,
+                                                                    isGpuCullingActive(),
+                                                                    static_cast<uint32_t>(allDrawItems_.size()),
+                                                                    frameFrustumPlanes_,
+                                                                    isMainPassMultiDrawIndirectActive());
+                               }});
+    renderGraph_.bindExecutor(
+        Builtin::MainHdrPhase2,
+        {"MainHDRPhase2", "MainHDRPhase2", [this, &mainPassState](RenderGraphPassContext& context) {
+             recordMainHdrPhase2Pass(context.commandBuffer(), mainPassState);
+         }});
+    renderGraph_.bindExecutor(Builtin::SsrCopy, {"SSRCopyPass", "SSRCopy", [this](RenderGraphPassContext& context) {
+                                                     ssr_.recordCopy(context.commandBuffer(),
+                                                                     currentFrame_,
+                                                                     postProcess_.sceneColor().image(),
+                                                                     renderResolution_.extent());
+                                                 }});
+    renderGraph_.bindExecutor(Builtin::SsrTrace,
+                              {"SSRTracePass", "SSRTrace", [this](RenderGraphPassContext& context) {
+                                   ssr_.recordTrace(context.commandBuffer(), currentFrame_, renderResolution_.extent());
+                               }});
+    renderGraph_.bindExecutor(
+        Builtin::Gtao, {"GTAOPass", "GTAO", [this](RenderGraphPassContext& context) {
+                            gtao_.recordTrace(context.commandBuffer(), currentFrame_, renderResolution_.extent());
+                        }});
+    renderGraph_.bindExecutor(Builtin::GtaoBlur,
+                              {"GTAOBlurPass", "GTAOBlur", [this](RenderGraphPassContext& context) {
+                                   gtao_.recordBlur(context.commandBuffer(), currentFrame_, renderResolution_.extent());
+                               }});
+    const uint32_t transparentDraws = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count();
+    renderGraph_.bindExecutor(Builtin::Transparent,
+                              {"Transparent " + std::to_string(transparentDraws) + " draws",
+                               "Transparent",
+                               [this, &mainPassState](RenderGraphPassContext& context) {
+                                   recordTransparentPass(context.commandBuffer(), mainPassState);
+                               }});
     renderGraph_.bindExecutor(Builtin::MainGpuCulling,
                               {"", "MainGpuCullingPass", [this](RenderGraphPassContext& context) {
                                    recordGpuCullingCommands(context.commandBuffer());
@@ -3276,7 +3309,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                     renderScaleSettings_.sharpness,
                                     showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
 
-    std::array<renderer::RenderGraphScheduledUnit, 11> frameUnits{{
+    std::array<renderer::RenderGraphScheduledUnit, 9> frameUnits{{
         {renderGraph_.builtinPassIndex(Builtin::VsmPageMark),
          [this, commandBuffer]() {
              // Page marking reads the depth pyramid the previous frame left, so it
@@ -3339,18 +3372,6 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         // where it ran when it was part of the probe recorder.
         {renderGraph_.builtinPassIndex(Builtin::VolumetricFog),
          [this, commandBuffer]() { recordProbeShadingParams(commandBuffer); }},
-        {renderGraph_.builtinPassIndex(Builtin::MainHdr),
-         [this, commandBuffer]() { recordMainPassGeometry(commandBuffer); }},
-        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::DepthPyramid),
-         [this]() {
-             // The build itself is the pass's callback. Skipped, whatever is in the
-             // image is from an unknown frame: mark it unusable rather than leaving
-             // a stale pyramid flagged valid -- that is what re-enabling occlusion
-             // culling at runtime would otherwise read.
-             if (!frameDepthPyramidBuildRequired_) {
-                 depthPyramid_.invalidate();
-             }
-         }},
         {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Composite),
          [this, commandBuffer, imageIndex]() {
              // Anchored on the composite, so it runs right after the composite's
@@ -3384,6 +3405,24 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // order. A unit remains responsible for calling its begin/end pass helpers;
     // a bound pass gets its barriers and rendering scope from the graph.
     renderGraph_.recordScheduledUnits(frameUnits);
+
+    // CPU state the recorded frame leaves behind. Here, after recording, rather
+    // than in a unit: nothing recorded after the geometry region reads either,
+    // and a unit with no scheduled pass to anchor on would have inherited a
+    // position ahead of the main pass, which does read them.
+    //
+    // A skipped pyramid build means whatever is in the image is from an
+    // unknown frame: mark it unusable rather than leaving a stale pyramid
+    // flagged valid -- that is what re-enabling occlusion culling at runtime
+    // would otherwise read.
+    if (!frameDepthPyramidBuildRequired_) {
+        depthPyramid_.invalidate();
+    }
+    // The AO target now holds a real result, so the next frame's main pass may
+    // sample it as history.
+    if (frameGtaoActive_) {
+        postProcess_.markAmbientOcclusionWritten();
+    }
 
     if (taaActiveThisFrame) {
         postProcess_.advanceTaaHistory();
