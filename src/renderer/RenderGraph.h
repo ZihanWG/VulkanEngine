@@ -860,7 +860,11 @@ enum class RenderGraphBuiltinPass {
     ImGui,
     // One pass per level; named with the level through the instanced overloads.
     BloomDownsample,
-    BloomUpsample
+    BloomUpsample,
+    ShadowGpuCulling,
+    PunctualShadowCull,
+    VsmPage,
+    IrradianceProbes
 };
 
 // What a caller binds to a declared pass so the graph records it: the commands,
@@ -994,10 +998,12 @@ public:
                     rhi::VulkanShadowMap* vsmPagePool,
                     uint32_t imageIndex,
                     RenderGraphFrameResources frameResources);
-    // Virtual shadow map page marking. Compute, no rendering scope; this exists
-    // so the graph transitions the depth pyramid the marking dispatch samples.
-    void beginVsmPageMarkPass();
-    void endVsmPageMarkPass();
+    // Rendering scopes a pass's execute callback opens itself, because their
+    // shape is decided while recording: which cascades are redrawn, and whether
+    // a cached atlas or page pool is loaded or cleared. Each may only be called
+    // from inside that pass's callback; the graph has already emitted the
+    // pass's barriers.
+    //
     // Virtual shadow map page rendering. One rendering scope covers the whole
     // physical page pool; the caller sets a viewport/scissor per dirty page
     // inside it, exactly as the punctual atlas does per slot.
@@ -1006,13 +1012,16 @@ public:
     // preserves the pages already in the pool so cached ones survive, and the
     // caller clears only the pages it is about to redraw. True is for the first
     // frame after the image is created, when nothing in it can be trusted.
-    void beginVsmPagePass(bool clearWholePool);
-    void endVsmPagePass();
-    void beginShadowPass(uint32_t cascadeLayer);
-    // All cascades in one pass via multiview. Requires the shadow map's array
+    void beginVsmPageRendering(bool clearWholePool);
+    void endVsmPageRendering();
+    // One cascade layer of CSMShadowPass. Every cascade after the first the
+    // callback opens re-emits the pass's barriers, as each cascade's own begin
+    // always did, which is what keeps the recorded barrier set unchanged.
+    void beginShadowCascadeRendering(uint32_t cascadeLayer);
+    // All cascades in one scope via multiview. Requires the shadow map's array
     // view and a pipeline built with the matching view mask.
-    void beginLayeredShadowPass(uint32_t cascadeCount);
-    void endShadowPass(bool finalCascade);
+    void beginLayeredShadowRendering(uint32_t cascadeCount);
+    void endShadowRendering();
     // Punctual shadow atlas. One rendering scope covers the whole atlas; the
     // caller sets a viewport/scissor per slot inside it.
     //
@@ -1021,17 +1030,12 @@ public:
     // needs -- the caller then clears just the tiles it is about to redraw.
     // True is for the first frame after the image is (re)created, when its
     // contents are undefined and no tile can be trusted.
-    void beginPunctualShadowPass(bool clearWholeAtlas);
-    void endPunctualShadowPass();
-    // Irradiance probe atlas maintenance. Compute, no rendering scope; the graph
-    // moves both atlases into GENERAL for the dispatches and back to a sampled
-    // layout for whoever reads them.
-    void beginIrradianceProbePass();
-    void endIrradianceProbePass();
+    void beginPunctualShadowRendering(bool clearWholeAtlas);
+    void endPunctualShadowRendering();
     // Probe capture. One rendering scope over the whole capture atlas; the
     // caller sets a viewport per (probe, cube face) inside it.
-    void beginProbeCapturePass();
-    void endProbeCapturePass();
+    void beginProbeCaptureRendering();
+    void endProbeCaptureRendering();
     // The ray-traced shadow mask's two dispatches, recorded between the depth
     // prepass and the main pass inside the main-pass recorder, outside any
     // rendering scope.
@@ -1044,16 +1048,6 @@ public:
     void endRayTracedShadowTemporalPass();
     void beginRayTracedShadowResolvePass();
     void endRayTracedShadowResolvePass();
-    // The GPU shadow caster cull. Recorded inside the cascade shadow recorder,
-    // ahead of the first cascade, which is why its declaration sits immediately
-    // before CSMShadowPass: a declared order that disagrees with the recorded one
-    // is a reordering the graph would then act on.
-    void beginShadowGpuCullingPass();
-    void endShadowGpuCullingPass();
-    // The punctual atlas caster cull, recorded ahead of the atlas pass for the
-    // same reason the cascade cull is recorded ahead of the shadow passes.
-    void beginPunctualShadowCullPass();
-    void endPunctualShadowCullPass();
     // Depth-only replay of the opaque bucket. Declared and recorded only when
     // RuntimeSettings::enableDepthPrepass is on; when it is off the pass does not
     // exist in the graph at all, so the backstop's "declared but never recorded"
@@ -1247,7 +1241,10 @@ public:
 private:
     // Shared body of the per-cascade and layered shadow passes; viewMask == 0
     // selects the single-layer form.
-    void beginShadowPassInternal(uint32_t cascadeLayer, uint32_t viewMask);
+    void beginShadowRenderingInternal(uint32_t cascadeLayer, uint32_t viewMask);
+    // Throws unless the graph is inside `passIndex`'s execute callback with no
+    // rendering scope of the callback's own open.
+    void requireExecuting(uint32_t passIndex, const char* operation) const;
     // Every pass that runs the main fragment shader declares this, because that
     // shader is what traces: the main pass, the phase-2 re-draw and the
     // transparent pass. Declares nothing on a frame that does not trace.
@@ -1269,14 +1266,10 @@ private:
         RayTracedShadowTemporal,
         RayTracedShadowFilter,
         RayTracedShadowResolve,
-        VsmPageMark,
         VsmPage,
         Shadow,
         PunctualShadow,
         ProbeCapture,
-        IrradianceProbes,
-        ShadowGpuCulling,
-        PunctualShadowCull,
         DepthPrepass,
         MainHdr,
         MainGpuCullingPhase2,
@@ -1563,6 +1556,10 @@ private:
     RenderGraphBackstopSummary backstopSummary_;
     std::vector<RenderGraphUnitCost> unitRecordCosts_;
     RenderGraphProfilerHooks profilerHooks_;
+    // The pass whose execute callback is running, and how many rendering
+    // scopes that callback has opened through the in-callback helpers.
+    uint32_t executingPass_ = kInvalidRenderGraphHandle;
+    uint32_t executingRenderingScopes_ = 0;
     // This frame's scopes, the one addPass puts new passes in, and -- while
     // recording -- the open stack with whether each opened a profiler scope.
     std::vector<RenderGraphScope> scopes_;

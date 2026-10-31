@@ -1020,28 +1020,38 @@ private:
     // same arrangement the punctual shadow atlas uses for its slots.
     void recordProbeCapturePass(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool isProbeCaptureActive() const;
-    // Records the punctual shadow atlas pass: one dynamic-rendering pass over
-    // the whole atlas, with a viewport/scissor per allocated slot.
+    // The punctual shadow atlas pass's callback: one dynamic-rendering scope
+    // over the whole atlas, with a viewport/scissor per allocated slot.
     void recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive);
-    // Cascaded shadow maps, including the cache bookkeeping that decides which
-    // cascades were redrawn. Self-contained: it takes only the command buffer.
-    void recordCascadeShadowPass(VkCommandBuffer commandBuffer);
+    // The punctual atlas cull's callback. A pass of its own because compute
+    // cannot run inside a dynamic-rendering scope, and the atlas is one scope so
+    // its cached tiles survive a partial clear.
+    void recordPunctualShadowCull(VkCommandBuffer commandBuffer);
+    // Whether the atlas has anything to draw into and with, cache aside.
+    [[nodiscard]] bool punctualShadowAtlasDrawable() const;
+    // The atlas counters on a frame that declares no atlas pass.
+    void finishPunctualShadowFrame();
+    // CSMShadowPass's callback: every cascade the cache says to redraw, each in
+    // its own rendering scope (or all of them in one, multiview).
+    void recordCascadeShadowCascades(VkCommandBuffer commandBuffer);
+    // The cache bookkeeping after the cascades, which runs every frame, and the
+    // empty profiler scope a fully cached frame still reports.
+    void finishCascadeShadowFrame(VkCommandBuffer commandBuffer);
+    [[nodiscard]] bool cascadeNeedsRedraw(uint32_t cascadeIndex) const;
+    // The VSM page counters and idle transition on a frame that declares no
+    // page pass.
+    void finishVsmPageFrame(VkCommandBuffer commandBuffer);
+    // The probe shading-parameter upload. Recorded right after fog, ahead of the
+    // capture and the convolution, because the capture reads those parameters
+    // too, for the multi-bounce lookup.
+    void recordProbeShadingParams(VkCommandBuffer commandBuffer);
+    // Fog injection and scattering. Ordered after the cluster passes, whose light
+    // lists it walks, and before the main HDR pass, which samples the volume.
+    void recordVolumetricFogPass(VkCommandBuffer commandBuffer);
     // The main HDR pass, the two-phase occlusion re-test, SSR, GTAO and the
     // transparent pass. One recorder because they share the drawing state the
     // main pass sets up, including a mutable flag tracking whether the bindless
     // descriptor sets are currently bound.
-    // The punctual atlas cull and the atlas pass. The cull is separate from
-    // recordPunctualShadowPass because compute cannot run inside a
-    // dynamic-rendering scope, and that pass is one scope so its cached tiles
-    // survive a partial clear.
-    // Fog injection and scattering. Ordered after the cluster passes, whose light
-    // lists it walks, and before the main HDR pass, which samples the volume.
-    // The probe shading-parameter upload, the capture pass, and the convolution
-    // that turns the capture into probe tiles. The upload comes first because the
-    // capture reads those parameters too, for the multi-bounce lookup.
-    void recordIrradianceProbePasses(VkCommandBuffer commandBuffer);
-    void recordVolumetricFogPass(VkCommandBuffer commandBuffer);
-    void recordPunctualShadows(VkCommandBuffer commandBuffer);
     void recordMainPassGeometry(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool isGpuPunctualShadowCullingActive() const;
     // isGpuCullingActive plus every condition GpuCulling::recordMainCull returns

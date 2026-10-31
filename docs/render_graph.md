@@ -508,12 +508,13 @@ to end.
 
 | Unit | Anchor pass |
 | --- | --- |
-| VSM page marking, page cull, page render | `VsmPageMarkPass` |
-| `recordCascadeShadowPass` | `CSMShadowPass` |
-| `recordPunctualShadows` | `PunctualShadowAtlasPass` |
-| synchronous cluster build and light cull | `MainGpuCullingPass` |
+| VSM page cull, between marking and the page pass | `VsmPageMarkPass` |
+| VSM page counters and the pool's idle transition, on a frame with no page pass | `VsmPagePass` |
+| cascade cache bookkeeping, and the empty `CSMShadowPass` profiler scope of a fully cached frame | `CSMShadowPass` |
+| punctual atlas counters, on a frame with no atlas pass | `PunctualShadowAtlasPass` |
 | fog volume first-use clear | *none* |
-| `recordIrradianceProbePasses` | `ProbeCapture` |
+| synchronous cluster build and light cull | `MainGpuCullingPass` |
+| probe shading-parameter upload | `VolumetricFogPass` |
 | `recordMainPassGeometry` | `MainHDRPass`; it also records `DepthPrepass`, `RayTracedShadowTrace`, `RayTracedShadowTemporal`, the filter's `RayTracedShadowRadius`, `RayTracedShadowBlurH` and `RayTracedShadowBlurV`, and `RayTracedShadowResolve` ahead of it |
 | invalidating the depth pyramid on a frame that does not build it | `DepthPyramidPass` |
 | portfolio screenshot, and the capture taken before the overlay | `CompositePass` |
@@ -546,7 +547,33 @@ fallback path for work the renderer submits on the compute queue itself, which
 fallback, where that pass is not declared, it runs with the unit registered
 before it — where it always ran. The fog volume's first-use clear is frame setup,
 not a pass, and has no anchor at all. The depth pyramid's invalidation unit has a
-pass to name but only does work on frames that do not declare it.
+pass to name but only does work on frames that do not declare it, and so do the
+VSM, cascade and punctual bookkeeping units.
+
+### A unit's inherited position moves when the unit before it goes
+
+A unit whose anchor this frame does not schedule runs with the last anchored
+unit registered before it. Moving a pass from a unit to a callback removes that
+unit, so the units after it inherit from an earlier one — and land earlier.
+
+The probe recorder was the case. It was anchored on `ProbeCapture` and inherited
+from the fog unit on frames without a capture, which is the cold-start seed and
+the debug-pattern path: it recorded the probe update right after fog. When fog
+became a callback, the fog unit went, and the probe unit inherited from the
+cluster build instead, so on those frames `IrradianceProbeUpdate` recorded
+ahead of `VolumetricFogPass`. Nothing depends on the order of the two, so
+nothing failed — no barrier changed, the backstop had no edge to break, and the
+pixels were identical — and the default captures never showed it, because their
+last frame has a capture. The per-frame GPU scope list did: it named the two in
+the other order.
+
+The capture and the update are callbacks now, each at its own position, and the
+shading-parameter upload they share is a unit anchored on fog, the pass declared
+right before them. Every configuration of the check below records in the order
+it did before any pass moved to a callback.
+
+The general rule: when a unit goes, check what the units after it inherit
+from.
 
 **No reordering happens.** The scheduled order is today's order — verified as
 equal to the recorded order every frame — and the captured frame stayed
@@ -587,11 +614,25 @@ records and closes it when the frame moves to a step outside it;
 between two steps. A pass declared once per level is bound with the instanced
 `bindExecutor` overload.
 
-Recorded by callbacks: `RayTracingSceneBuild`, `MainGpuCullingPass`,
-`VolumetricFogPass`, `DepthPyramidPass`, `TAAResolvePass`, `BloomExtractPass`,
-`BloomBlurHorizontal`, `BloomBlurVertical`, every `BloomDownsampleMip` and
-`BloomUpsampleMip` level, `LuminancePass`, `HistogramExposurePass`,
-`CompositePass` and `ImGuiPass`. Everything else is still a unit.
+A raster pass whose rendering scope is decided while recording opens it from
+its callback, through `beginShadowCascadeRendering`,
+`beginLayeredShadowRendering`, `beginPunctualShadowRendering`,
+`beginVsmPageRendering` and `beginProbeCaptureRendering`. Which cascades are
+redrawn, and whether a cached atlas or page pool loads or clears, is the
+callback's to know. These emit no barriers — the graph already has — except
+that each cascade after the first re-emits `CSMShadowPass`'s, as each cascade's
+own begin always did. The cull and the cascades share a `CSMShadowPass` graph
+scope.
+
+Recorded by callbacks: `VsmPageMarkPass`, `VsmPagePass`, `ShadowGpuCullingPass`,
+`CSMShadowPass`, `PunctualShadowCullPass`, `PunctualShadowAtlasPass`,
+`MainGpuCullingPass`, `VolumetricFogPass`, `ProbeCapture`,
+`IrradianceProbeUpdate`, `RayTracingSceneBuild`, `DepthPyramidPass`,
+`TAAResolvePass`, `BloomExtractPass`, `BloomBlurHorizontal`,
+`BloomBlurVertical`, every `BloomDownsampleMip` and `BloomUpsampleMip` level,
+`LuminancePass`, `HistogramExposurePass`, `CompositePass` and `ImGuiPass`.
+Everything from `DepthPrepass` to `TransparentPass` is still the main geometry
+unit.
 
 Each run also logs the last frame's recorded pass order with the barrier counts
 the graph emitted for each pass:
