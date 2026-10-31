@@ -14,7 +14,7 @@ Phase 4 upgraded the earlier manual pass list into a small engine-style render g
 - pass execution, side-effect, and culling metadata
 - ImGui debug data for pass/resource visualization
 
-The graph keeps the existing `begin*Pass` / `end*Pass` entry points so profiler scopes, debug labels, and command recording stay at the existing call sites.
+Passes are moving from the original `begin*Pass` / `end*Pass` entry points, called from each recorder, to execute callbacks the graph calls itself; see "Execute callbacks" for which passes have moved.
 
 ## Resource Versions
 
@@ -500,10 +500,11 @@ result is exactly the order the passes were declared in — handing the order to
 the graph changes nothing about what runs or when. What it changes is who
 decides, and a unit test pins that the two still agree.
 
-`Renderer::recordRenderCommands` is now a list of recorders handed to
-`RenderGraph::recordScheduledUnits`, and nothing else: `beginFrame`, the units,
-`endFrame`. It went from ~980 lines to ~160, and the frame it describes is
-sequenced by the graph from end to end.
+`Renderer::recordRenderCommands` is now the passes it binds as execute
+callbacks and a list of recorders handed to `RenderGraph::recordScheduledUnits`,
+and nothing else: `beginFrame`, the bindings and units, `endFrame`. It went from
+~980 lines to ~160, and the frame it describes is sequenced by the graph from end
+to end.
 
 | Unit | Anchor pass |
 | --- | --- |
@@ -513,12 +514,16 @@ sequenced by the graph from end to end.
 | `recordGpuCullingCommands` | `MainGpuCullingPass` |
 | synchronous cluster build and light cull | *none* |
 | fog volume first-use clear | *none* |
-| `recordVolumetricFogPass` | `VolumetricFogPass` |
 | `recordIrradianceProbePasses` | `ProbeCapture` |
-| `recordRayTracingSceneBuild` | `RayTracingSceneBuild` |
 | `recordMainPassGeometry` | `MainHDRPass`; it also records `DepthPrepass`, `RayTracedShadowTrace`, `RayTracedShadowTemporal`, the filter's `RayTracedShadowRadius`, `RayTracedShadowBlurH` and `RayTracedShadowBlurV`, and `RayTracedShadowResolve` ahead of it |
-| the seven post-process recorders | `DepthPyramidPass` … `CompositePass` |
-| screenshot copies and the ImGui overlay | `ImGuiPass` |
+| `DepthPyramid` build or invalidation | `DepthPyramidPass` |
+| `recordMipChainBloomCommands` | `BloomDownsampleMip0` |
+| portfolio screenshot, and the capture taken before the overlay | `CompositePass` |
+| the capture taken after the overlay | `ImGuiPass` |
+
+The two screenshot units are anchored on the passes they follow: a unit runs
+right after its anchor's execute callback, so the copies land between the
+composite and the overlay, and behind the overlay's present transition.
 
 A recorder spanning several declared passes anchors on the first of them, with
 one exception below. `recordMainPassGeometry` covers everything from the depth
@@ -563,8 +568,23 @@ else exactly as before. With no callbacks the plan is the old unit order, and a
 unit test checks that against the old algorithm, which is what lets passes move
 from units to callbacks one at a time.
 
-No pass uses a callback yet. Each run also logs the last frame's recorded pass
-order with the barrier counts the graph emitted for each pass:
+`RenderGraph::bindExecutor` hands a declared pass its callback for the frame,
+together with the debug label and GPU profiler scope it has always been reported
+under; a pass the frame does not declare binds nothing. The graph opens the
+label, then the profiler scope, then emits the barriers — the order every
+recorder used, so each pass's timestamp range still covers its barriers. A raster
+pass names its target with `builder.colorAttachment`, and the graph opens and
+closes the rendering scope around the callback; `builder.transitionAfterPass` is
+how `ImGuiPass` gets its present transition behind its body. The profiler belongs
+to the renderer, which hands the graph two hooks for it.
+
+Recorded by callbacks: `RayTracingSceneBuild`, `VolumetricFogPass`,
+`TAAResolvePass`, `BloomExtractPass`, `BloomBlurHorizontal`, `BloomBlurVertical`,
+`LuminancePass`, `HistogramExposurePass`, `CompositePass` and `ImGuiPass`.
+Everything else is still a unit.
+
+Each run also logs the last frame's recorded pass order with the barrier counts
+the graph emitted for each pass:
 
 ```
 Render graph frame trace: ... MainHDRPass[6/0/1] DepthPyramidMidPass[2/0/1] ...

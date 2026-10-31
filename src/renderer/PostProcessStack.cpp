@@ -389,9 +389,6 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
                                                float sharpness,
                                                float sharpenDebugGain)
 {
-    rhi::debug::beginLabel(commandBuffer, "CompositePass");
-    const bool compositeProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CompositePass");
-    renderGraph_.beginCompositePass();
     // The one pass that runs at presentation resolution: it samples the scene
     // colour with a linear sampler over normalised UVs, so a reduced render
     // extent upscales here for free.
@@ -453,11 +450,49 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
                        static_cast<uint32_t>(sizeof(CompositePushConstants)),
                        &compositePushConstants);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-    renderGraph_.endCompositePass();
-    if (compositeProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
+}
+
+void PostProcessStack::bindGraphExecutors(const glm::mat4& jitteredProjection,
+                                          float debugRawGain,
+                                          float sharpness,
+                                          float sharpenDebugGain)
+{
+    // The label and profiler names are the ones these passes have always been
+    // reported under, so profiler history and captures stay comparable.
+    using renderer::RenderGraphBuiltinPass;
+    using renderer::RenderGraphPassContext;
+    renderGraph_.bindExecutor(RenderGraphBuiltinPass::TaaResolve,
+                              {"TAAResolvePass", "TAAResolvePass", [this](RenderGraphPassContext& context) {
+                                   recordTaaResolveCommands(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(RenderGraphBuiltinPass::BloomExtract,
+                              {"BloomExtractPass", "BloomExtractPass", [this](RenderGraphPassContext& context) {
+                                   recordBloomExtractCommands(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(RenderGraphBuiltinPass::BloomBlurHorizontal,
+                              {"BloomBlurHorizontal", "BloomBlurHorizontal", [this](RenderGraphPassContext& context) {
+                                   recordBloomBlurCommands(context.commandBuffer(), true);
+                               }});
+    renderGraph_.bindExecutor(RenderGraphBuiltinPass::BloomBlurVertical,
+                              {"BloomBlurVertical", "BloomBlurVertical", [this](RenderGraphPassContext& context) {
+                                   recordBloomBlurCommands(context.commandBuffer(), false);
+                               }});
+    renderGraph_.bindExecutor(RenderGraphBuiltinPass::Luminance,
+                              {"LuminancePass", "LuminancePass", [this](RenderGraphPassContext& context) {
+                                   recordLuminanceCommands(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(RenderGraphBuiltinPass::HistogramExposure,
+                              {"HistogramExposurePass", "Histogram Exposure", [this](RenderGraphPassContext& context) {
+                                   recordHistogramCommands(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(
+        RenderGraphBuiltinPass::Composite,
+        {"CompositePass",
+         "CompositePass",
+         [this, jitteredProjection, debugRawGain, sharpness, sharpenDebugGain](RenderGraphPassContext& context) {
+             recordCompositeCommands(
+                 context.commandBuffer(), jitteredProjection, debugRawGain, sharpness, sharpenDebugGain);
+         }});
 }
 
 void PostProcessStack::createPostProcessDescriptorSetLayouts()
@@ -2004,16 +2039,10 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
         return;
     }
 
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "LuminancePass");
-    renderGraph_.beginLuminancePass();
-
-    rhi::debug::beginLabel(commandBuffer, "LuminancePass");
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, luminancePipeline_.pipeline());
 
     const VkDescriptorSet descriptorSet = activeLuminanceDescriptorSet();
     if (descriptorSet == VK_NULL_HANDLE) {
-        renderGraph_.endLuminancePass();
-        rhi::debug::endLabel(commandBuffer);
         return;
     }
     vkCmdBindDescriptorSets(
@@ -2033,10 +2062,6 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     rhi::debug::beginLabel(commandBuffer, "AutoExposureCompute");
     vkCmdDispatch(commandBuffer, dispatch.groupCountX, dispatch.groupCountY, 1);
     rhi::debug::endLabel(commandBuffer);
-
-    rhi::debug::endLabel(commandBuffer);
-
-    renderGraph_.endLuminancePass();
 }
 
 bool PostProcessStack::willRecordHistogramPass() const
@@ -2066,10 +2091,6 @@ void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
     const uint32_t groupCountX = (sceneExtent.width + kHistogramLocalSizeX - 1) / kHistogramLocalSizeX;
     const uint32_t groupCountY = (sceneExtent.height + kHistogramLocalSizeY - 1) / kHistogramLocalSizeY;
 
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "Histogram Exposure");
-    renderGraph_.beginHistogramExposurePass();
-
-    rhi::debug::beginLabel(commandBuffer, "HistogramExposurePass");
     const VkDeviceSize histogramBufferSize = frameHistogramBuffers_[currentFrame_].size();
     vkCmdFillBuffer(commandBuffer, histogramBuffer, 0, histogramBufferSize, 0);
 
@@ -2095,8 +2116,6 @@ void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
 
     const VkDescriptorSet descriptorSet = activeHistogramDescriptorSet();
     if (descriptorSet == VK_NULL_HANDLE) {
-        renderGraph_.endHistogramExposurePass();
-        rhi::debug::endLabel(commandBuffer);
         return;
     }
     vkCmdBindDescriptorSets(
@@ -2136,9 +2155,6 @@ void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
     vkCmdPipelineBarrier2(commandBuffer, &computeDependencyInfo);
 
     recordExposureReduceCommands(commandBuffer);
-    rhi::debug::endLabel(commandBuffer);
-
-    renderGraph_.endHistogramExposurePass();
 }
 
 void PostProcessStack::recordExposureReduceCommands(VkCommandBuffer commandBuffer)
@@ -2235,9 +2251,6 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
     const VkExtent2D outputExtent = sceneAllocatedExtent();
     const glm::vec2 sourceUvScale = renderResolution_.uvScale();
 
-    rhi::debug::beginLabel(commandBuffer, "TAAResolvePass");
-    const bool taaProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "TAAResolvePass");
-    renderGraph_.beginTaaResolvePass();
     setViewportAndScissor(commandBuffer, outputExtent);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, taaResolvePipeline_.pipeline());
     vkCmdBindDescriptorSets(
@@ -2283,25 +2296,13 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
                        static_cast<uint32_t>(sizeof(TaaResolvePushConstants)),
                        &pushConstants);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-    renderGraph_.endTaaResolvePass();
-    if (taaProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
 }
 
-void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
+// The fallback chain. When the mip chain runs, the composite discards this
+// chain's result, so the graph culls all three passes from the same decision and
+// neither recorder is called.
+void PostProcessStack::recordBloomExtractCommands(VkCommandBuffer commandBuffer)
 {
-    // The fallback chain, and only that: when the mip chain runs, the composite
-    // discards this one's result, so filling it is three full-screen passes of
-    // work nothing reads. The graph culls them from the same decision.
-    if (willRecordMipChainBloom()) {
-        return;
-    }
-
-    rhi::debug::beginLabel(commandBuffer, "BloomExtractPass");
-    const bool bloomExtractProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomExtractPass");
-    renderGraph_.beginBloomExtractPass();
     setViewportAndScissor(commandBuffer, bloomWrittenExtent());
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomExtractPipeline_.pipeline());
     const VkDescriptorSet bloomExtractDescriptorSet = activeBloomExtractDescriptorSet();
@@ -2322,75 +2323,28 @@ void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
                        static_cast<uint32_t>(sizeof(BloomExtractPushConstants)),
                        &bloomExtractPushConstants);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-    renderGraph_.endBloomExtractPass();
-    if (bloomExtractProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
+}
 
-    const BloomBlurPushConstants horizontalBlurPushConstants{
+void PostProcessStack::recordBloomBlurCommands(VkCommandBuffer commandBuffer, bool horizontal)
+{
+    const BloomBlurPushConstants blurPushConstants{
         glm::vec2{1.0f / static_cast<float>(bloomExtent_.width), 1.0f / static_cast<float>(bloomExtent_.height)},
-        1u,
+        horizontal ? 1u : 0u,
         0u,
         bloomUvScale()};
-    rhi::debug::beginLabel(commandBuffer, "BloomBlurHorizontal");
-    const bool bloomBlurHorizontalProfileScope =
-        gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomBlurHorizontal");
-    renderGraph_.beginBloomBlurPass(true);
+    const VkDescriptorSet* descriptorSet =
+        horizontal ? &bloomBlurHorizontalDescriptorSet_ : &bloomBlurVerticalDescriptorSet_;
     setViewportAndScissor(commandBuffer, bloomWrittenExtent());
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            bloomBlurPipeline_.layout(),
-                            0,
-                            1,
-                            &bloomBlurHorizontalDescriptorSet_,
-                            0,
-                            nullptr);
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.layout(), 0, 1, descriptorSet, 0, nullptr);
     vkCmdPushConstants(commandBuffer,
                        bloomBlurPipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,
                        0,
                        static_cast<uint32_t>(sizeof(BloomBlurPushConstants)),
-                       &horizontalBlurPushConstants);
+                       &blurPushConstants);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-    renderGraph_.endBloomBlurPass();
-    if (bloomBlurHorizontalProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
-
-    const BloomBlurPushConstants verticalBlurPushConstants{
-        glm::vec2{1.0f / static_cast<float>(bloomExtent_.width), 1.0f / static_cast<float>(bloomExtent_.height)},
-        0u,
-        0u,
-        bloomUvScale()};
-    rhi::debug::beginLabel(commandBuffer, "BloomBlurVertical");
-    const bool bloomBlurVerticalProfileScope =
-        gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomBlurVertical");
-    renderGraph_.beginBloomBlurPass(false);
-    setViewportAndScissor(commandBuffer, bloomWrittenExtent());
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            bloomBlurPipeline_.layout(),
-                            0,
-                            1,
-                            &bloomBlurVerticalDescriptorSet_,
-                            0,
-                            nullptr);
-    vkCmdPushConstants(commandBuffer,
-                       bloomBlurPipeline_.layout(),
-                       VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0,
-                       static_cast<uint32_t>(sizeof(BloomBlurPushConstants)),
-                       &verticalBlurPushConstants);
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-    renderGraph_.endBloomBlurPass();
-    if (bloomBlurVerticalProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
 }
 
 bool PostProcessStack::willRecordMipChainBloom() const

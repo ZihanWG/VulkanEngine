@@ -2995,7 +2995,6 @@ void Renderer::recordVolumetricFogPass(VkCommandBuffer commandBuffer)
     // light lists, so it has to follow the cluster build and light cull above.
     // It still has to precede the main HDR pass, which samples the volume.
     if (isVolumetricFogActive()) {
-        const bool fogProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "VolumetricFog");
         // The graph pass carries no rendering scope; it exists so the cascaded
         // shadow map is transitioned out of its depth-attachment layout before
         // the injection dispatch samples it.
@@ -3015,12 +3014,7 @@ void Renderer::recordVolumetricFogPass(VkCommandBuffer commandBuffer)
         fogPushConstants.clusterZNear = camera_.nearPlane;
         fogPushConstants.clusterZFar = camera_.farPlane;
 
-        renderGraph_.beginVolumetricFogPass();
         volumetricFog_.recordCommands(commandBuffer, currentFrame_, fogPushConstants);
-        renderGraph_.endVolumetricFogPass();
-        if (fogProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
     }
 }
 
@@ -3172,22 +3166,6 @@ void Renderer::recordRayTracedShadowMask(VkCommandBuffer commandBuffer)
     }
 }
 
-void Renderer::recordRayTracingSceneBuild(VkCommandBuffer commandBuffer)
-{
-    // The pass is declared under the same two flags, and this unit runs even
-    // when it is not (as part of the unit before it), so returning here is what
-    // keeps a frame that keeps the structure from recording an undeclared pass.
-    if (!isRayTracedShadowActive() || !frameRayTracingSceneBuildRequired_) {
-        return;
-    }
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "RayTracingSceneBuild");
-    rhi::debug::beginLabel(commandBuffer, "RayTracingSceneBuild");
-    renderGraph_.beginRayTracingSceneBuildPass();
-    rayTracingScene_.recordTopLevelBuild(commandBuffer, currentFrame_);
-    renderGraph_.endRayTracingSceneBuildPass();
-    rhi::debug::endLabel(commandBuffer);
-}
-
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     // Recording boundary: beginFrame imports resources and compiles the logical
@@ -3230,7 +3208,32 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // changed is who decides it, and that the endFrame backstop now checks a
     // frame the graph itself sequenced.
     using Builtin = renderer::RenderGraphBuiltinPass;
-    std::array<renderer::RenderGraphScheduledUnit, 18> frameUnits{{
+    using renderer::RenderGraphPassContext;
+
+    // Passes the graph records itself: it emits each one's barriers, opens its
+    // label, profiler scope and rendering scope, and calls the callback. A pass
+    // this frame does not declare binds nothing, which is the frame its unit
+    // used to return early on.
+    renderGraph_.setProfilerHooks(
+        {[this](VkCommandBuffer cb, const char* name) { return gpuProfiler_.beginScope(currentFrame_, cb, name); },
+         [this](VkCommandBuffer cb) { gpuProfiler_.endScope(currentFrame_, cb); }});
+    renderGraph_.bindExecutor(Builtin::RayTracingSceneBuild,
+                              {"RayTracingSceneBuild", "RayTracingSceneBuild", [this](RenderGraphPassContext& context) {
+                                   rayTracingScene_.recordTopLevelBuild(context.commandBuffer(), currentFrame_);
+                               }});
+    renderGraph_.bindExecutor(Builtin::VolumetricFog,
+                              {nullptr, "VolumetricFog", [this](RenderGraphPassContext& context) {
+                                   recordVolumetricFogPass(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(Builtin::ImGui, {"ImGuiPass", "ImGuiPass", [this](RenderGraphPassContext& context) {
+                                                   imguiLayer_.render(context.commandBuffer());
+                                               }});
+    postProcess_.bindGraphExecutors(frameJitteredProjection_,
+                                    probeDebugGain,
+                                    renderScaleSettings_.sharpness,
+                                    showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
+
+    std::array<renderer::RenderGraphScheduledUnit, 12> frameUnits{{
         {renderGraph_.builtinPassIndex(Builtin::VsmPageMark),
          [this, commandBuffer]() {
              // Page marking reads the depth pyramid the previous frame left, so it
@@ -3289,12 +3292,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                  rhi::debug::endLabel(commandBuffer);
              }
          }},
-        {renderGraph_.builtinPassIndex(Builtin::VolumetricFog),
-         [this, commandBuffer]() { recordVolumetricFogPass(commandBuffer); }},
         {renderGraph_.builtinPassIndex(Builtin::ProbeCapture),
          [this, commandBuffer]() { recordIrradianceProbePasses(commandBuffer); }},
-        {renderGraph_.builtinPassIndex(Builtin::RayTracingSceneBuild),
-         [this, commandBuffer]() { recordRayTracingSceneBuild(commandBuffer); }},
         {renderGraph_.builtinPassIndex(Builtin::MainHdr),
          [this, commandBuffer]() { recordMainPassGeometry(commandBuffer); }},
         {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::DepthPyramid),
@@ -3309,33 +3308,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                  depthPyramid_.invalidate();
              }
          }},
-        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::TaaResolve),
-         [this, commandBuffer, taaActiveThisFrame]() {
-             if (taaActiveThisFrame) {
-                 postProcess_.recordTaaResolveCommands(commandBuffer);
-             }
-         }},
-        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::BloomExtract),
-         [this, commandBuffer]() { postProcess_.recordLegacyBloomCommands(commandBuffer); }},
         {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::BloomDownsampleFirst),
          [this, commandBuffer]() { postProcess_.recordMipChainBloomCommands(commandBuffer); }},
-        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Luminance),
-         [this, commandBuffer]() { postProcess_.recordLuminanceCommands(commandBuffer); }},
-        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::HistogramExposure),
-         [this, commandBuffer]() { postProcess_.recordHistogramCommands(commandBuffer); }},
         {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Composite),
-         [this, commandBuffer, probeDebugGain]() {
-             postProcess_.recordCompositeCommands(commandBuffer,
-                                                  frameJitteredProjection_,
-                                                  probeDebugGain,
-                                                  renderScaleSettings_.sharpness,
-                                                  showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
-         }},
-        {renderGraph_.builtinPassIndex(Builtin::ImGui),
          [this, commandBuffer, imageIndex]() {
-             // The screenshot copies belong to this unit rather than to the frame
-             // around it: they sit between the composite and the overlay, which is
-             // exactly where this unit starts.
+             // Anchored on the composite, so it runs right after the composite's
+             // callback and ahead of the overlay: the copies sit between the two.
              //
              // The portfolio screenshot is always taken here, before the overlay:
              // a portfolio shot with a debug panel across it is not a portfolio
@@ -3343,35 +3321,27 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
              // the overlay instead, which is the only way anything the debug UI
              // reports and the log does not can be seen from a scripted run.
              //
-             // Moving it is layout-neutral by construction: recordCopy reads the
-             // swapchain's tracked layout on entry and leaves it in
-             // COLOR_ATTACHMENT_OPTIMAL either way, which is what the ImGui pass
-             // wants before it and what the graph's present transition wants
-             // after it.
+             // Layout-neutral by construction: recordCopy reads the swapchain's
+             // tracked layout on entry and leaves it in COLOR_ATTACHMENT_OPTIMAL
+             // either way, which is what the ImGui pass wants before it and what
+             // the graph's present transition wants after it.
              recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
              if (!frameCaptureIncludesUi_) {
                  recordFrameCaptureCopy(commandBuffer, imageIndex);
              }
-
-             rhi::debug::beginLabel(commandBuffer, "ImGuiPass");
-             const bool imguiProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ImGuiPass");
-             renderGraph_.beginImGuiPass();
-             imguiLayer_.render(commandBuffer);
-             renderGraph_.endImGuiPass();
-             if (imguiProfileScope) {
-                 gpuProfiler_.endScope(currentFrame_, commandBuffer);
-             }
-             rhi::debug::endLabel(commandBuffer);
-
+         }},
+        {renderGraph_.builtinPassIndex(Builtin::ImGui),
+         [this, commandBuffer, imageIndex]() {
+             // Anchored on the overlay, so it runs after the overlay's callback and
+             // the present transition behind it.
              if (frameCaptureIncludesUi_) {
                  recordFrameCaptureCopy(commandBuffer, imageIndex);
              }
          }},
     }};
-    // Invokes each callback in the graph's stable topological order. A callback
-    // remains responsible for calling its begin/end pass helpers; those helpers
-    // are the bridge from declared usage to the actual Synchronization2
-    // barriers and rendering scopes recorded into this command buffer.
+    // Records the bound passes and the units in the graph's stable topological
+    // order. A unit remains responsible for calling its begin/end pass helpers;
+    // a bound pass gets its barriers and rendering scope from the graph.
     renderGraph_.recordScheduledUnits(frameUnits);
 
     if (taaActiveThisFrame) {

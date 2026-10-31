@@ -335,6 +335,22 @@ struct BufferBarrierScopes {
 
 class RenderGraphPassContext;
 
+// The one colour target a graph-recorded raster pass renders into. The graph
+// opens the dynamic-rendering scope over the whole image before the pass's
+// execute callback and closes it after.
+struct RGColorAttachment {
+    RGTextureHandle texture{};
+    VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    VkClearValue clearValue{};
+};
+
+// A transition recorded after a pass's body rather than before it: the
+// swapchain's move to PRESENT_SRC behind the last pass that draws into it.
+struct RGPostPassTransition {
+    RGTextureHandle texture{};
+    RGAccess access = RGAccess::Unknown;
+};
+
 struct RenderPassNode {
     std::string name;
     RenderPassType type = RenderPassType::MainHdr;
@@ -362,6 +378,15 @@ struct RenderPassNode {
     // the pass; the callback never calls a begin/end pair itself. Empty for a
     // pass a unit still records.
     std::function<void(RenderGraphPassContext&)> execute;
+    // Debug label and GPU profiler scope the graph opens around the pass when it
+    // records it, outside the barriers -- where the recorders always put them, so
+    // a pass's timestamp range still covers its barriers. Null for none.
+    const char* executeLabel = nullptr;
+    const char* executeProfileScope = nullptr;
+    // Declared by the setup callback; see RGColorAttachment and
+    // RGPostPassTransition. Only honoured when the graph records the pass.
+    std::optional<RGColorAttachment> colorAttachment;
+    std::vector<RGPostPassTransition> postPassTransitions;
 };
 
 // Declaration validation. The graph's declarations describe what each pass
@@ -824,10 +849,28 @@ enum class RenderGraphBuiltinPass {
     TaaResolve,
     BloomExtract,
     BloomDownsampleFirst,
+    BloomBlurHorizontal,
+    BloomBlurVertical,
     Luminance,
     HistogramExposure,
     Composite,
     ImGui
+};
+
+// What a caller binds to a declared pass so the graph records it: the commands,
+// and the label and profiler scope names the pass has always been reported
+// under. See RenderPassNode::execute.
+struct RenderGraphPassExecutor {
+    const char* label = nullptr;
+    const char* profileScope = nullptr;
+    std::function<void(RenderGraphPassContext&)> execute;
+};
+
+// How the graph opens and closes a GPU profiler scope. The profiler belongs to
+// the renderer, so the graph is handed these rather than the profiler itself.
+struct RenderGraphProfilerHooks {
+    std::function<bool(VkCommandBuffer, const char*)> beginScope;
+    std::function<void(VkCommandBuffer)> endScope;
 };
 
 class RenderGraph;
@@ -850,6 +893,11 @@ public:
     RGBufferHandle writeBuffer(RGBufferHandle handle, RGAccess access, std::string description = {});
     RGBufferHandle readWriteBuffer(RGBufferHandle handle, RGAccess access, std::string description = {});
     void sideEffect(std::string reason = {});
+    // The colour target the graph renders into when it records this pass. The
+    // write itself is declared separately, like any other.
+    void colorAttachment(RGTextureHandle handle, VkAttachmentLoadOp loadOp, VkClearValue clearValue = {});
+    // A transition the graph records after the pass body; see RGPostPassTransition.
+    void transitionAfterPass(RGTextureHandle handle, RGAccess access);
 
 private:
     RenderGraphBuilder(RenderGraph& graph, RenderPassNode& pass);
@@ -939,10 +987,6 @@ public:
     // contents are undefined and no tile can be trusted.
     void beginPunctualShadowPass(bool clearWholeAtlas);
     void endPunctualShadowPass();
-    // Volumetric fog's compute passes. No rendering scope; this exists so the
-    // graph transitions the cascaded shadow map the injection pass samples.
-    void beginVolumetricFogPass();
-    void endVolumetricFogPass();
     // Irradiance probe atlas maintenance. Compute, no rendering scope; the graph
     // moves both atlases into GENERAL for the dispatches and back to a sampled
     // layout for whoever reads them.
@@ -954,10 +998,6 @@ public:
     void endProbeCapturePass();
     void beginMainGpuCullingPass();
     void endMainGpuCullingPass();
-    // The top-level acceleration structure rebuild. Neither graphics nor compute
-    // work in the dispatch sense, and recorded outside any rendering scope.
-    void beginRayTracingSceneBuildPass();
-    void endRayTracingSceneBuildPass();
     // The ray-traced shadow mask's two dispatches, recorded between the depth
     // prepass and the main pass inside the main-pass recorder, outside any
     // rendering scope.
@@ -1020,24 +1060,10 @@ public:
     void endTransparentPass();
     void beginDepthPyramidPass();
     void endDepthPyramidPass();
-    void beginTaaResolvePass();
-    void endTaaResolvePass();
-    void beginBloomExtractPass();
-    void endBloomExtractPass();
-    void beginBloomBlurPass(bool horizontal);
-    void endBloomBlurPass();
     void beginBloomDownsamplePass(uint32_t level);
     void endBloomDownsamplePass();
     void beginBloomUpsamplePass(uint32_t level);
     void endBloomUpsamplePass();
-    void beginLuminancePass();
-    void endLuminancePass();
-    void beginHistogramExposurePass();
-    void endHistogramExposurePass();
-    void beginCompositePass();
-    void endCompositePass();
-    void beginImGuiPass();
-    void endImGuiPass();
     void endFrame();
 
     uint32_t addPass(std::string name, SetupCallback setup);
@@ -1152,6 +1178,15 @@ public:
     // when this frame does not declare it.
     [[nodiscard]] uint32_t builtinPassIndex(RenderGraphBuiltinPass pass) const;
 
+    // Hands a declared pass its commands for this frame, so the graph records it
+    // instead of a scheduled unit. Call between beginFrame and
+    // recordScheduledUnits. Returns false, binding nothing, when this frame does
+    // not declare the pass -- the same frames its unit used to return early on.
+    bool bindExecutor(RenderGraphBuiltinPass pass, RenderGraphPassExecutor executor);
+
+    // Kept across frames. Without hooks the graph records no profiler scopes.
+    void setProfilerHooks(RenderGraphProfilerHooks hooks);
+
     // Records the frame in buildExecutionPlan's order: each pass with an execute
     // callback through that callback, and each of the caller's recorders at its
     // anchor's position. Units with no pass this frame, or with equal positions,
@@ -1193,7 +1228,6 @@ private:
         // callback that still calls one -- a pass recorded twice mid-migration --
         // throws instead of recording it.
         Executor,
-        RayTracingSceneBuild,
         RayTracedShadowTrace,
         RayTracedShadowTemporal,
         RayTracedShadowFilter,
@@ -1202,7 +1236,6 @@ private:
         VsmPage,
         Shadow,
         PunctualShadow,
-        VolumetricFog,
         ProbeCapture,
         IrradianceProbes,
         MainGpuCulling,
@@ -1219,15 +1252,8 @@ private:
         Transparent,
         DepthPyramidMid,
         DepthPyramid,
-        TaaResolve,
-        BloomExtract,
-        BloomBlur,
         BloomDownsample,
-        BloomUpsample,
-        Luminance,
-        HistogramExposure,
-        Composite,
-        ImGui
+        BloomUpsample
     };
 
     enum class TextureOwner {
@@ -1456,7 +1482,11 @@ private:
     // is actually written in; zero means the whole resource.
     void beginColorRendering(const TextureResource& resource,
                              VkClearValue clearValue,
-                             VkExtent2D extentOverride = VkExtent2D{0, 0});
+                             VkExtent2D extentOverride = VkExtent2D{0, 0},
+                             VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR);
+    // Records a pass's RGPostPassTransitions as their own batch and adds them to
+    // the pass's barrier counts.
+    void recordPostPassTransitions(uint32_t passIndex);
     // renderArea for a pass writing a scene-sized target. Clamped to the
     // resource so a render extent that has not caught up with a resize becomes a
     // smaller area rather than an out-of-bounds one.
@@ -1496,6 +1526,7 @@ private:
     // whole point of it.
     RenderGraphBackstopSummary backstopSummary_;
     std::vector<RenderGraphUnitCost> unitRecordCosts_;
+    RenderGraphProfilerHooks profilerHooks_;
     bool frameActive_ = false;
     ActivePass activePass_ = ActivePass::None;
 

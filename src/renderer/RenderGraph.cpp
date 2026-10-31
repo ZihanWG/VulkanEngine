@@ -4,6 +4,7 @@
 #include "renderer/IrradianceProbes.h"
 #include "renderer/RayTracedShadows.h"
 #include "rhi/VulkanShadowMap.h"
+#include "rhi/VulkanDebugUtils.h"
 #include "rhi/VulkanSwapchain.h"
 
 #include <algorithm>
@@ -16,6 +17,9 @@
 namespace ve::renderer {
 
 namespace {
+
+// The clear every full-screen colour pass has always used.
+constexpr VkClearValue kOpaqueBlack{{{0.0f, 0.0f, 0.0f, 1.0f}}};
 
 bool validImageResource(const RenderGraphImageResource& resource)
 {
@@ -224,6 +228,16 @@ void RenderGraphBuilder::sideEffect(std::string reason)
     if (!reason.empty()) {
         pass_.cullReason = std::move(reason);
     }
+}
+
+void RenderGraphBuilder::colorAttachment(RGTextureHandle handle, VkAttachmentLoadOp loadOp, VkClearValue clearValue)
+{
+    pass_.colorAttachment = RGColorAttachment{handle, loadOp, clearValue};
+}
+
+void RenderGraphBuilder::transitionAfterPass(RGTextureHandle handle, RGAccess access)
+{
+    pass_.postPassTransitions.push_back({handle, access});
 }
 
 RenderGraph::RenderGraph() = default;
@@ -874,30 +888,6 @@ void RenderGraph::endPunctualShadowPass()
     activePass_ = ActivePass::None;
 }
 
-void RenderGraph::beginVolumetricFogPass()
-{
-    requireFrameActive("RenderGraph::beginVolumetricFogPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginVolumetricFogPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.volumetricFog)) {
-        throw std::logic_error(
-            "RenderGraph::beginVolumetricFogPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::VolumetricFog;
-}
-
-void RenderGraph::endVolumetricFogPass()
-{
-    requireFrameActive("RenderGraph::endVolumetricFogPass");
-    if (activePass_ != ActivePass::VolumetricFog) {
-        throw std::logic_error("RenderGraph::endVolumetricFogPass called without an active fog pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
 void RenderGraph::beginProbeCapturePass()
 {
     requireFrameActive("RenderGraph::beginProbeCapturePass");
@@ -1110,31 +1100,6 @@ void RenderGraph::endRayTracedShadowResolvePass()
     if (activePass_ != ActivePass::RayTracedShadowResolve) {
         throw std::logic_error(
             "RenderGraph::endRayTracedShadowResolvePass called without an active ray-traced shadow resolve pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginRayTracingSceneBuildPass()
-{
-    requireFrameActive("RenderGraph::beginRayTracingSceneBuildPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginRayTracingSceneBuildPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.rayTracingSceneBuild)) {
-        throw std::logic_error(
-            "RenderGraph::beginRayTracingSceneBuildPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::RayTracingSceneBuild;
-}
-
-void RenderGraph::endRayTracingSceneBuildPass()
-{
-    requireFrameActive("RenderGraph::endRayTracingSceneBuildPass");
-    if (activePass_ != ActivePass::RayTracingSceneBuild) {
-        throw std::logic_error(
-            "RenderGraph::endRayTracingSceneBuildPass called without an active ray tracing scene build pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -1678,105 +1643,6 @@ void RenderGraph::endDepthPyramidPass()
     activePass_ = ActivePass::None;
 }
 
-void RenderGraph::beginTaaResolvePass()
-{
-    requireFrameActive("RenderGraph::beginTaaResolvePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginTaaResolvePass called while another pass is active.");
-    }
-    if (!frame_.taaHistoryWrite.valid()) {
-        throw std::logic_error("RenderGraph::beginTaaResolvePass requires a valid TAA history write target.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.taaResolve)) {
-        throw std::logic_error("RenderGraph::beginTaaResolvePass was culled but the renderer attempted to record it.");
-    }
-
-    VkClearValue clearColor{};
-    clearColor.color.float32[0] = 0.0f;
-    clearColor.color.float32[1] = 0.0f;
-    clearColor.color.float32[2] = 0.0f;
-    clearColor.color.float32[3] = 1.0f;
-    // The resolve writes the history in FULL, not in the render sub-rect: it is
-    // the pass that turns a low-resolution frame into an output-resolution one.
-    beginColorRendering(textures_.at(frame_.taaHistoryWrite.index), clearColor);
-    activePass_ = ActivePass::TaaResolve;
-}
-
-void RenderGraph::endTaaResolvePass()
-{
-    requireFrameActive("RenderGraph::endTaaResolvePass");
-    if (activePass_ != ActivePass::TaaResolve) {
-        throw std::logic_error("RenderGraph::endTaaResolvePass called without an active TAA resolve pass.");
-    }
-
-    vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginBloomExtractPass()
-{
-    requireFrameActive("RenderGraph::beginBloomExtractPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginBloomExtractPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.bloomExtract)) {
-        throw std::logic_error(
-            "RenderGraph::beginBloomExtractPass was culled but the renderer attempted to record it.");
-    }
-
-    VkClearValue clearColor{};
-    clearColor.color.float32[0] = 0.0f;
-    clearColor.color.float32[1] = 0.0f;
-    clearColor.color.float32[2] = 0.0f;
-    clearColor.color.float32[3] = 1.0f;
-    beginColorRendering(textures_.at(frame_.bloomExtract.index), clearColor);
-    activePass_ = ActivePass::BloomExtract;
-}
-
-void RenderGraph::endBloomExtractPass()
-{
-    requireFrameActive("RenderGraph::endBloomExtractPass");
-    if (activePass_ != ActivePass::BloomExtract) {
-        throw std::logic_error("RenderGraph::endBloomExtractPass called without an active bloom extract pass.");
-    }
-
-    vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginBloomBlurPass(bool horizontal)
-{
-    requireFrameActive("RenderGraph::beginBloomBlurPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginBloomBlurPass called while another pass is active.");
-    }
-    const uint32_t passIndex =
-        horizontal ? frame_.passIndices.bloomBlurHorizontal : frame_.passIndices.bloomBlurVertical;
-    if (!beginDeclaredPass(passIndex)) {
-        throw std::logic_error("RenderGraph::beginBloomBlurPass was culled but the renderer attempted to record it.");
-    }
-
-    const RGTextureHandle output = horizontal ? frame_.bloomPing : frame_.bloomPong;
-    VkClearValue clearColor{};
-    clearColor.color.float32[0] = 0.0f;
-    clearColor.color.float32[1] = 0.0f;
-    clearColor.color.float32[2] = 0.0f;
-    clearColor.color.float32[3] = 1.0f;
-    beginColorRendering(textures_.at(output.index), clearColor);
-    activePass_ = ActivePass::BloomBlur;
-}
-
-void RenderGraph::endBloomBlurPass()
-{
-    requireFrameActive("RenderGraph::endBloomBlurPass");
-    if (activePass_ != ActivePass::BloomBlur) {
-        throw std::logic_error("RenderGraph::endBloomBlurPass called without an active bloom blur pass.");
-    }
-
-    vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
-}
-
 void RenderGraph::beginBloomDownsamplePass(uint32_t level)
 {
     requireFrameActive("RenderGraph::beginBloomDownsamplePass");
@@ -1842,123 +1708,6 @@ void RenderGraph::endBloomUpsamplePass()
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginLuminancePass()
-{
-    requireFrameActive("RenderGraph::beginLuminancePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginLuminancePass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.luminance)) {
-        throw std::logic_error("RenderGraph::beginLuminancePass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::Luminance;
-}
-
-void RenderGraph::endLuminancePass()
-{
-    requireFrameActive("RenderGraph::endLuminancePass");
-    if (activePass_ != ActivePass::Luminance) {
-        throw std::logic_error("RenderGraph::endLuminancePass called without an active luminance pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginHistogramExposurePass()
-{
-    requireFrameActive("RenderGraph::beginHistogramExposurePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginHistogramExposurePass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.histogramExposure)) {
-        throw std::logic_error(
-            "RenderGraph::beginHistogramExposurePass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::HistogramExposure;
-}
-
-void RenderGraph::endHistogramExposurePass()
-{
-    requireFrameActive("RenderGraph::endHistogramExposurePass");
-    if (activePass_ != ActivePass::HistogramExposure) {
-        throw std::logic_error(
-            "RenderGraph::endHistogramExposurePass called without an active histogram exposure pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginCompositePass()
-{
-    requireFrameActive("RenderGraph::beginCompositePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginCompositePass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.composite)) {
-        throw std::logic_error("RenderGraph::beginCompositePass was culled but the renderer attempted to record it.");
-    }
-
-    VkClearValue clearColor{};
-    clearColor.color.float32[0] = 0.0f;
-    clearColor.color.float32[1] = 0.0f;
-    clearColor.color.float32[2] = 0.0f;
-    clearColor.color.float32[3] = 1.0f;
-    beginSwapchainRendering(clearColor, VK_ATTACHMENT_LOAD_OP_CLEAR);
-    activePass_ = ActivePass::Composite;
-}
-
-void RenderGraph::endCompositePass()
-{
-    requireFrameActive("RenderGraph::endCompositePass");
-    if (activePass_ != ActivePass::Composite) {
-        throw std::logic_error("RenderGraph::endCompositePass called without an active composite pass.");
-    }
-
-    vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginImGuiPass()
-{
-    requireFrameActive("RenderGraph::beginImGuiPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginImGuiPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.imgui)) {
-        throw std::logic_error("RenderGraph::beginImGuiPass was culled but the renderer attempted to record it.");
-    }
-
-    VkClearValue clearColor{};
-    beginSwapchainRendering(clearColor, VK_ATTACHMENT_LOAD_OP_LOAD);
-    activePass_ = ActivePass::ImGui;
-}
-
-void RenderGraph::endImGuiPass()
-{
-    requireFrameActive("RenderGraph::endImGuiPass");
-    if (activePass_ != ActivePass::ImGui) {
-        throw std::logic_error("RenderGraph::endImGuiPass called without an active ImGui pass.");
-    }
-
-    vkCmdEndRendering(frame_.commandBuffer);
-    // Its own batch, and its own submission: this transition is recorded after
-    // the pass body rather than before it, so it cannot join the pass's set.
-    barrierBatch_.reset();
-    const uint32_t presentBarriers = transitionTexture(frame_.swapchainColor, RGAccess::Present, barrierBatch_);
-    flushBarrierBatch(barrierBatch_);
-    if (frame_.passIndices.imgui != kInvalidRenderGraphHandle) {
-        RenderPassNode& pass = passes_.at(frame_.passIndices.imgui);
-        pass.generatedBarrierCount += presentBarriers;
-        pass.generatedImageBarrierCount += presentBarriers;
-        pass.generatedBarrierSubmitCount += barrierBatch_.submitCount;
-        pass.transitionSummary = passBarrierSummary(
-            pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount, pass.generatedBarrierSubmitCount);
-    }
     activePass_ = ActivePass::None;
 }
 
@@ -2189,6 +1938,10 @@ uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
     case RenderGraphBuiltinPass::BloomDownsampleFirst:
         return frame_.passIndices.bloomDownsampleChain.empty() ? kInvalidRenderGraphHandle
                                                                : frame_.passIndices.bloomDownsampleChain.front();
+    case RenderGraphBuiltinPass::BloomBlurHorizontal:
+        return frame_.passIndices.bloomBlurHorizontal;
+    case RenderGraphBuiltinPass::BloomBlurVertical:
+        return frame_.passIndices.bloomBlurVertical;
     case RenderGraphBuiltinPass::Luminance:
         return frame_.passIndices.luminance;
     case RenderGraphBuiltinPass::HistogramExposure:
@@ -2200,6 +1953,26 @@ uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
     }
 
     return kInvalidRenderGraphHandle;
+}
+
+bool RenderGraph::bindExecutor(RenderGraphBuiltinPass pass, RenderGraphPassExecutor executor)
+{
+    requireFrameActive("RenderGraph::bindExecutor");
+    const uint32_t passIndex = builtinPassIndex(pass);
+    if (passIndex >= passes_.size()) {
+        return false;
+    }
+
+    RenderPassNode& node = passes_[passIndex];
+    node.execute = std::move(executor.execute);
+    node.executeLabel = executor.label;
+    node.executeProfileScope = executor.profileScope;
+    return true;
+}
+
+void RenderGraph::setProfilerHooks(RenderGraphProfilerHooks hooks)
+{
+    profilerHooks_ = std::move(hooks);
 }
 
 void RenderGraph::recordScheduledUnits(std::span<RenderGraphScheduledUnit> units)
@@ -2256,20 +2029,70 @@ void RenderGraph::executePass(uint32_t passIndex)
     if (activePass_ != ActivePass::None) {
         throw std::logic_error("RenderGraph::executePass called while another pass is active.");
     }
+    const VkCommandBuffer commandBuffer = frame_.commandBuffer;
+    const RenderPassNode& pass = passes_[passIndex];
+
+    // Label and profiler scope outside the barriers, in that order: where every
+    // recorder put them, so a pass keeps its timestamp range and the command
+    // stream does not change when the graph takes the pass over.
+    if (pass.executeLabel != nullptr) {
+        rhi::debug::beginLabel(commandBuffer, pass.executeLabel);
+    }
+    const bool profileScope = pass.executeProfileScope != nullptr && profilerHooks_.beginScope &&
+                              profilerHooks_.beginScope(commandBuffer, pass.executeProfileScope);
+
     // buildExecutionPlan only emits scheduled passes, so a culled one cannot reach
     // here; beginDeclaredPass returning false would mean the plan and the culling
     // disagree, which is a graph bug rather than a renderer one.
     if (!beginDeclaredPass(passIndex)) {
         throw std::logic_error("RenderGraph::executePass reached a culled pass.");
     }
+    if (pass.colorAttachment) {
+        const RGColorAttachment& attachment = *pass.colorAttachment;
+        beginColorRendering(
+            textures_.at(attachment.texture.index), attachment.clearValue, VkExtent2D{0, 0}, attachment.loadOp);
+    }
 
     activePass_ = ActivePass::Executor;
-    RenderGraphPassContext context(*this, frame_.commandBuffer, passIndex);
-    passes_[passIndex].execute(context);
+    RenderGraphPassContext context(*this, commandBuffer, passIndex);
+    pass.execute(context);
     if (activePass_ != ActivePass::Executor) {
         throw std::logic_error("RenderGraph::executePass: the callback left a pass open or closed one it did not own.");
     }
     activePass_ = ActivePass::None;
+
+    if (pass.colorAttachment) {
+        vkCmdEndRendering(commandBuffer);
+    }
+    recordPostPassTransitions(passIndex);
+    if (profileScope && profilerHooks_.endScope) {
+        profilerHooks_.endScope(commandBuffer);
+    }
+    if (pass.executeLabel != nullptr) {
+        rhi::debug::endLabel(commandBuffer);
+    }
+}
+
+void RenderGraph::recordPostPassTransitions(uint32_t passIndex)
+{
+    RenderPassNode& pass = passes_.at(passIndex);
+    if (pass.postPassTransitions.empty()) {
+        return;
+    }
+
+    // Its own batch, and its own submission: these are recorded after the pass
+    // body rather than before it, so they cannot join the pass's set.
+    barrierBatch_.reset();
+    uint32_t imageBarriers = 0;
+    for (const RGPostPassTransition& transition : pass.postPassTransitions) {
+        imageBarriers += transitionTexture(transition.texture, transition.access, barrierBatch_);
+    }
+    flushBarrierBatch(barrierBatch_);
+    pass.generatedBarrierCount += imageBarriers;
+    pass.generatedImageBarrierCount += imageBarriers;
+    pass.generatedBarrierSubmitCount += barrierBatch_.submitCount;
+    pass.transitionSummary = passBarrierSummary(
+        pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount, pass.generatedBarrierSubmitCount);
 }
 
 std::string RenderGraph::frameTrace() const
@@ -3157,6 +2980,9 @@ void RenderGraph::declareBloomAndTaaPasses()
                         frame_.taaHistoryWrite = builder.writeTexture(frame_.taaHistoryWrite,
                                                                       RGAccess::ColorAttachmentWrite,
                                                                       "Writes the resolved HDR TAA history image.");
+                        // The whole history, not the render sub-rect: this is the pass
+                        // that turns a low-resolution frame into an output-resolution one.
+                        builder.colorAttachment(frame_.taaHistoryWrite, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
                     });
     }
 
@@ -3171,6 +2997,7 @@ void RenderGraph::declareBloomAndTaaPasses()
                     frame_.bloomExtract = builder.writeTexture(frame_.bloomExtract,
                                                                RGAccess::ColorAttachmentWrite,
                                                                "Writes bright pixels above the bloom threshold.");
+                    builder.colorAttachment(frame_.bloomExtract, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
                 });
 
     frame_.passIndices.bloomBlurHorizontal = addPass(
@@ -3182,6 +3009,7 @@ void RenderGraph::declareBloomAndTaaPasses()
             builder.readTexture(frame_.bloomExtract, RGAccess::ShaderRead, "Samples extracted bloom highlights.");
             frame_.bloomPing = builder.writeTexture(
                 frame_.bloomPing, RGAccess::ColorAttachmentWrite, "Writes the horizontal blur result.");
+            builder.colorAttachment(frame_.bloomPing, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
         });
 
     frame_.passIndices.bloomBlurVertical =
@@ -3193,6 +3021,7 @@ void RenderGraph::declareBloomAndTaaPasses()
                     builder.readTexture(frame_.bloomPing, RGAccess::ShaderRead, "Samples the horizontal blur result.");
                     frame_.bloomPong = builder.writeTexture(
                         frame_.bloomPong, RGAccess::ColorAttachmentWrite, "Writes the final vertical blur result.");
+                    builder.colorAttachment(frame_.bloomPong, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
                 });
 
     frame_.passIndices.bloomDownsampleChain.reserve(frame_.bloomDownsampleChain.size());
@@ -3344,6 +3173,7 @@ void RenderGraph::declareExposureCompositePasses()
             frame_.swapchainColor = builder.writeTexture(frame_.swapchainColor,
                                                          RGAccess::ColorAttachmentWrite,
                                                          "Writes the exposed and tone-mapped final color.");
+            builder.colorAttachment(frame_.swapchainColor, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
         });
 
     frame_.passIndices.imgui = addPass("ImGuiPass",
@@ -3355,6 +3185,10 @@ void RenderGraph::declareExposureCompositePasses()
                                                frame_.swapchainColor,
                                                RGAccess::ColorAttachmentWrite,
                                                "Loads the composited swapchain image and draws the debug overlay.");
+                                           builder.colorAttachment(frame_.swapchainColor, VK_ATTACHMENT_LOAD_OP_LOAD);
+                                           // The last pass that draws into the swapchain, so the
+                                           // present transition is recorded behind its body.
+                                           builder.transitionAfterPass(frame_.swapchainColor, RGAccess::Present);
                                        });
 }
 
@@ -4695,13 +4529,14 @@ VkExtent2D RenderGraph::sceneRenderArea(VkExtent2D resourceExtent) const
 
 void RenderGraph::beginColorRendering(const TextureResource& resource,
                                       VkClearValue clearValue,
-                                      VkExtent2D extentOverride)
+                                      VkExtent2D extentOverride,
+                                      VkAttachmentLoadOp loadOp)
 {
     VkRenderingAttachmentInfo colorAttachment{};
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colorAttachment.imageView = resource.imageView;
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.loadOp = loadOp;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue = clearValue;
 
