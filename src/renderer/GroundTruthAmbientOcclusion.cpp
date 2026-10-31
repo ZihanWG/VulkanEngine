@@ -290,7 +290,7 @@ void GroundTruthAmbientOcclusion::uploadParams(uint32_t frameIndex,
     frameParamsBuffers_[frameIndex].upload(std::as_bytes(std::span<const GtaoParams>(&params, 1)));
 }
 
-void GroundTruthAmbientOcclusion::recordCommands(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent)
+void GroundTruthAmbientOcclusion::recordTrace(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent)
 {
     if (!available_ || frameIndex >= descriptorSets_.size() || frameIndex >= blurDescriptorSets_.size()) {
         return;
@@ -305,9 +305,7 @@ void GroundTruthAmbientOcclusion::recordCommands(VkCommandBuffer commandBuffer, 
 
     // Trace: horizon search into the half-resolution raw AO target.
     {
-        const GpuProfileScope traceScope(gpuProfiler_, frameIndex, commandBuffer, "GTAO");
-        rhi::debug::beginLabel(commandBuffer, "GTAOPass");
-        renderGraph_.beginGtaoPass();
+        renderGraph_.beginGtaoRendering();
 
         viewport.width = static_cast<float>(halfExtent.width);
         viewport.height = static_cast<float>(halfExtent.height);
@@ -325,15 +323,24 @@ void GroundTruthAmbientOcclusion::recordCommands(VkCommandBuffer commandBuffer, 
                                 nullptr);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
-        renderGraph_.endGtaoPass();
-        rhi::debug::endLabel(commandBuffer);
+        renderGraph_.endGtaoRendering();
     }
+}
+
+void GroundTruthAmbientOcclusion::recordBlur(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent)
+{
+    if (!available_ || frameIndex >= descriptorSets_.size() || frameIndex >= blurDescriptorSets_.size()) {
+        return;
+    }
+
+    VkViewport viewport{};
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    VkRect2D scissor{};
 
     // Joint-bilateral upsample + denoise: half-res raw AO -> full-res composite AO.
     {
-        const GpuProfileScope blurScope(gpuProfiler_, frameIndex, commandBuffer, "GTAOBlur");
-        rhi::debug::beginLabel(commandBuffer, "GTAOBlurPass");
-        renderGraph_.beginGtaoBlurPass();
+        renderGraph_.beginGtaoBlurRendering();
 
         viewport.width = static_cast<float>(extent.width);
         viewport.height = static_cast<float>(extent.height);
@@ -351,8 +358,7 @@ void GroundTruthAmbientOcclusion::recordCommands(VkCommandBuffer commandBuffer, 
                                 nullptr);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
-        renderGraph_.endGtaoBlurPass();
-        rhi::debug::endLabel(commandBuffer);
+        renderGraph_.endGtaoBlurRendering();
     }
 }
 

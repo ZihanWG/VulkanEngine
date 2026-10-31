@@ -951,115 +951,9 @@ void RenderGraph::declareRayTracedShadowMaskRead(RenderGraphBuilder& builder)
     }
 }
 
-void RenderGraph::beginRayTracedShadowTracePass()
+void RenderGraph::beginMainHdrPassRendering()
 {
-    requireFrameActive("RenderGraph::beginRayTracedShadowTracePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginRayTracedShadowTracePass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.rayTracedShadowTrace)) {
-        throw std::logic_error(
-            "RenderGraph::beginRayTracedShadowTracePass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::RayTracedShadowTrace;
-}
-
-void RenderGraph::endRayTracedShadowTracePass()
-{
-    requireFrameActive("RenderGraph::endRayTracedShadowTracePass");
-    if (activePass_ != ActivePass::RayTracedShadowTrace) {
-        throw std::logic_error(
-            "RenderGraph::endRayTracedShadowTracePass called without an active ray-traced shadow trace pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginRayTracedShadowTemporalPass()
-{
-    requireFrameActive("RenderGraph::beginRayTracedShadowTemporalPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginRayTracedShadowTemporalPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.rayTracedShadowTemporal)) {
-        throw std::logic_error(
-            "RenderGraph::beginRayTracedShadowTemporalPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::RayTracedShadowTemporal;
-}
-
-void RenderGraph::endRayTracedShadowTemporalPass()
-{
-    requireFrameActive("RenderGraph::endRayTracedShadowTemporalPass");
-    if (activePass_ != ActivePass::RayTracedShadowTemporal) {
-        throw std::logic_error(
-            "RenderGraph::endRayTracedShadowTemporalPass called without an active ray-traced shadow temporal pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginRayTracedShadowFilterPass(RayTracedShadowFilterStage stage)
-{
-    requireFrameActive("RenderGraph::beginRayTracedShadowFilterPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginRayTracedShadowFilterPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.rayTracedShadowFilter.at(static_cast<size_t>(stage)))) {
-        throw std::logic_error(
-            "RenderGraph::beginRayTracedShadowFilterPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::RayTracedShadowFilter;
-}
-
-void RenderGraph::endRayTracedShadowFilterPass()
-{
-    requireFrameActive("RenderGraph::endRayTracedShadowFilterPass");
-    if (activePass_ != ActivePass::RayTracedShadowFilter) {
-        throw std::logic_error(
-            "RenderGraph::endRayTracedShadowFilterPass called without an active ray-traced shadow filter pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginRayTracedShadowResolvePass()
-{
-    requireFrameActive("RenderGraph::beginRayTracedShadowResolvePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginRayTracedShadowResolvePass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.rayTracedShadowResolve)) {
-        throw std::logic_error(
-            "RenderGraph::beginRayTracedShadowResolvePass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::RayTracedShadowResolve;
-}
-
-void RenderGraph::endRayTracedShadowResolvePass()
-{
-    requireFrameActive("RenderGraph::endRayTracedShadowResolvePass");
-    if (activePass_ != ActivePass::RayTracedShadowResolve) {
-        throw std::logic_error(
-            "RenderGraph::endRayTracedShadowResolvePass called without an active ray-traced shadow resolve pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginMainHdrPass()
-{
-    requireFrameActive("RenderGraph::beginMainHdrPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginMainHdrPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.mainHdr)) {
-        throw std::logic_error("RenderGraph::beginMainHdrPass was culled but the renderer attempted to record it.");
-    }
+    requireExecuting(frame_.passIndices.mainHdr, "RenderGraph::beginMainHdrPassRendering");
 
     // Colour is cleared as always; depth is kept when the prepass has already
     // filled it. Clearing it here instead would throw away the entire pass.
@@ -1067,15 +961,9 @@ void RenderGraph::beginMainHdrPass()
     activePass_ = ActivePass::MainHdr;
 }
 
-void RenderGraph::beginDepthPrepass()
+void RenderGraph::beginDepthPrepassRendering()
 {
-    requireFrameActive("RenderGraph::beginDepthPrepass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginDepthPrepass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.depthPrepass)) {
-        throw std::logic_error("RenderGraph::beginDepthPrepass was culled but the renderer attempted to record it.");
-    }
+    requireExecuting(frame_.passIndices.depthPrepass, "RenderGraph::beginDepthPrepassRendering");
 
     VkClearValue depthClear{};
     depthClear.depthStencil.depth = 1.0f;
@@ -1107,15 +995,15 @@ void RenderGraph::beginDepthPrepass()
     activePass_ = ActivePass::DepthPrepass;
 }
 
-void RenderGraph::endDepthPrepass()
+void RenderGraph::endDepthPrepassRendering()
 {
-    requireFrameActive("RenderGraph::endDepthPrepass");
+    requireFrameActive("RenderGraph::endDepthPrepassRendering");
     if (activePass_ != ActivePass::DepthPrepass) {
-        throw std::logic_error("RenderGraph::endDepthPrepass called without an active depth prepass.");
+        throw std::logic_error("RenderGraph::endDepthPrepassRendering called without an active depth prepass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
 void RenderGraph::beginMainHdrRendering(bool loadExisting, bool loadDepth)
@@ -1179,76 +1067,41 @@ void RenderGraph::beginMainHdrRendering(bool loadExisting, bool loadDepth)
     vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
 }
 
-void RenderGraph::endMainHdrPass()
+void RenderGraph::endMainHdrPassRendering()
 {
-    requireFrameActive("RenderGraph::endMainHdrPass");
+    requireFrameActive("RenderGraph::endMainHdrPassRendering");
     if (activePass_ != ActivePass::MainHdr) {
-        throw std::logic_error("RenderGraph::endMainHdrPass called without an active main HDR pass.");
+        throw std::logic_error("RenderGraph::endMainHdrPassRendering called without an active main HDR pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
-void RenderGraph::beginMainHdrPhase2Pass()
+void RenderGraph::beginMainHdrPhase2Rendering()
 {
-    requireFrameActive("RenderGraph::beginMainHdrPhase2Pass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginMainHdrPhase2Pass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.mainHdrPhase2)) {
-        throw std::logic_error(
-            "RenderGraph::beginMainHdrPhase2Pass was culled but the renderer attempted to record it.");
-    }
+    requireExecuting(frame_.passIndices.mainHdrPhase2, "RenderGraph::beginMainHdrPhase2Rendering");
 
     // Phase 2 keeps everything phase 1 left behind, depth included.
     beginMainHdrRendering(true, true);
     activePass_ = ActivePass::MainHdrPhase2;
 }
 
-void RenderGraph::endMainHdrPhase2Pass()
+void RenderGraph::endMainHdrPhase2Rendering()
 {
-    requireFrameActive("RenderGraph::endMainHdrPhase2Pass");
+    requireFrameActive("RenderGraph::endMainHdrPhase2Rendering");
     if (activePass_ != ActivePass::MainHdrPhase2) {
-        throw std::logic_error("RenderGraph::endMainHdrPhase2Pass called without an active phase-2 main HDR pass.");
+        throw std::logic_error(
+            "RenderGraph::endMainHdrPhase2Rendering called without an active phase-2 main HDR pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
-void RenderGraph::beginSsrCopyPass()
+void RenderGraph::beginSsrTraceRendering()
 {
-    requireFrameActive("RenderGraph::beginSsrCopyPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginSsrCopyPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.ssrCopy)) {
-        throw std::logic_error("RenderGraph::beginSsrCopyPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::SsrCopy;
-}
-
-void RenderGraph::endSsrCopyPass()
-{
-    requireFrameActive("RenderGraph::endSsrCopyPass");
-    if (activePass_ != ActivePass::SsrCopy) {
-        throw std::logic_error("RenderGraph::endSsrCopyPass called without an active SSR copy pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginSsrTracePass()
-{
-    requireFrameActive("RenderGraph::beginSsrTracePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginSsrTracePass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.ssrTrace)) {
-        throw std::logic_error("RenderGraph::beginSsrTracePass was culled but the renderer attempted to record it.");
-    }
+    requireExecuting(frame_.passIndices.ssrTrace, "RenderGraph::beginSsrTraceRendering");
 
     const TextureResource& sceneColor = textures_.at(frame_.sceneColor.index);
 
@@ -1271,26 +1124,20 @@ void RenderGraph::beginSsrTracePass()
     activePass_ = ActivePass::SsrTrace;
 }
 
-void RenderGraph::endSsrTracePass()
+void RenderGraph::endSsrTraceRendering()
 {
-    requireFrameActive("RenderGraph::endSsrTracePass");
+    requireFrameActive("RenderGraph::endSsrTraceRendering");
     if (activePass_ != ActivePass::SsrTrace) {
-        throw std::logic_error("RenderGraph::endSsrTracePass called without an active SSR trace pass.");
+        throw std::logic_error("RenderGraph::endSsrTraceRendering called without an active SSR trace pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
-void RenderGraph::beginGtaoPass()
+void RenderGraph::beginGtaoRendering()
 {
-    requireFrameActive("RenderGraph::beginGtaoPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginGtaoPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.gtao)) {
-        throw std::logic_error("RenderGraph::beginGtaoPass was culled but the renderer attempted to record it.");
-    }
+    requireExecuting(frame_.passIndices.gtao, "RenderGraph::beginGtaoRendering");
 
     const TextureResource& rawAo = textures_.at(frame_.ambientOcclusionRaw.index);
 
@@ -1313,26 +1160,20 @@ void RenderGraph::beginGtaoPass()
     activePass_ = ActivePass::Gtao;
 }
 
-void RenderGraph::endGtaoPass()
+void RenderGraph::endGtaoRendering()
 {
-    requireFrameActive("RenderGraph::endGtaoPass");
+    requireFrameActive("RenderGraph::endGtaoRendering");
     if (activePass_ != ActivePass::Gtao) {
-        throw std::logic_error("RenderGraph::endGtaoPass called without an active GTAO pass.");
+        throw std::logic_error("RenderGraph::endGtaoRendering called without an active GTAO pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
-void RenderGraph::beginGtaoBlurPass()
+void RenderGraph::beginGtaoBlurRendering()
 {
-    requireFrameActive("RenderGraph::beginGtaoBlurPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginGtaoBlurPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.gtaoBlur)) {
-        throw std::logic_error("RenderGraph::beginGtaoBlurPass was culled but the renderer attempted to record it.");
-    }
+    requireExecuting(frame_.passIndices.gtaoBlur, "RenderGraph::beginGtaoBlurRendering");
 
     const TextureResource& ambientOcclusion = textures_.at(frame_.ambientOcclusion.index);
 
@@ -1355,26 +1196,20 @@ void RenderGraph::beginGtaoBlurPass()
     activePass_ = ActivePass::GtaoBlur;
 }
 
-void RenderGraph::endGtaoBlurPass()
+void RenderGraph::endGtaoBlurRendering()
 {
-    requireFrameActive("RenderGraph::endGtaoBlurPass");
+    requireFrameActive("RenderGraph::endGtaoBlurRendering");
     if (activePass_ != ActivePass::GtaoBlur) {
-        throw std::logic_error("RenderGraph::endGtaoBlurPass called without an active GTAO blur pass.");
+        throw std::logic_error("RenderGraph::endGtaoBlurRendering called without an active GTAO blur pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
-void RenderGraph::beginTransparentPass()
+void RenderGraph::beginTransparentRendering()
 {
-    requireFrameActive("RenderGraph::beginTransparentPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginTransparentPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.transparent)) {
-        throw std::logic_error("RenderGraph::beginTransparentPass was culled but the renderer attempted to record it.");
-    }
+    requireExecuting(frame_.passIndices.transparent, "RenderGraph::beginTransparentRendering");
 
     const TextureResource& sceneColor = textures_.at(frame_.sceneColor.index);
     const TextureResource& velocity = textures_.at(frame_.velocity.index);
@@ -1430,65 +1265,15 @@ void RenderGraph::beginTransparentPass()
     activePass_ = ActivePass::Transparent;
 }
 
-void RenderGraph::endTransparentPass()
+void RenderGraph::endTransparentRendering()
 {
-    requireFrameActive("RenderGraph::endTransparentPass");
+    requireFrameActive("RenderGraph::endTransparentRendering");
     if (activePass_ != ActivePass::Transparent) {
-        throw std::logic_error("RenderGraph::endTransparentPass called without an active transparent pass.");
+        throw std::logic_error("RenderGraph::endTransparentRendering called without an active transparent pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginMainGpuCullingPhase2Pass()
-{
-    requireFrameActive("RenderGraph::beginMainGpuCullingPhase2Pass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginMainGpuCullingPhase2Pass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.mainGpuCullingPhase2)) {
-        throw std::logic_error(
-            "RenderGraph::beginMainGpuCullingPhase2Pass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::MainGpuCullingPhase2;
-}
-
-void RenderGraph::endMainGpuCullingPhase2Pass()
-{
-    requireFrameActive("RenderGraph::endMainGpuCullingPhase2Pass");
-    if (activePass_ != ActivePass::MainGpuCullingPhase2) {
-        throw std::logic_error(
-            "RenderGraph::endMainGpuCullingPhase2Pass called without an active phase-2 culling pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginDepthPyramidMidPass()
-{
-    requireFrameActive("RenderGraph::beginDepthPyramidMidPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginDepthPyramidMidPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.depthPyramidMid)) {
-        throw std::logic_error(
-            "RenderGraph::beginDepthPyramidMidPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::DepthPyramidMid;
-}
-
-void RenderGraph::endDepthPyramidMidPass()
-{
-    requireFrameActive("RenderGraph::endDepthPyramidMidPass");
-    if (activePass_ != ActivePass::DepthPyramidMid) {
-        throw std::logic_error(
-            "RenderGraph::endDepthPyramidMidPass called without an active mid-frame depth pyramid pass.");
-    }
-
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
 void RenderGraph::endFrame()
@@ -1743,6 +1528,32 @@ uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
         return frame_.passIndices.vsmPage;
     case RenderGraphBuiltinPass::IrradianceProbes:
         return frame_.passIndices.irradianceProbes;
+    case RenderGraphBuiltinPass::DepthPrepass:
+        return frame_.passIndices.depthPrepass;
+    case RenderGraphBuiltinPass::RayTracedShadowTrace:
+        return frame_.passIndices.rayTracedShadowTrace;
+    case RenderGraphBuiltinPass::RayTracedShadowTemporal:
+        return frame_.passIndices.rayTracedShadowTemporal;
+    case RenderGraphBuiltinPass::RayTracedShadowFilter:
+        return builtinPassIndex(pass, 0);
+    case RenderGraphBuiltinPass::RayTracedShadowResolve:
+        return frame_.passIndices.rayTracedShadowResolve;
+    case RenderGraphBuiltinPass::DepthPyramidMid:
+        return frame_.passIndices.depthPyramidMid;
+    case RenderGraphBuiltinPass::MainGpuCullingPhase2:
+        return frame_.passIndices.mainGpuCullingPhase2;
+    case RenderGraphBuiltinPass::MainHdrPhase2:
+        return frame_.passIndices.mainHdrPhase2;
+    case RenderGraphBuiltinPass::SsrCopy:
+        return frame_.passIndices.ssrCopy;
+    case RenderGraphBuiltinPass::SsrTrace:
+        return frame_.passIndices.ssrTrace;
+    case RenderGraphBuiltinPass::Gtao:
+        return frame_.passIndices.gtao;
+    case RenderGraphBuiltinPass::GtaoBlur:
+        return frame_.passIndices.gtaoBlur;
+    case RenderGraphBuiltinPass::Transparent:
+        return frame_.passIndices.transparent;
     }
 
     return kInvalidRenderGraphHandle;
@@ -1788,6 +1599,10 @@ uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass, uint32_t ins
         return at(frame_.passIndices.bloomDownsampleChain);
     case RenderGraphBuiltinPass::BloomUpsample:
         return at(frame_.passIndices.bloomUpsampleChain);
+    case RenderGraphBuiltinPass::RayTracedShadowFilter:
+        return instance < frame_.passIndices.rayTracedShadowFilter.size()
+                   ? frame_.passIndices.rayTracedShadowFilter[instance]
+                   : kInvalidRenderGraphHandle;
     default:
         return builtinPassIndex(pass);
     }
@@ -2450,6 +2265,10 @@ void RenderGraph::declareGeometryPasses()
                  "Reads each texel's column neighbours and radius.",
                  "Writes the visibility blurred along both axes, which the resolve reads."},
             }};
+            // One profiler scope over the three dispatches: the filter's cost is
+            // the question, and each scope is two more timestamps in a pass this
+            // small.
+            pushScope("RayTracedShadowFilter", "RayTracedShadowFilter");
             for (const FilterPassDeclaration& declaration : kFilterPasses) {
                 const bool toFilterImage = declaration.stage != RayTracedShadowFilterStage::BlurHorizontal;
                 frame_.passIndices.rayTracedShadowFilter.at(static_cast<size_t>(declaration.stage)) =
@@ -2475,6 +2294,7 @@ void RenderGraph::declareGeometryPasses()
                                     destination, RGAccess::StorageImageWrite, declaration.writePurpose);
                             });
             }
+            popScope();
         }
 
         frame_.passIndices.rayTracedShadowResolve = addPass(
@@ -4465,27 +4285,6 @@ void RenderGraph::beginColorRendering(const TextureResource& resource,
                                           ? VkExtent2D{std::min(extentOverride.width, resource.desc.extent.width),
                                                        std::min(extentOverride.height, resource.desc.extent.height)}
                                           : resource.desc.extent;
-    renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachments = &colorAttachment;
-
-    vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
-}
-
-void RenderGraph::beginSwapchainRendering(VkClearValue clearValue, VkAttachmentLoadOp loadOp)
-{
-    VkRenderingAttachmentInfo colorAttachment{};
-    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = frame_.swapchain->imageView(frame_.imageIndex);
-    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = loadOp;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.clearValue = clearValue;
-
-    VkRenderingInfo renderingInfo{};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = frame_.swapchain->extent();
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachments = &colorAttachment;

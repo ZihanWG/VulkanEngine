@@ -501,10 +501,10 @@ the graph changes nothing about what runs or when. What it changes is who
 decides, and a unit test pins that the two still agree.
 
 `Renderer::recordRenderCommands` is now the passes it binds as execute
-callbacks and a list of recorders handed to `RenderGraph::recordScheduledUnits`,
-and nothing else: `beginFrame`, the bindings and units, `endFrame`. It went from
-~980 lines to ~160, and the frame it describes is sequenced by the graph from end
-to end.
+callbacks and a short list of recorders handed to
+`RenderGraph::recordScheduledUnits`, and nothing else: `beginFrame`, the
+bindings and units, `endFrame`. Every declared pass is recorded by its callback;
+the units are the work with no pass of its own.
 
 | Unit | Anchor pass |
 | --- | --- |
@@ -515,8 +515,6 @@ to end.
 | fog volume first-use clear | *none* |
 | synchronous cluster build and light cull | `MainGpuCullingPass` |
 | probe shading-parameter upload | `VolumetricFogPass` |
-| `recordMainPassGeometry` | `MainHDRPass`; it also records `DepthPrepass`, `RayTracedShadowTrace`, `RayTracedShadowTemporal`, the filter's `RayTracedShadowRadius`, `RayTracedShadowBlurH` and `RayTracedShadowBlurV`, and `RayTracedShadowResolve` ahead of it |
-| invalidating the depth pyramid on a frame that does not build it | `DepthPyramidPass` |
 | portfolio screenshot, and the capture taken before the overlay | `CompositePass` |
 | the capture taken after the overlay | `ImGuiPass` |
 
@@ -524,31 +522,21 @@ The two screenshot units are anchored on the passes they follow: a unit runs
 right after its anchor's execute callback, so the copies land between the
 composite and the overlay, and behind the overlay's present transition.
 
-A recorder spanning several declared passes anchors on the first of them, with
-one exception below. `recordMainPassGeometry` covers everything from the depth
-prepass to the transparent pass — the prepass, the main pass, the two-phase
-occlusion re-test, SSR, GTAO and the transparent pass — because they are one
-region as far as state goes: the viewport, the global descriptor set, the
-indirect buffers, the base push constants and a mutable flag tracking whether
-the bindless sets are currently bound are all set up by the main pass and
-reused by the rest.
-
-The exception is `DepthPrepass`, which is declared immediately before
-`MainHDRPass` and recorded inside its unit, so that unit anchors on the second
-pass it covers rather than the first. The two are adjacent in the declaration
-order and no reordering happens, so the scheduled position is the same either
-way; the prepass opens and closes its own rendering scope and the main pass
-loads the depth it leaves, which is why they are one recorder at all.
-
 Two units have no pass of their own. The synchronous cluster build is the
 fallback path for work the renderer submits on the compute queue itself, which
 `docs/async_compute.md` describes and the graph does not model. It is anchored on
 `MainGpuCullingPass`, so it records right after the cull, and on the CPU culling
 fallback, where that pass is not declared, it runs with the unit registered
 before it — where it always ran. The fog volume's first-use clear is frame setup,
-not a pass, and has no anchor at all. The depth pyramid's invalidation unit has a
-pass to name but only does work on frames that do not declare it, and so do the
-VSM, cascade and punctual bookkeeping units.
+not a pass, and has no anchor at all. The VSM, cascade and punctual bookkeeping
+units have a pass to name but only do work on frames that do not declare it.
+
+Two pieces of CPU state are left to after the units run: invalidating the depth
+pyramid on a frame that did not build it, and marking the ambient-occlusion
+target written. Nothing recorded after the geometry region reads either, and as
+units they would have had no scheduled pass to anchor on on exactly the frames
+they matter — the inherited position would have put them ahead of the main
+pass, which reads both.
 
 ### A unit's inherited position moves when the unit before it goes
 
@@ -584,9 +572,9 @@ bit-identical through the whole extraction.
 A pass can also carry its own commands: `addPass` takes an optional execute
 callback, and `recordScheduledUnits` then records that pass itself — it emits
 the pass's barriers, calls the callback with a `RenderGraphPassContext` (the
-command buffer and handle resolution), and closes the pass. A callback never
-calls a `begin*Pass` / `end*Pass` pair; one that does throws, because the graph
-marks itself busy for the duration of the call.
+command buffer and handle resolution), and closes the pass. The graph marks
+itself busy for the duration of the call, and the in-callback rendering helpers
+below check it is the right pass's callback that calls them.
 
 The recording order comes from `buildExecutionPlan`, a pure function over the
 execution order, the passes and the units' anchors. A callback pass records at
@@ -624,15 +612,33 @@ that each cascade after the first re-emits `CSMShadowPass`'s, as each cascade's
 own begin always did. The cull and the cascades share a `CSMShadowPass` graph
 scope.
 
-Recorded by callbacks: `VsmPageMarkPass`, `VsmPagePass`, `ShadowGpuCullingPass`,
-`CSMShadowPass`, `PunctualShadowCullPass`, `PunctualShadowAtlasPass`,
-`MainGpuCullingPass`, `VolumetricFogPass`, `ProbeCapture`,
-`IrradianceProbeUpdate`, `RayTracingSceneBuild`, `DepthPyramidPass`,
-`TAAResolvePass`, `BloomExtractPass`, `BloomBlurHorizontal`,
-`BloomBlurVertical`, every `BloomDownsampleMip` and `BloomUpsampleMip` level,
-`LuminancePass`, `HistogramExposurePass`, `CompositePass` and `ImGuiPass`.
-Everything from `DepthPrepass` to `TransparentPass` is still the main geometry
-unit.
+The geometry region's raster passes — `DepthPrepass`, `MainHDRPass`,
+`MainHDRPhase2`, `SSRTracePass`, `GTAOPass`, `GTAOBlurPass` and
+`TransparentPass` — open their fixed-shape scopes the same way, so a callback
+that draws nothing opens nothing. The ray-traced shadow filter's three passes
+share a `RayTracedShadowFilter` graph scope.
+
+Every declared pass is recorded by its callback; no `begin*Pass` / `end*Pass`
+pair is left.
+
+### Passes still share drawing state through the command buffer
+
+The main HDR pass sets up what phase 2 and the transparent pass draw with — the
+viewport, the global descriptor set, the indirect buffers and the base push
+constants — and hands those values to them in a `MainPassFrameState` it fills
+when it records. It is filled at the point the values were always computed,
+because the base push constants include whether the ambient-occlusion history is
+usable, and GTAO changes that later in the frame.
+
+Splitting the old geometry recorder this way keeps every callback binding exactly
+what the old code bound at that point, and the frame trace, the per-frame
+profiler scopes and the captures match the build before the split. The cost
+of keeping the command stream unchanged is that callbacks still rely on Vulkan
+state an earlier pass left bound — phase 2 and the transparent pass rebind their
+own pipeline and sets, but a pass that did not would draw with whatever the pass
+before it bound. Nothing reorders passes today, so nothing exercises that; a
+scheduler that moved a geometry pass would first have to make each callback bind
+everything it uses.
 
 Each run also logs the last frame's recorded pass order with the barrier counts
 the graph emitted for each pass:

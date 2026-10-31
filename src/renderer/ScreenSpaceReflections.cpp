@@ -302,19 +302,16 @@ void ScreenSpaceReflections::uploadParams(uint32_t frameIndex,
     frameParamsBuffers_[frameIndex].upload(std::as_bytes(std::span<const SsrParams>(&params, 1)));
 }
 
-void ScreenSpaceReflections::recordCommands(VkCommandBuffer commandBuffer,
-                                            uint32_t frameIndex,
-                                            VkImage sceneColorImage,
-                                            VkExtent2D extent)
+void ScreenSpaceReflections::recordCopy(VkCommandBuffer commandBuffer,
+                                        uint32_t frameIndex,
+                                        VkImage sceneColorImage,
+                                        VkExtent2D extent)
 {
     if (!available_ || frameIndex >= descriptorSets_.size() || sceneColorImage == VK_NULL_HANDLE) {
         return;
     }
 
     {
-        const GpuProfileScope copyScope(gpuProfiler_, frameIndex, commandBuffer, "SSRCopy");
-        rhi::debug::beginLabel(commandBuffer, "SSRCopyPass");
-        renderGraph_.beginSsrCopyPass();
 
         if (halfResolutionSceneColorCopy_) {
             // Source is the sub-rect the frame actually wrote; destination is
@@ -351,15 +348,17 @@ void ScreenSpaceReflections::recordCommands(VkCommandBuffer commandBuffer,
                            1,
                            &copyRegion);
         }
+    }
+}
 
-        renderGraph_.endSsrCopyPass();
-        rhi::debug::endLabel(commandBuffer);
+void ScreenSpaceReflections::recordTrace(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent)
+{
+    if (!available_ || frameIndex >= descriptorSets_.size()) {
+        return;
     }
 
     {
-        const GpuProfileScope traceScope(gpuProfiler_, frameIndex, commandBuffer, "SSRTrace");
-        rhi::debug::beginLabel(commandBuffer, "SSRTracePass");
-        renderGraph_.beginSsrTracePass();
+        renderGraph_.beginSsrTraceRendering();
 
         VkViewport viewport{};
         viewport.width = static_cast<float>(extent.width);
@@ -382,8 +381,7 @@ void ScreenSpaceReflections::recordCommands(VkCommandBuffer commandBuffer,
                                 nullptr);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
-        renderGraph_.endSsrTracePass();
-        rhi::debug::endLabel(commandBuffer);
+        renderGraph_.endSsrTraceRendering();
     }
 }
 

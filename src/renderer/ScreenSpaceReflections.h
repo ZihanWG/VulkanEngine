@@ -85,7 +85,11 @@ public:
 
     // Records the copy pass (scene color -> copy) and the trace pass (additive
     // blend into scene color). sceneColorImage is the main HDR target.
-    void recordCommands(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkImage sceneColorImage, VkExtent2D extent);
+    // SSRCopyPass's and SSRTracePass's callbacks. The graph emits each pass's
+    // barriers, label and profiler scope; the trace opens its own rendering
+    // scope.
+    void recordCopy(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkImage sceneColorImage, VkExtent2D extent);
+    void recordTrace(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent);
 
     [[nodiscard]] bool available() const
     {

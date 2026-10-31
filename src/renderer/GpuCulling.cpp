@@ -929,8 +929,6 @@ void GpuCulling::recordMainCullPhase2(VkCommandBuffer commandBuffer,
         return;
     }
 
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, frameIndex, commandBuffer, "MainGpuCullingPhase2");
-    renderGraph_.beginMainGpuCullingPhase2Pass();
     rhi::debug::beginLabel(commandBuffer, "GpuCullingPhase2");
     depthPyramid_.ensureShaderReadLayout(commandBuffer);
 
@@ -991,7 +989,6 @@ void GpuCulling::recordMainCullPhase2(VkCommandBuffer commandBuffer,
 
     recordMainVisibleCountReadback(commandBuffer, frameIndex);
     rhi::debug::endLabel(commandBuffer);
-    renderGraph_.endMainGpuCullingPhase2Pass();
 }
 
 void GpuCulling::recordShadowCull(

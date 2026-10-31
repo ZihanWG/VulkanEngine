@@ -864,7 +864,21 @@ enum class RenderGraphBuiltinPass {
     ShadowGpuCulling,
     PunctualShadowCull,
     VsmPage,
-    IrradianceProbes
+    IrradianceProbes,
+    DepthPrepass,
+    RayTracedShadowTrace,
+    RayTracedShadowTemporal,
+    // One pass per RayTracedShadowFilterStage; the stage is the instance.
+    RayTracedShadowFilter,
+    RayTracedShadowResolve,
+    DepthPyramidMid,
+    MainGpuCullingPhase2,
+    MainHdrPhase2,
+    SsrCopy,
+    SsrTrace,
+    Gtao,
+    GtaoBlur,
+    Transparent
 };
 
 // What a caller binds to a declared pass so the graph records it: the commands,
@@ -1036,56 +1050,41 @@ public:
     // caller sets a viewport per (probe, cube face) inside it.
     void beginProbeCaptureRendering();
     void endProbeCaptureRendering();
-    // The ray-traced shadow mask's two dispatches, recorded between the depth
-    // prepass and the main pass inside the main-pass recorder, outside any
-    // rendering scope.
-    void beginRayTracedShadowTracePass();
-    void endRayTracedShadowTracePass();
-    // One of the filter's three, by its RayTracedShadowFilterStage.
-    void beginRayTracedShadowFilterPass(RayTracedShadowFilterStage stage);
-    void endRayTracedShadowFilterPass();
-    void beginRayTracedShadowTemporalPass();
-    void endRayTracedShadowTemporalPass();
-    void beginRayTracedShadowResolvePass();
-    void endRayTracedShadowResolvePass();
+    // The geometry region's raster passes. Fixed in shape, but opened from the
+    // callback like the ones above, so a callback that draws nothing -- an
+    // unavailable pipeline, say -- opens no scope either.
+    //
     // Depth-only replay of the opaque bucket. Declared and recorded only when
     // RuntimeSettings::enableDepthPrepass is on; when it is off the pass does not
     // exist in the graph at all, so the backstop's "declared but never recorded"
     // check keeps meaning what it says.
-    void beginDepthPrepass();
-    void endDepthPrepass();
+    void beginDepthPrepassRendering();
+    void endDepthPrepassRendering();
     [[nodiscard]] bool hasDepthPrepass() const
     {
         return frame_.passIndices.depthPrepass != kInvalidRenderGraphHandle;
     }
 
-    void beginMainHdrPass();
-    void endMainHdrPass();
-    // Two-phase occlusion: mid-frame pyramid build, candidate re-test, and the
-    // second (load, no clear) main HDR pass for the rescued draws.
-    void beginDepthPyramidMidPass();
-    void endDepthPyramidMidPass();
-    void beginMainGpuCullingPhase2Pass();
-    void endMainGpuCullingPhase2Pass();
-    void beginMainHdrPhase2Pass();
-    void endMainHdrPhase2Pass();
-    // SSR: transfer copy of the lit scene color (the trace's reflection source),
-    // then the trace pass blending reflections back into scene color (LOAD).
-    void beginSsrCopyPass();
-    void endSsrCopyPass();
-    void beginSsrTracePass();
-    void endSsrTracePass();
-    // GTAO: horizon-search fullscreen pass writing the raw AO target, then a
-    // bilateral blur denoising it into the composite-visible AO target.
-    void beginGtaoPass();
-    void endGtaoPass();
-    void beginGtaoBlurPass();
-    void endGtaoBlurPass();
-    // Alpha-blended geometry. Scene color only (no velocity, no G-buffer) with
-    // depth test on and depth write off, recorded after every screen-space effect
-    // that needs a clean opaque depth/G-buffer and before the TAA resolve.
-    void beginTransparentPass();
-    void endTransparentPass();
+    void beginMainHdrPassRendering();
+    void endMainHdrPassRendering();
+    // Two-phase occlusion: the second (load, no clear) main HDR pass for the
+    // draws the re-test rescued.
+    void beginMainHdrPhase2Rendering();
+    void endMainHdrPhase2Rendering();
+    // SSR's trace, blending reflections back into scene color (LOAD).
+    void beginSsrTraceRendering();
+    void endSsrTraceRendering();
+    // GTAO: the horizon search writing the raw AO target, then the bilateral
+    // blur denoising it into the composite-visible AO target.
+    void beginGtaoRendering();
+    void endGtaoRendering();
+    void beginGtaoBlurRendering();
+    void endGtaoBlurRendering();
+    // Alpha-blended geometry, depth test on and depth write off, after every
+    // screen-space effect that needs a clean opaque depth/G-buffer and before
+    // the TAA resolve.
+    void beginTransparentRendering();
+    void endTransparentRendering();
     void endFrame();
 
     uint32_t addPass(std::string name, SetupCallback setup);
@@ -1258,28 +1257,21 @@ private:
 
     enum class ActivePass {
         None,
-        // Inside a pass's execute callback. Every begin*Pass requires None, so a
-        // callback that still calls one -- a pass recorded twice mid-migration --
-        // throws instead of recording it.
+        // Inside a pass's execute callback, with none of the callback's own
+        // rendering scopes open. The in-callback rendering helpers require it,
+        // and set one of the values below until their end.
         Executor,
-        RayTracedShadowTrace,
-        RayTracedShadowTemporal,
-        RayTracedShadowFilter,
-        RayTracedShadowResolve,
         VsmPage,
         Shadow,
         PunctualShadow,
         ProbeCapture,
         DepthPrepass,
         MainHdr,
-        MainGpuCullingPhase2,
         MainHdrPhase2,
-        SsrCopy,
         SsrTrace,
         Gtao,
         GtaoBlur,
-        Transparent,
-        DepthPyramidMid
+        Transparent
     };
 
     enum class TextureOwner {
@@ -1526,7 +1518,6 @@ private:
     // because the depth prepass makes the two differ -- it has already written
     // depth that must be kept, while the colour targets still need clearing.
     void beginMainHdrRendering(bool loadExisting, bool loadDepth);
-    void beginSwapchainRendering(VkClearValue clearValue, VkAttachmentLoadOp loadOp);
 
     FrameState frame_{};
     // Reused across passes and frames; see BarrierBatch. Always empty between

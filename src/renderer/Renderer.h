@@ -81,6 +81,8 @@ typedef union SDL_Event SDL_Event;
 
 namespace ve {
 
+struct MainPassFrameState;
+
 class Window;
 
 // Decisions the constructor has to make before it allocates anything, so they
@@ -835,7 +837,6 @@ private:
     [[nodiscard]] bool isDepthPyramidBuildRequired() const;
     [[nodiscard]] const char* occlusionYieldStateName() const;
     void ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer);
-    void recordMidFrameDepthPyramidCommands(VkCommandBuffer commandBuffer);
     [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();
     bool readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     bool readGpuCullCounters(uint32_t frameIndex, renderer::GpuCullCounters& counters);
@@ -987,9 +988,6 @@ private:
     // resize recreates. A no-op before the first material set exists, which
     // writes the binding itself.
     void refreshMaterialRayTracedShadowMaskDescriptors();
-    // Between DepthPrepass and MainHDRPass, on frames that set
-    // frameRayTracedShadowMaskActive_.
-    void recordRayTracedShadowMask(VkCommandBuffer commandBuffer);
     // Drops the depth of pages whose casters moved, before residency decides
     // what to draw. Without it a moved object leaves its shadow behind: the page
     // keeps its identity and its physical page, so nothing else notices.
@@ -1048,11 +1046,19 @@ private:
     // Fog injection and scattering. Ordered after the cluster passes, whose light
     // lists it walks, and before the main HDR pass, which samples the volume.
     void recordVolumetricFogPass(VkCommandBuffer commandBuffer);
-    // The main HDR pass, the two-phase occlusion re-test, SSR, GTAO and the
-    // transparent pass. One recorder because they share the drawing state the
-    // main pass sets up, including a mutable flag tracking whether the bindless
-    // descriptor sets are currently bound.
-    void recordMainPassGeometry(VkCommandBuffer commandBuffer);
+    // The geometry region's callbacks. The main HDR pass fills `state` with
+    // the drawing state phase 2 and the transparent pass reuse.
+    void recordMainHdrPass(VkCommandBuffer commandBuffer, MainPassFrameState& state);
+    void recordMainHdrPhase2Pass(VkCommandBuffer commandBuffer, const MainPassFrameState& state);
+    void recordTransparentPass(VkCommandBuffer commandBuffer, const MainPassFrameState& state);
+    // The ray-traced shadow mask's passes, in recording order, and the values
+    // they share.
+    struct RayTracedShadowMaskFrame;
+    [[nodiscard]] RayTracedShadowMaskFrame rayTracedShadowMaskFrame() const;
+    void recordRayTracedShadowTrace(VkCommandBuffer commandBuffer);
+    void recordRayTracedShadowTemporal(VkCommandBuffer commandBuffer);
+    void recordRayTracedShadowFilter(VkCommandBuffer commandBuffer, renderer::RayTracedShadowFilterStage stage);
+    void recordRayTracedShadowResolve(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool isGpuPunctualShadowCullingActive() const;
     // isGpuCullingActive plus every condition GpuCulling::recordMainCull returns
     // early on, asked of GpuCulling rather than rebuilt here. The graph declares
