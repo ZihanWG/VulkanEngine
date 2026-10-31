@@ -1371,7 +1371,8 @@ void Renderer::emitRecordCpuBreakdown() const
     std::ostringstream message;
     message << std::fixed << std::setprecision(3) << "Record CPU by unit:";
     for (const renderer::RenderGraphUnitCost& cost : sorted) {
-        message << "\n  [" << cost.unitIndex << "] " << cost.name << ": " << cost.milliseconds << " ms";
+        message << "\n  [" << (cost.graphExecuted ? "pass " : "") << cost.unitIndex << "] " << cost.name << ": "
+                << cost.milliseconds << " ms";
     }
     Logger::info(message.str());
 }

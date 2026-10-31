@@ -547,6 +547,34 @@ the last anchored unit registered before them, which is where they always ran.
 equal to the recorded order every frame — and the captured frame stayed
 bit-identical through the whole extraction.
 
+### Execute callbacks
+
+A pass can also carry its own commands: `addPass` takes an optional execute
+callback, and `recordScheduledUnits` then records that pass itself — it emits
+the pass's barriers, calls the callback with a `RenderGraphPassContext` (the
+command buffer and handle resolution), and closes the pass. A callback never
+calls a `begin*Pass` / `end*Pass` pair; one that does throws, because the graph
+marks itself busy for the duration of the call.
+
+The recording order comes from `buildExecutionPlan`, a pure function over the
+execution order, the passes and the units' anchors. A callback pass records at
+its scheduled position, a unit anchored on it right after it, and everything
+else exactly as before. With no callbacks the plan is the old unit order, and a
+unit test checks that against the old algorithm, which is what lets passes move
+from units to callbacks one at a time.
+
+No pass uses a callback yet. Each run also logs the last frame's recorded pass
+order with the barrier counts the graph emitted for each pass:
+
+```
+Render graph frame trace: ... MainHDRPass[6/0/1] DepthPyramidMidPass[2/0/1] ...
+```
+
+as `Name[image/buffer/submits]`. A `--deterministic` run ends on the same frame
+every time, so moving a pass from a unit to a callback has to leave this line
+unchanged. That is a stronger check than the golden image, since a missing
+barrier rarely shows up in pixels.
+
 ### What this does not buy
 
 The head of the frame has almost no scheduling freedom: the longest dependency

@@ -313,6 +313,13 @@ public:
         return renderGraph_.backstopSummary();
     }
 
+    // The last frame's recorded pass order and per-pass barrier counts; see
+    // formatRenderGraphFrameTrace.
+    [[nodiscard]] std::string renderGraphFrameTrace() const
+    {
+        return renderGraph_.frameTrace();
+    }
+
     // One line for the whole run: how many traced frames rebuilt the TLAS and
     // how many kept it, and how often the skinned BLAS was built and refitted.
     // Nothing on a run where the scene never became traceable. A capture omits
