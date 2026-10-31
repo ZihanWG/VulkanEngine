@@ -2032,6 +2032,39 @@ uint32_t RenderGraph::addPass(
     return index;
 }
 
+uint32_t RenderGraph::addPass(std::string name,
+                              RenderPassType type,
+                              RenderPassExecutionType executionType,
+                              bool sideEffect,
+                              SetupCallback setup,
+                              ExecuteCallback execute)
+{
+    const uint32_t index = addPass(std::move(name), type, executionType, sideEffect, std::move(setup));
+    passes_[index].execute = std::move(execute);
+    return index;
+}
+
+RenderGraphPassContext::RenderGraphPassContext(const RenderGraph& graph,
+                                               VkCommandBuffer commandBuffer,
+                                               uint32_t passIndex)
+    : graph_(graph), commandBuffer_(commandBuffer), passIndex_(passIndex)
+{}
+
+VkImage RenderGraphPassContext::image(RGTextureHandle handle) const
+{
+    return graph_.image(handle);
+}
+
+VkImageView RenderGraphPassContext::imageView(RGTextureHandle handle) const
+{
+    return graph_.imageView(handle);
+}
+
+VkBuffer RenderGraphPassContext::buffer(RGBufferHandle handle) const
+{
+    return graph_.buffer(handle);
+}
+
 RGTextureHandle RenderGraph::importTexture(const RenderGraphImageResource& resource)
 {
     if (resource.image == VK_NULL_HANDLE || resource.imageView == VK_NULL_HANDLE || resource.extent.width == 0 ||
@@ -2173,38 +2206,32 @@ void RenderGraph::recordScheduledUnits(std::span<RenderGraphScheduledUnit> units
 {
     requireFrameActive("RenderGraph::recordScheduledUnits");
 
-    const auto scheduledPosition = [this](uint32_t passIndex) {
-        const auto found = std::find(executionOrder_.begin(), executionOrder_.end(), passIndex);
-        return found == executionOrder_.end() ? executionOrder_.size()
-                                              : static_cast<size_t>(found - executionOrder_.begin());
-    };
-
-    // A unit whose pass this frame does not declare -- a recorder with no graph
-    // pass of its own, or one whose pass is conditional and absent -- runs with
-    // the last anchored unit registered before it. Sorting it to the end instead
-    // would move work the graph knows nothing about, such as the synchronous
-    // cluster build, past the composite. Units sharing a position keep their
-    // registration order, which is what the second element of the pair is for.
-    std::vector<std::pair<size_t, size_t>> ordered;
-    ordered.reserve(units.size());
-    size_t inherited = 0;
-    for (size_t unitIndex = 0; unitIndex < units.size(); ++unitIndex) {
-        const size_t position = scheduledPosition(units[unitIndex].passIndex);
-        if (position != executionOrder_.size()) {
-            inherited = position;
-        }
-        ordered.emplace_back(inherited, unitIndex);
+    std::vector<uint32_t> anchors;
+    anchors.reserve(units.size());
+    for (const RenderGraphScheduledUnit& unit : units) {
+        anchors.push_back(unit.passIndex);
     }
-    std::sort(ordered.begin(), ordered.end());
+    const std::vector<RenderGraphExecutionStep> plan = buildExecutionPlan(executionOrder_, passes_, anchors);
 
     // Cleared here rather than in beginFrame: the report that reads this runs at
     // the top of the next frame, after beginFrame has already run, so clearing
     // there would hand it an empty list every time.
     unitRecordCosts_.clear();
-    unitRecordCosts_.reserve(ordered.size());
+    unitRecordCosts_.reserve(plan.size());
 
-    for (const auto& [position, unitIndex] : ordered) {
-        (void)position;
+    for (const RenderGraphExecutionStep& step : plan) {
+        if (step.kind == RenderGraphExecutionStep::Kind::Pass) {
+            const auto start = std::chrono::steady_clock::now();
+            executePass(step.index);
+            unitRecordCosts_.push_back(
+                {renderPassTypeName(passes_[step.index].type),
+                 std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count(),
+                 step.index,
+                 true});
+            continue;
+        }
+
+        const uint32_t unitIndex = step.index;
         if (!units[unitIndex].record) {
             continue;
         }
@@ -2219,8 +2246,35 @@ void RenderGraph::recordScheduledUnits(std::span<RenderGraphScheduledUnit> units
         unitRecordCosts_.push_back(
             {name,
              std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count(),
-             static_cast<uint32_t>(unitIndex)});
+             unitIndex,
+             false});
     }
+}
+
+void RenderGraph::executePass(uint32_t passIndex)
+{
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::executePass called while another pass is active.");
+    }
+    // buildExecutionPlan only emits scheduled passes, so a culled one cannot reach
+    // here; beginDeclaredPass returning false would mean the plan and the culling
+    // disagree, which is a graph bug rather than a renderer one.
+    if (!beginDeclaredPass(passIndex)) {
+        throw std::logic_error("RenderGraph::executePass reached a culled pass.");
+    }
+
+    activePass_ = ActivePass::Executor;
+    RenderGraphPassContext context(*this, frame_.commandBuffer, passIndex);
+    passes_[passIndex].execute(context);
+    if (activePass_ != ActivePass::Executor) {
+        throw std::logic_error("RenderGraph::executePass: the callback left a pass open or closed one it did not own.");
+    }
+    activePass_ = ActivePass::None;
+}
+
+std::string RenderGraph::frameTrace() const
+{
+    return formatRenderGraphFrameTrace(passes_, recordedOrder_);
 }
 
 RGTextureHandle RenderGraph::postProcessSource() const
@@ -3869,6 +3923,84 @@ std::vector<std::string> RenderGraph::describeBackstopFindings() const
     }
 
     return findings;
+}
+
+std::vector<RenderGraphExecutionStep> buildExecutionPlan(std::span<const uint32_t> executionOrder,
+                                                         const std::vector<RenderPassNode>& passes,
+                                                         std::span<const uint32_t> unitAnchors)
+{
+    // Every step gets a slot: 0 is ahead of every pass, and slot p + 1 is the
+    // pass at execution position p. Within a slot the pass's own callback comes
+    // first, then units in registration order -- which is all the sort key says.
+    struct Keyed {
+        size_t slot = 0;
+        uint8_t kindRank = 0;
+        uint32_t index = 0;
+    };
+
+    std::vector<size_t> slotOfPass(passes.size(), 0);
+    std::vector<Keyed> keyed;
+    keyed.reserve(executionOrder.size() + unitAnchors.size());
+    for (size_t position = 0; position < executionOrder.size(); ++position) {
+        const uint32_t passIndex = executionOrder[position];
+        if (passIndex >= passes.size()) {
+            continue;
+        }
+        slotOfPass[passIndex] = position + 1;
+        if (passes[passIndex].execute) {
+            keyed.push_back({position + 1, 0, passIndex});
+        }
+    }
+
+    // A unit whose pass this frame does not schedule -- a recorder with no graph
+    // pass of its own, or one whose pass is conditional and absent -- runs with
+    // the last anchored unit registered before it. Sorting it to the end instead
+    // would move work the graph knows nothing about, such as the synchronous
+    // cluster build, past the composite.
+    size_t inherited = 0;
+    for (uint32_t unitIndex = 0; unitIndex < unitAnchors.size(); ++unitIndex) {
+        const uint32_t anchor = unitAnchors[unitIndex];
+        const size_t slot = anchor < slotOfPass.size() ? slotOfPass[anchor] : 0;
+        if (slot != 0) {
+            inherited = slot;
+        }
+        keyed.push_back({inherited, 1, unitIndex});
+    }
+
+    std::stable_sort(keyed.begin(), keyed.end(), [](const Keyed& lhs, const Keyed& rhs) {
+        return lhs.slot != rhs.slot ? lhs.slot < rhs.slot : lhs.kindRank < rhs.kindRank;
+    });
+
+    std::vector<RenderGraphExecutionStep> plan;
+    plan.reserve(keyed.size());
+    for (const Keyed& entry : keyed) {
+        plan.push_back(
+            {entry.kindRank == 0 ? RenderGraphExecutionStep::Kind::Pass : RenderGraphExecutionStep::Kind::Unit,
+             entry.index});
+    }
+    return plan;
+}
+
+std::string formatRenderGraphFrameTrace(const std::vector<RenderPassNode>& passes,
+                                        std::span<const uint32_t> recordedOrder)
+{
+    std::string text = "Render graph frame trace:";
+    for (const uint32_t passIndex : recordedOrder) {
+        if (passIndex >= passes.size()) {
+            continue;
+        }
+        const RenderPassNode& pass = passes[passIndex];
+        text += ' ';
+        text += pass.name;
+        text += '[';
+        text += std::to_string(pass.generatedImageBarrierCount);
+        text += '/';
+        text += std::to_string(pass.generatedBufferBarrierCount);
+        text += '/';
+        text += std::to_string(pass.generatedBarrierSubmitCount);
+        text += ']';
+    }
+    return text;
 }
 
 std::string formatRenderGraphBackstopSummary(const RenderGraphBackstopSummary& summary)

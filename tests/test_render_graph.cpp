@@ -8,11 +8,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <iterator>
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 using ve::renderer::cullUnusedPasses;
@@ -1987,4 +1989,190 @@ TEST_CASE("An unresolvable order is dirty even when every count is zero")
     CHECK(ve::renderer::formatRenderGraphBackstopSummary(summary) ==
           "Render graph backstop: 0 order violations, 0 unrecorded passes, 0 declaration issues over 30 frames"
           "; execution order cycle detected");
+}
+
+// buildExecutionPlan: the recording order while passes move from scheduled units
+// to execute callbacks. Every case here is about where a step lands relative to
+// the others, because that order is the whole contract -- the golden image only
+// notices a misplaced step when it happens to change pixels.
+namespace {
+
+using ve::renderer::buildExecutionPlan;
+using ve::renderer::RenderGraphExecutionStep;
+
+constexpr uint32_t kNoAnchor = ve::renderer::kInvalidRenderGraphHandle;
+
+RenderGraphExecutionStep passStep(uint32_t index)
+{
+    return {RenderGraphExecutionStep::Kind::Pass, index};
+}
+
+RenderGraphExecutionStep unitStep(uint32_t index)
+{
+    return {RenderGraphExecutionStep::Kind::Unit, index};
+}
+
+std::vector<RenderPassNode> plainPasses(size_t count)
+{
+    std::vector<RenderPassNode> passes;
+    for (size_t index = 0; index < count; ++index) {
+        passes.push_back(pass("P" + std::to_string(index), {}));
+    }
+    return passes;
+}
+
+void giveCallback(RenderPassNode& node)
+{
+    node.execute = [](ve::renderer::RenderGraphPassContext&) {};
+}
+
+// recordScheduledUnits' ordering as it was before execute callbacks existed,
+// kept verbatim as the reference the no-callback plan has to reproduce.
+std::vector<RenderGraphExecutionStep> legacyUnitOrder(std::span<const uint32_t> executionOrder,
+                                                      std::span<const uint32_t> anchors)
+{
+    const auto scheduledPosition = [&](uint32_t passIndex) {
+        const auto found = std::find(executionOrder.begin(), executionOrder.end(), passIndex);
+        return found == executionOrder.end() ? executionOrder.size()
+                                             : static_cast<size_t>(found - executionOrder.begin());
+    };
+    std::vector<std::pair<size_t, size_t>> ordered;
+    size_t inherited = 0;
+    for (size_t unitIndex = 0; unitIndex < anchors.size(); ++unitIndex) {
+        const size_t position = scheduledPosition(anchors[unitIndex]);
+        if (position != executionOrder.size()) {
+            inherited = position;
+        }
+        ordered.emplace_back(inherited, unitIndex);
+    }
+    std::sort(ordered.begin(), ordered.end());
+    std::vector<RenderGraphExecutionStep> result;
+    for (const auto& [position, unitIndex] : ordered) {
+        (void)position;
+        result.push_back(unitStep(static_cast<uint32_t>(unitIndex)));
+    }
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("Without callbacks the plan is the old unit order", "[rendergraph][executor]")
+{
+    // The property that lets passes migrate one at a time: a frame with no
+    // callbacks records exactly as recordScheduledUnits did before they existed.
+    // Checked against the old algorithm over anchor patterns that exercise every
+    // rule it had -- out-of-order registration, an unanchored unit first, in the
+    // middle and last, an anchor that is not scheduled, and two units on one pass.
+    const std::vector<RenderPassNode> passes = plainPasses(6);
+    const std::vector<uint32_t> executionOrder{0, 1, 2, 4, 5};
+    const std::vector<std::vector<uint32_t>> anchorPatterns{
+        {0, 1, 2, 4, 5},
+        {5, 4, 2, 1, 0},
+        {kNoAnchor, 0, 1},
+        {0, kNoAnchor, 2, kNoAnchor, 5, kNoAnchor},
+        {2, 3, kNoAnchor, 0},
+        {4, 4, 1, 1, kNoAnchor},
+        {kNoAnchor, kNoAnchor},
+        {3, 0},
+    };
+
+    for (const std::vector<uint32_t>& anchors : anchorPatterns) {
+        CHECK(buildExecutionPlan(executionOrder, passes, anchors) == legacyUnitOrder(executionOrder, anchors));
+    }
+}
+
+TEST_CASE("An unanchored unit stays behind the unit registered before it", "[rendergraph][executor]")
+{
+    // The synchronous cluster build's shape: no pass of its own, registered after
+    // the culling unit, and it must not drift to the end of the frame.
+    const std::vector<RenderPassNode> passes = plainPasses(3);
+    const std::vector<uint32_t> executionOrder{0, 1, 2};
+    const std::vector<uint32_t> anchors{0, kNoAnchor, 1, 2};
+
+    CHECK(buildExecutionPlan(executionOrder, passes, anchors) ==
+          std::vector<RenderGraphExecutionStep>{unitStep(0), unitStep(1), unitStep(2), unitStep(3)});
+}
+
+TEST_CASE("A pass with a callback is a step at its scheduled position", "[rendergraph][executor]")
+{
+    std::vector<RenderPassNode> passes = plainPasses(3);
+    giveCallback(passes[1]);
+    const std::vector<uint32_t> executionOrder{0, 1, 2};
+    const std::vector<uint32_t> anchors{0, 2};
+
+    CHECK(buildExecutionPlan(executionOrder, passes, anchors) ==
+          std::vector<RenderGraphExecutionStep>{unitStep(0), passStep(1), unitStep(1)});
+}
+
+TEST_CASE("A unit anchored on a callback pass runs after the callback", "[rendergraph][executor]")
+{
+    // Mid-migration a unit can still name a pass whose own commands have moved
+    // into a callback -- a recorder covering several passes, of which the first
+    // migrated. The pass's barriers and commands come first; the rest of the
+    // unit's work follows them.
+    std::vector<RenderPassNode> passes = plainPasses(2);
+    giveCallback(passes[0]);
+    const std::vector<uint32_t> executionOrder{0, 1};
+    const std::vector<uint32_t> anchors{1, 0};
+
+    CHECK(buildExecutionPlan(executionOrder, passes, anchors) ==
+          std::vector<RenderGraphExecutionStep>{passStep(0), unitStep(1), unitStep(0)});
+}
+
+TEST_CASE("A culled pass with a callback records nothing", "[rendergraph][executor]")
+{
+    std::vector<RenderPassNode> passes = plainPasses(3);
+    giveCallback(passes[1]);
+    // Pass 1 culled: absent from the order.
+    const std::vector<uint32_t> executionOrder{0, 2};
+
+    CHECK(buildExecutionPlan(executionOrder, passes, {}) == std::vector<RenderGraphExecutionStep>{});
+
+    giveCallback(passes[0]);
+    giveCallback(passes[2]);
+    CHECK(buildExecutionPlan(executionOrder, passes, {}) ==
+          std::vector<RenderGraphExecutionStep>{passStep(0), passStep(2)});
+}
+
+TEST_CASE("Callback passes follow the execution order, not the declaration order", "[rendergraph][executor]")
+{
+    // The order a reordering policy would hand over. A plan that walked the pass
+    // list instead would look right on every frame recorded today.
+    std::vector<RenderPassNode> passes = plainPasses(3);
+    for (RenderPassNode& node : passes) {
+        giveCallback(node);
+    }
+    const std::vector<uint32_t> executionOrder{2, 0, 1};
+    const std::vector<uint32_t> anchors{0, kNoAnchor};
+
+    CHECK(buildExecutionPlan(executionOrder, passes, anchors) ==
+          std::vector<RenderGraphExecutionStep>{passStep(2), passStep(0), unitStep(0), unitStep(1), passStep(1)});
+}
+
+TEST_CASE("A unit with no anchored unit before it runs ahead of every pass", "[rendergraph][executor]")
+{
+    std::vector<RenderPassNode> passes = plainPasses(2);
+    giveCallback(passes[0]);
+    giveCallback(passes[1]);
+    const std::vector<uint32_t> executionOrder{0, 1};
+    const std::vector<uint32_t> anchors{kNoAnchor, 1};
+
+    CHECK(buildExecutionPlan(executionOrder, passes, anchors) ==
+          std::vector<RenderGraphExecutionStep>{unitStep(0), passStep(0), passStep(1), unitStep(1)});
+}
+
+TEST_CASE("The frame trace names recorded passes with their barrier counts", "[rendergraph][executor]")
+{
+    std::vector<RenderPassNode> passes = plainPasses(3);
+    passes[0].generatedImageBarrierCount = 2;
+    passes[0].generatedBufferBarrierCount = 1;
+    passes[0].generatedBarrierSubmitCount = 1;
+    passes[2].generatedImageBarrierCount = 3;
+    passes[2].generatedBarrierSubmitCount = 2;
+    const std::vector<uint32_t> recordedOrder{2, 0};
+
+    // Recording order, not declaration order, and an unrecorded pass is absent.
+    CHECK(ve::renderer::formatRenderGraphFrameTrace(passes, recordedOrder) ==
+          "Render graph frame trace: P2[3/0/2] P0[2/1/1]");
+    CHECK(ve::renderer::formatRenderGraphFrameTrace(passes, {}) == "Render graph frame trace:");
 }

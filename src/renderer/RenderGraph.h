@@ -333,6 +333,8 @@ struct BufferBarrierScopes {
 // list matching the resource's kind.
 [[nodiscard]] bool barrierBatchNeedsFlush(std::span<const uint32_t> batched, uint32_t resource);
 
+class RenderGraphPassContext;
+
 struct RenderPassNode {
     std::string name;
     RenderPassType type = RenderPassType::MainHdr;
@@ -355,6 +357,11 @@ struct RenderPassNode {
     // Declaration problems validateDeclarations found for this pass, joined for
     // display. Empty on a well-formed pass, which is the normal state.
     std::string declarationIssues;
+    // The pass's commands, when the graph records it rather than a caller's
+    // scheduled unit. The graph emits the pass's barriers, calls this, and closes
+    // the pass; the callback never calls a begin/end pair itself. Empty for a
+    // pass a unit still records.
+    std::function<void(RenderGraphPassContext&)> execute;
 };
 
 // Declaration validation. The graph's declarations describe what each pass
@@ -751,8 +758,55 @@ struct RenderGraphUnitCost {
     // Registration index of the unit. Two units can share a pass type name --
     // the cascade and punctual shadow passes both report "Shadow" -- and a
     // breakdown that cannot tell them apart sends you to read the wrong one.
+    // For a pass the graph executed itself, its pass index instead.
     uint32_t unitIndex = 0;
+    bool graphExecuted = false;
 };
+
+// One step of a frame's recording: a declared pass the graph records through its
+// own execute callback, or one of the caller's scheduled units.
+struct RenderGraphExecutionStep {
+    enum class Kind : uint8_t {
+        Pass,
+        Unit
+    };
+
+    Kind kind = Kind::Unit;
+    // A pass index for Kind::Pass, a unit's registration index for Kind::Unit.
+    uint32_t index = 0;
+
+    friend bool operator==(const RenderGraphExecutionStep&, const RenderGraphExecutionStep&) = default;
+};
+
+// The order a frame is recorded in, while passes move one at a time from scheduled
+// units to execute callbacks. Pure, for the same reason cullUnusedPasses is: the
+// order is the whole contract, and it needs no device to check.
+//
+// `unitAnchors[u]` is unit u's pass index, as RenderGraphScheduledUnit names it.
+//
+// - Every pass in `executionOrder` that has an execute callback is a step, at its
+//   position. A pass with no callback contributes nothing on its own: some unit
+//   records it.
+// - A unit anchored to a pass in `executionOrder` runs at that pass's position,
+//   after the pass's own callback if it has one.
+// - A unit whose anchor is invalid or not scheduled this frame runs with the last
+//   anchored unit registered before it -- the rule recordScheduledUnits always had,
+//   so work the graph does not model (the synchronous cluster build) does not
+//   move. With no anchored unit before it, it runs ahead of every pass.
+// - Units sharing a position keep their registration order.
+//
+// With no execute callbacks at all this is exactly the order recordScheduledUnits
+// produced before callbacks existed, which is what lets passes migrate one by one.
+[[nodiscard]] std::vector<RenderGraphExecutionStep> buildExecutionPlan(std::span<const uint32_t> executionOrder,
+                                                                       const std::vector<RenderPassNode>& passes,
+                                                                       std::span<const uint32_t> unitAnchors);
+
+// One line naming every recorded pass, in recording order, with the barriers the
+// graph emitted for it: `Name[image/buffer/submits]`. A refactor that moves who
+// records a pass must leave this line unchanged, which is a stronger check than
+// matching pixels -- a missing barrier rarely shows in an image.
+[[nodiscard]] std::string formatRenderGraphFrameTrace(const std::vector<RenderPassNode>& passes,
+                                                      std::span<const uint32_t> recordedOrder);
 
 // The passes a caller can anchor a scheduled unit to. Deliberately only the ones
 // with a recorder factored out far enough to be invoked by the graph; the rest
@@ -806,6 +860,35 @@ private:
     friend class RenderGraph;
 };
 
+// What a pass's execute callback is handed: the command buffer, and the Vulkan
+// objects behind the handles its declaration named. Only valid for the duration
+// of the call.
+class RenderGraphPassContext final {
+public:
+    [[nodiscard]] VkCommandBuffer commandBuffer() const
+    {
+        return commandBuffer_;
+    }
+
+    [[nodiscard]] uint32_t passIndex() const
+    {
+        return passIndex_;
+    }
+
+    [[nodiscard]] VkImage image(RGTextureHandle handle) const;
+    [[nodiscard]] VkImageView imageView(RGTextureHandle handle) const;
+    [[nodiscard]] VkBuffer buffer(RGBufferHandle handle) const;
+
+private:
+    RenderGraphPassContext(const RenderGraph& graph, VkCommandBuffer commandBuffer, uint32_t passIndex);
+
+    const RenderGraph& graph_;
+    VkCommandBuffer commandBuffer_ = VK_NULL_HANDLE;
+    uint32_t passIndex_ = 0;
+
+    friend class RenderGraph;
+};
+
 // Render Graph 2.0 keeps the renderer's existing pass recorders in place while
 // adding logical handles, declarations, conservative inferred image and buffer
 // barriers, transient/imported resource metadata, pass liveness state, and
@@ -813,6 +896,7 @@ private:
 class RenderGraph final {
 public:
     using SetupCallback = std::function<void(RenderGraphBuilder&)>;
+    using ExecuteCallback = std::function<void(RenderGraphPassContext&)>;
 
     RenderGraph();
 
@@ -962,6 +1046,13 @@ public:
                      RenderPassExecutionType executionType,
                      bool sideEffect,
                      SetupCallback setup);
+    // A pass the graph records itself: see RenderPassNode::execute.
+    uint32_t addPass(std::string name,
+                     RenderPassType type,
+                     RenderPassExecutionType executionType,
+                     bool sideEffect,
+                     SetupCallback setup,
+                     ExecuteCallback execute);
 
     RGTextureHandle importTexture(const RenderGraphImageResource& resource);
     RGTextureHandle createTransientTexture(const RGTextureDesc& desc, const RenderGraphImageResource& backingResource);
@@ -1061,14 +1152,19 @@ public:
     // when this frame does not declare it.
     [[nodiscard]] uint32_t builtinPassIndex(RenderGraphBuiltinPass pass) const;
 
-    // Invokes each recorder, ordered by where computeExecutionOrder put its pass.
-    // Units with no pass this frame, or with equal positions, keep the order they
-    // were registered in.
+    // Records the frame in buildExecutionPlan's order: each pass with an execute
+    // callback through that callback, and each of the caller's recorders at its
+    // anchor's position. Units with no pass this frame, or with equal positions,
+    // keep the order they were registered in.
     //
     // This is where the graph stops describing the frame and starts driving it.
-    // It drives only what the caller hands it; everything else is still recorded
-    // in place, and the endFrame backstop is what covers both.
+    // It drives only what it holds a callback or a unit for; everything else is
+    // still recorded in place, and the endFrame backstop is what covers both.
     void recordScheduledUnits(std::span<RenderGraphScheduledUnit> units);
+
+    // formatRenderGraphFrameTrace for the frame last ended. Valid until the next
+    // beginFrame, which is what makes the end of a run the place to read it.
+    [[nodiscard]] std::string frameTrace() const;
 
     // Aliases kept so existing RenderGraph::TextureAccessState spellings still
     // compile; the types themselves live at namespace scope below so the pure
@@ -1088,8 +1184,15 @@ private:
     // frame the mask exists, unlike the TLAS read: the ray-query variant samples
     // binding 17 on every frame it runs, traced or not.
     void declareRayTracedShadowMaskRead(RenderGraphBuilder& builder);
+    // Emits a pass's barriers and runs its execute callback.
+    void executePass(uint32_t passIndex);
+
     enum class ActivePass {
         None,
+        // Inside a pass's execute callback. Every begin*Pass requires None, so a
+        // callback that still calls one -- a pass recorded twice mid-migration --
+        // throws instead of recording it.
+        Executor,
         RayTracingSceneBuild,
         RayTracedShadowTrace,
         RayTracedShadowTemporal,

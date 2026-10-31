@@ -271,6 +271,9 @@ void Application::mainLoop()
     for (const std::string& finding : backstop.firstIssueDetails) {
         Logger::warn(finding);
     }
+    // The last frame only: a --deterministic run ends on the same frame every
+    // time, so two builds can be compared by diffing this one line.
+    Logger::info(renderer_->renderGraphFrameTrace());
     renderer_->logRayTracingSceneSummary();
 
     if (config_.assetLoadStats) {
