@@ -980,7 +980,6 @@ private:
     // VSM cascade-depth view, or the setting that keeps them on purpose. While
     // tracing, the cascades are skipped exactly when this is false.
     [[nodiscard]] bool cascadeShadowMapReadBeyondMainPass() const;
-    void recordRayTracingSceneBuild(VkCommandBuffer commandBuffer);
     // The shadow mask's pipeline, on every pipeline rebuild when the main pass
     // can trace. A failure is logged and leaves every fragment tracing inline.
     void createRayTracedShadowMaskPipeline();

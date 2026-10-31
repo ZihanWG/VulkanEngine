@@ -556,8 +556,9 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
     // The three transitions this pass used to open with -- the write volume and
     // the integrated volume into GENERAL, the read volume into SHADER_READ_ONLY
     // -- are the graph's now. All three are declared by VolumetricFogPass and
-    // emitted at beginVolumetricFogPass, from the same layout variables this
-    // pass reads, so the handoff happens before anything below executes.
+    // emitted ahead of the pass's execute callback, from the same layout
+    // variables this pass reads, so the handoff happens before anything below
+    // executes.
 
     rhi::debug::beginLabel(commandBuffer, "FogInject");
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, injectPipeline_.pipeline());
