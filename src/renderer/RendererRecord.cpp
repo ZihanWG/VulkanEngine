@@ -260,14 +260,11 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
         return;
     }
 
-    const bool profileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ProbeCapture");
-    rhi::debug::beginLabel(commandBuffer, "ProbeCapture");
-
     // One rendering scope over the whole capture atlas, with a viewport per
     // (probe, face) inside it. Same reasoning as the punctual shadow atlas: the
     // clear runs once for the image instead of once per tile, and the 96 tiles
     // do not each pay for a render pass.
-    renderGraph_.beginProbeCapturePass();
+    renderGraph_.beginProbeCaptureRendering();
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, probeCapturePipeline_.pipeline());
 
@@ -392,12 +389,35 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
     probeCaptureCpuMicroseconds_ =
         std::chrono::duration<float, std::micro>(std::chrono::high_resolution_clock::now() - captureCpuStart).count();
 
-    renderGraph_.endProbeCapturePass();
+    renderGraph_.endProbeCaptureRendering();
     probeCaptureDrawsRecorded_ = recordedDraws;
+}
 
-    rhi::debug::endLabel(commandBuffer);
-    if (profileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+bool Renderer::punctualShadowAtlasDrawable() const
+{
+    return punctualShadows_.valid() && punctualShadowPipeline_.pipeline() != VK_NULL_HANDLE &&
+           punctualShadows_.slotCount() != 0 && !allDrawItems_.empty();
+}
+
+void Renderer::finishPunctualShadowFrame()
+{
+    // The counters a frame that records no atlas pass still has to report. Only
+    // for that frame: when the pass is declared its callback sets them.
+    if (renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::PunctualShadow) !=
+        renderer::kInvalidRenderGraphHandle) {
+        return;
+    }
+    // Cleared rather than left over: a stale count would report tiles drawn
+    // during a frame that recorded nothing, which is exactly the reading these
+    // counters exist to make trustworthy.
+    punctualShadowSkinnedDrawsRecorded_ = 0;
+    punctualShadowDrawsRecorded_ = 0;
+    // Cache hit: the atlas already holds exactly what this frame would draw, so
+    // the pass is not declared at all -- no clear, no draws, no transition. The
+    // image stays in the sampled layout the main pass left it in, which is the
+    // layout the main pass wants next, so the graph emits nothing either.
+    if (punctualShadowAtlasDrawable() && punctualShadowCacheHit_) {
+        ++punctualShadowCachedFrames_;
     }
 }
 
@@ -408,26 +428,12 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
     // would report skinned tiles drawn during a frame that recorded nothing,
     // which is exactly the reading this counter exists to make trustworthy.
     punctualShadowSkinnedDrawsRecorded_ = 0;
-    if (!punctualShadows_.valid() || punctualShadowPipeline_.pipeline() == VK_NULL_HANDLE || slotCount == 0 ||
-        allDrawItems_.empty()) {
+    if (!punctualShadowAtlasDrawable()) {
         punctualShadowDrawsRecorded_ = 0;
-        return;
-    }
-
-    // Cache hit: the atlas already holds exactly what this frame would draw, so
-    // the pass is skipped entirely -- no clear, no draws, no transition. The
-    // image stays in the sampled layout the main pass left it in, which is the
-    // layout the main pass wants next, so the graph emits nothing either.
-    if (punctualShadowCacheHit_) {
-        punctualShadowDrawsRecorded_ = 0;
-        ++punctualShadowCachedFrames_;
         return;
     }
 
     skinnedPunctualSlots_.clear();
-
-    const bool profileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "PunctualShadowAtlas");
-    rhi::debug::beginLabel(commandBuffer, "PunctualShadowAtlas");
 
     // Layout transitions come from the graph: the pass declares a
     // depth-attachment write on the imported atlas texture and the main HDR pass
@@ -439,7 +445,7 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
     // created clears everything; after that the attachment loads and the dirty
     // tiles are cleared individually below.
     const bool clearWholeAtlas = punctualShadowNeedsFullClear_;
-    renderGraph_.beginPunctualShadowPass(clearWholeAtlas);
+    renderGraph_.beginPunctualShadowRendering(clearWholeAtlas);
 
     if (!clearWholeAtlas) {
         // One vkCmdClearAttachments with a rect per dirty tile. Batched because
@@ -658,7 +664,7 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
     punctualShadowSkinnedDrawsRecorded_ = recordSkinnedPunctualCasters(commandBuffer);
     recordedDraws += punctualShadowSkinnedDrawsRecorded_;
 
-    renderGraph_.endPunctualShadowPass();
+    renderGraph_.endPunctualShadowRendering();
 
     const auto punctualCpuEnd = std::chrono::high_resolution_clock::now();
     punctualShadowCpuMicros_ =
@@ -692,10 +698,6 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
     rhi::debug::beginLabel(
         commandBuffer, "PunctualShadowSlots " + std::to_string(slotCount) + " draws " + std::to_string(recordedDraws));
     rhi::debug::endLabel(commandBuffer);
-    rhi::debug::endLabel(commandBuffer);
-    if (profileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
 }
 
 bool Renderer::anyCascadeShadowRedrawRequired() const
@@ -1294,7 +1296,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         // restatement of it. False on the CPU culling fallback, where the pass
         // used to be declared and then skipped on every frame.
         .mainGpuCullingEnabled = willRecordMainGpuCull(),
-        // Exactly the condition recordCascadeShadowPass uses to record the cull,
+        // Exactly the condition the cull's callback is bound under,
         // including the empty-draw-list case recordShadowCull returns on. A
         // declaration that outlives its recorder is what the backstop reports.
         .shadowGpuCullingEnabled =
@@ -1489,9 +1491,7 @@ void Renderer::recordVsmPageMarkPass(VkCommandBuffer commandBuffer)
     // moving camera is fine -- only an absent or invalidated pyramid is not.
     input.depthValid = depthPyramid_.valid();
 
-    renderGraph_.beginVsmPageMarkPass();
     virtualShadowMap_.recordMarkPass(commandBuffer, currentFrame_, input);
-    renderGraph_.endVsmPageMarkPass();
 }
 
 void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
@@ -1576,6 +1576,19 @@ void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
                                      vsmPageCommandStride_);
 }
 
+void Renderer::finishVsmPageFrame(VkCommandBuffer commandBuffer)
+{
+    // A frame that declares no page pass still reports zero pages, and still
+    // owes the pool its idle transition when marking runs without rendering.
+    if (renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::VsmPage) !=
+        renderer::kInvalidRenderGraphHandle) {
+        return;
+    }
+    vsmPageDrawsRecorded_ = 0;
+    vsmSkinnedPageDrawsRecorded_ = 0;
+    recordVsmPagePoolIdleTransition(commandBuffer);
+}
+
 void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
 {
     vsmPageDrawsRecorded_ = 0;
@@ -1583,10 +1596,13 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     // below reports the frame that actually happened. A cache experiment reading
     // last frame's number would be measuring nothing.
     vsmSkinnedPageDrawsRecorded_ = 0;
+    // The pass is declared only with page rendering on and pages dirty, so what
+    // is left to check here is whether the cull that feeds it could run. If not,
+    // nothing is drawn; the graph has already put the pool in its attachment
+    // layout, and the main pass's read moves it on to the sampled one.
     const std::vector<renderer::VsmDirtyPage>& dirtyPages = virtualShadowMap_.dirtyPages();
     if (!isVsmPageRenderingActive() || dirtyPages.empty() || !virtualShadowMap_.cullAvailable() ||
         allDrawItems_.empty()) {
-        recordVsmPagePoolIdleTransition(commandBuffer);
         return;
     }
 
@@ -1594,9 +1610,6 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     if (indirectBuffer == VK_NULL_HANDLE || vsmCasterBatches_.empty() || vsmPageCommandStride_ == 0) {
         return;
     }
-
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "VsmPagePass");
-    rhi::debug::beginLabel(commandBuffer, "VsmPagePass");
 
     // Layout transitions come from the graph: the pass declares a depth write on
     // the imported pool and the main pass declares the matching sampled read.
@@ -1606,7 +1619,7 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     // created clears everything; after that the attachment loads and the dirty
     // pages are cleared individually below.
     const bool clearWholePool = virtualShadowMap_.pagePoolNeedsFullClear();
-    renderGraph_.beginVsmPagePass(clearWholePool);
+    renderGraph_.beginVsmPageRendering(clearWholePool);
 
     if (!clearWholePool) {
         // One vkCmdClearAttachments with a rect per dirty page, batched for the
@@ -1757,8 +1770,7 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     vsmPageDrawsRecorded_ = static_cast<uint32_t>(dirtyPages.size());
     vsmPageDrawsTotal_ += dirtyPages.size();
 
-    renderGraph_.endVsmPagePass();
-    rhi::debug::endLabel(commandBuffer);
+    renderGraph_.endVsmPageRendering();
 
     // Recorded here rather than where the pages were queued: until the draws are
     // actually in the command buffer the pool still holds the previous
@@ -1920,7 +1932,24 @@ void Renderer::recordMidFrameDepthPyramidCommands(VkCommandBuffer commandBuffer)
     depthPyramid_.recordMidFrameCommands(commandBuffer, currentFrame_, frameViewProjection_, frameCameraPosition_);
 }
 
-void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
+bool Renderer::cascadeNeedsRedraw(uint32_t cascadeIndex) const
+{
+    // The same answer anyCascadeShadowRedrawRequired gives the graph, so no
+    // cascade scope is opened that was not declared -- and no resident key is
+    // committed in finishCascadeShadowFrame for a layer that was not drawn.
+    if (frameCascadesReplacedByRayTracing_) {
+        return false;
+    }
+    if (!csmSettings_.enableCascadeCache) {
+        return true;
+    }
+    if (isLayeredCascadeRenderingActive()) {
+        return cascadeShadowCascadesRedrawn_ > 0;
+    }
+    return cascadeIndex < cascadeShadowDirty_.size() && cascadeShadowDirty_[cascadeIndex];
+}
+
+void Renderer::recordCascadeShadowCascades(VkCommandBuffer commandBuffer)
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const VkDeviceAddress frameConstantsBaseAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
@@ -1938,26 +1967,6 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
     // encoder, so there is no per-cascade decision to make there: it is all or
     // nothing, and it only skips when every cascade is clean.
     const bool layeredCascades = isLayeredCascadeRenderingActive();
-    const bool cascadeCacheActive = csmSettings_.enableCascadeCache;
-    const auto cascadeNeedsRedraw = [&](uint32_t cascadeIndex) {
-        // The same answer anyCascadeShadowRedrawRequired gives the graph, so no
-        // cascade pass is begun that was not declared -- and no resident key is
-        // committed below for a layer that was not drawn.
-        if (frameCascadesReplacedByRayTracing_) {
-            return false;
-        }
-        if (!cascadeCacheActive) {
-            return true;
-        }
-        if (layeredCascades) {
-            return cascadeShadowCascadesRedrawn_ > 0;
-        }
-        return cascadeIndex < cascadeShadowDirty_.size() && cascadeShadowDirty_[cascadeIndex];
-    };
-    const bool anyCascadeNeedsRedraw = anyCascadeShadowRedrawRequired();
-
-    const bool csmProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CSMShadowPass");
-    rhi::debug::beginLabel(commandBuffer, "CSMShadowPass");
 
     const VkExtent2D shadowExtent = shadowMap_.extent();
     VkViewport shadowViewport{};
@@ -1971,15 +1980,6 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
     VkRect2D shadowScissor{};
     shadowScissor.offset = {0, 0};
     shadowScissor.extent = shadowExtent;
-
-    // One cull for every cascade, hoisted out of the loop: the dispatch produces
-    // the union of the cascade frusta, so each cascade replays the same list.
-    // A cascade that is partially cached still replays the full union list --
-    // the union is a superset that each cascade's own projection clips, so a
-    // dirty cascade drawing it produces exactly what it would have drawn alone.
-    if (gpuShadowCullingActive && anyCascadeNeedsRedraw) {
-        recordGpuShadowCullingCommands(commandBuffer);
-    }
 
     // Multiview collapses the cascades into a single pass -- and therefore a
     // single command encoder, which is what this pass actually costs on a tiler.
@@ -2008,9 +2008,9 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
         rhi::debug::beginLabel(
             commandBuffer, layeredCascades ? "ShadowCascadesLayered" : "ShadowCascade" + std::to_string(cascadeIndex));
         if (layeredCascades) {
-            renderGraph_.beginLayeredShadowPass(cascadeCount);
+            renderGraph_.beginLayeredShadowRendering(cascadeCount);
         } else {
-            renderGraph_.beginShadowPass(cascadeIndex);
+            renderGraph_.beginShadowCascadeRendering(cascadeIndex);
         }
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_.pipeline());
         vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
@@ -2181,9 +2181,30 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
 
         rhi::debug::endLabel(commandBuffer);
 
-        renderGraph_.endShadowPass(cascadeIndex + 1 == cascadePassCount);
+        renderGraph_.endShadowRendering();
         rhi::debug::endLabel(commandBuffer);
     }
+}
+
+void Renderer::finishCascadeShadowFrame(VkCommandBuffer commandBuffer)
+{
+    // A fully cached frame declares neither shadow pass, so the graph opens no
+    // CSMShadowPass scope. The empty one recorded here keeps the profiler
+    // reporting the cascades every frame, at their real cost of nothing, as it
+    // always has -- a scope that vanished on cached frames would change what a
+    // p10 over it measures.
+    const bool cascadesDeclared =
+        renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Shadow) != renderer::kInvalidRenderGraphHandle;
+    if (!cascadesDeclared) {
+        const bool csmProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CSMShadowPass");
+        rhi::debug::beginLabel(commandBuffer, "CSMShadowPass");
+        rhi::debug::endLabel(commandBuffer);
+        if (csmProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
+        }
+    }
+
+    const uint32_t cascadeCount = activeCascadeCount();
 
     // What the image now holds. Recorded here rather than where the hashes are
     // computed, because until the draws are actually in the command buffer the
@@ -2209,11 +2230,6 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
     // still in its undefined initial state.
     if (cascadesRedrawnThisFrame == cascadeCount) {
         cascadeShadowNeedsFullRedraw_ = false;
-    }
-
-    rhi::debug::endLabel(commandBuffer);
-    if (csmProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
     }
 }
 
@@ -2935,17 +2951,13 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
     }
 }
 
-void Renderer::recordPunctualShadows(VkCommandBuffer commandBuffer)
+void Renderer::recordPunctualShadowCull(VkCommandBuffer commandBuffer)
 {
-    // GPU caster culling for the atlas, when enabled. Recorded here rather than
-    // inside recordPunctualShadowPass because compute cannot run inside a
-    // dynamic-rendering scope, and that pass is one scope so its cached tiles
-    // survive a partial clear. Every slot is therefore culled up front.
-    // The same predicate the declaration used, for the reason named on it.
-    const bool gpuPunctualCullActive = willRecordPunctualShadowCull();
-    if (gpuPunctualCullActive) {
-        const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "PunctualShadowGpuCull");
-        renderGraph_.beginPunctualShadowCullPass();
+    // GPU caster culling for the atlas. Its own pass rather than part of the
+    // atlas pass because compute cannot run inside a dynamic-rendering scope,
+    // and that pass is one scope so its cached tiles survive a partial clear.
+    // Every slot is therefore culled up front.
+    {
         rhi::debug::beginLabel(commandBuffer, "PunctualShadowGpuCull");
         punctualShadows_.uploadSlotFrustums(currentFrame_);
 
@@ -2970,12 +2982,7 @@ void Renderer::recordPunctualShadows(VkCommandBuffer commandBuffer)
             static_cast<uint32_t>(gpuShadowMeshDrawBatches_.size()),
             std::span<const uint32_t>(punctualShadowCasterFlags_.data(), punctualShadowCasterFlags_.size()));
         rhi::debug::endLabel(commandBuffer);
-        renderGraph_.endPunctualShadowCullPass();
     }
-
-    // Punctual casters go into the atlas right after the directional cascades,
-    // so both shadow sources are resident before the main HDR pass samples them.
-    recordPunctualShadowPass(commandBuffer, gpuPunctualCullActive);
 }
 
 void Renderer::recordVolumetricFogPass(VkCommandBuffer commandBuffer)
@@ -3018,7 +3025,7 @@ void Renderer::recordVolumetricFogPass(VkCommandBuffer commandBuffer)
     }
 }
 
-void Renderer::recordIrradianceProbePasses(VkCommandBuffer commandBuffer)
+void Renderer::recordProbeShadingParams(VkCommandBuffer commandBuffer)
 {
     // Probe shading parameters, refreshed inside this frame's own command buffer
     // so a single buffer serves every frame in flight.
@@ -3041,24 +3048,11 @@ void Renderer::recordIrradianceProbePasses(VkCommandBuffer commandBuffer)
         irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
     }
 
-    // Probe capture, then the convolution that turns it into probe tiles. Both
-    // sit after the shadow passes -- the capture samples the cascades so the
-    // radiance it records is shadowed -- and before the main pass, which
-    // declares a read on the probe atlases.
-    if (frameProbeCaptureActive_) {
-        recordProbeCapturePass(commandBuffer);
-    } else {
+    // The capture and the convolution that turns it into probe tiles are their
+    // own passes, recorded right after this. A frame without a capture reports
+    // none.
+    if (!frameProbeCaptureActive_) {
         probeCaptureDrawsRecorded_ = 0;
-    }
-
-    if (isIrradianceProbeUpdateActive()) {
-        const bool probeProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "IrradianceProbeUpdate");
-        renderGraph_.beginIrradianceProbePass();
-        irradianceProbes_.recordUpdate(commandBuffer, giSettings_.debugPattern);
-        renderGraph_.endIrradianceProbePass();
-        if (probeProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
     }
 }
 
@@ -3224,6 +3218,47 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     renderGraph_.bindExecutor(Builtin::VolumetricFog, {"", "VolumetricFog", [this](RenderGraphPassContext& context) {
                                                            recordVolumetricFogPass(context.commandBuffer());
                                                        }});
+    renderGraph_.bindExecutor(Builtin::VsmPageMark, {"", nullptr, [this](RenderGraphPassContext& context) {
+                                                         recordVsmPageMarkPass(context.commandBuffer());
+                                                     }});
+    renderGraph_.bindExecutor(Builtin::VsmPage, {"VsmPagePass", "VsmPagePass", [this](RenderGraphPassContext& context) {
+                                                     recordVsmPagePass(context.commandBuffer());
+                                                 }});
+    // One cull for every cascade, ahead of them: the dispatch produces the union
+    // of the cascade frusta, so each cascade replays the same list. A cascade
+    // that is partially cached still replays the full union list -- the union is
+    // a superset that each cascade's own projection clips, so a dirty cascade
+    // drawing it produces exactly what it would have drawn alone. The graph's
+    // CSMShadowPass scope covers both passes.
+    renderGraph_.bindExecutor(Builtin::ShadowGpuCulling,
+                              {"", "ShadowGpuCulling", [this](RenderGraphPassContext& context) {
+                                   recordGpuShadowCullingCommands(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(Builtin::Shadow, {"", nullptr, [this](RenderGraphPassContext& context) {
+                                                    recordCascadeShadowCascades(context.commandBuffer());
+                                                }});
+    renderGraph_.bindExecutor(Builtin::PunctualShadowCull,
+                              {"", "PunctualShadowGpuCull", [this](RenderGraphPassContext& context) {
+                                   recordPunctualShadowCull(context.commandBuffer());
+                               }});
+    // Punctual casters go into the atlas right after the directional cascades,
+    // so both shadow sources are resident before the main HDR pass samples them.
+    renderGraph_.bindExecutor(Builtin::PunctualShadow,
+                              {"PunctualShadowAtlas", "PunctualShadowAtlas", [this](RenderGraphPassContext& context) {
+                                   recordPunctualShadowPass(context.commandBuffer(), willRecordPunctualShadowCull());
+                               }});
+    // Probe capture, then the convolution that turns it into probe tiles. Both
+    // sit after the shadow passes -- the capture samples the cascades so the
+    // radiance it records is shadowed -- and before the main pass, which
+    // declares a read on the probe atlases.
+    renderGraph_.bindExecutor(Builtin::ProbeCapture,
+                              {"ProbeCapture", "ProbeCapture", [this](RenderGraphPassContext& context) {
+                                   recordProbeCapturePass(context.commandBuffer());
+                               }});
+    renderGraph_.bindExecutor(Builtin::IrradianceProbes,
+                              {"", "IrradianceProbeUpdate", [this](RenderGraphPassContext& context) {
+                                   irradianceProbes_.recordUpdate(context.commandBuffer(), giSettings_.debugPattern);
+                               }});
     renderGraph_.bindExecutor(Builtin::MainGpuCulling,
                               {"", "MainGpuCullingPass", [this](RenderGraphPassContext& context) {
                                    recordGpuCullingCommands(context.commandBuffer());
@@ -3241,22 +3276,22 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                     renderScaleSettings_.sharpness,
                                     showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
 
-    std::array<renderer::RenderGraphScheduledUnit, 10> frameUnits{{
+    std::array<renderer::RenderGraphScheduledUnit, 11> frameUnits{{
         {renderGraph_.builtinPassIndex(Builtin::VsmPageMark),
          [this, commandBuffer]() {
              // Page marking reads the depth pyramid the previous frame left, so it
-             // runs before anything this frame writes. Culling is separate from the
-             // page pass because compute cannot be recorded inside a
+             // runs before anything this frame writes. The page cull is not a
+             // graph pass, and sits between marking and the page pass, which is
+             // separate because compute cannot be recorded inside a
              // dynamic-rendering scope, and that scope has to stay single so pages
              // this frame does not touch keep their cached depth.
-             recordVsmPageMarkPass(commandBuffer);
              recordVsmPageCull(commandBuffer);
-             recordVsmPagePass(commandBuffer);
          }},
+        {renderGraph_.builtinPassIndex(Builtin::VsmPage),
+         [this, commandBuffer]() { finishVsmPageFrame(commandBuffer); }},
         {renderGraph_.builtinPassIndex(Builtin::Shadow),
-         [this, commandBuffer]() { recordCascadeShadowPass(commandBuffer); }},
-        {renderGraph_.builtinPassIndex(Builtin::PunctualShadow),
-         [this, commandBuffer]() { recordPunctualShadows(commandBuffer); }},
+         [this, commandBuffer]() { finishCascadeShadowFrame(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(Builtin::PunctualShadow), [this]() { finishPunctualShadowFrame(); }},
         {renderer::kInvalidRenderGraphHandle,
          [this, commandBuffer]() {
              // Runs whether or not fog is on: binding 8 claims a sampled layout
@@ -3299,8 +3334,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                  rhi::debug::endLabel(commandBuffer);
              }
          }},
-        {renderGraph_.builtinPassIndex(Builtin::ProbeCapture),
-         [this, commandBuffer]() { recordIrradianceProbePasses(commandBuffer); }},
+        // Anchored on fog, which is declared right before the probe passes, so
+        // the upload lands after fog and ahead of the capture and convolution --
+        // where it ran when it was part of the probe recorder.
+        {renderGraph_.builtinPassIndex(Builtin::VolumetricFog),
+         [this, commandBuffer]() { recordProbeShadingParams(commandBuffer); }},
         {renderGraph_.builtinPassIndex(Builtin::MainHdr),
          [this, commandBuffer]() { recordMainPassGeometry(commandBuffer); }},
         {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::DepthPyramid),

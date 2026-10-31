@@ -1024,8 +1024,6 @@ void GpuCulling::recordShadowCull(
         return;
     }
 
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, frameIndex, commandBuffer, "ShadowGpuCulling");
-    renderGraph_.beginShadowGpuCullingPass();
     rhi::debug::beginLabel(commandBuffer, "GpuShadowCulling");
     depthPyramid_.ensureShaderReadLayout(commandBuffer);
     vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kGpuCullCountBufferSize, 0);
@@ -1131,7 +1129,6 @@ void GpuCulling::recordShadowCull(
 
     frameGpuShadowCullReadbackReady_[frameIndex] = 1;
     rhi::debug::endLabel(commandBuffer);
-    renderGraph_.endShadowGpuCullingPass();
 }
 
 bool GpuCulling::readMainVisibleCount(bool active, uint32_t frameIndex, uint32_t& visibleCount)

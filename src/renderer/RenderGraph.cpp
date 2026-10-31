@@ -687,40 +687,11 @@ void RenderGraph::importFrameBuffers()
     }
 }
 
-void RenderGraph::beginVsmPageMarkPass()
+void RenderGraph::beginVsmPageRendering(bool clearWholePool)
 {
-    requireFrameActive("RenderGraph::beginVsmPageMarkPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginVsmPageMarkPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.vsmPageMark)) {
-        throw std::logic_error("RenderGraph::beginVsmPageMarkPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::VsmPageMark;
-}
-
-void RenderGraph::endVsmPageMarkPass()
-{
-    requireFrameActive("RenderGraph::endVsmPageMarkPass");
-    if (activePass_ != ActivePass::VsmPageMark) {
-        throw std::logic_error("RenderGraph::endVsmPageMarkPass called without an active page-mark pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginVsmPagePass(bool clearWholePool)
-{
-    requireFrameActive("RenderGraph::beginVsmPagePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginVsmPagePass called while another pass is active.");
-    }
+    requireExecuting(frame_.passIndices.vsmPage, "RenderGraph::beginVsmPageRendering");
     if (frame_.vsmPagePool == nullptr) {
-        throw std::logic_error("RenderGraph::beginVsmPagePass requires an imported page pool.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.vsmPage)) {
-        throw std::logic_error("RenderGraph::beginVsmPagePass was culled but the renderer attempted to record it.");
+        throw std::logic_error("RenderGraph::beginVsmPageRendering requires an imported page pool.");
     }
 
     VkClearValue poolDepthClear{};
@@ -751,50 +722,58 @@ void RenderGraph::beginVsmPagePass(bool clearWholePool)
     activePass_ = ActivePass::VsmPage;
 }
 
-void RenderGraph::endVsmPagePass()
+void RenderGraph::endVsmPageRendering()
 {
-    requireFrameActive("RenderGraph::endVsmPagePass");
+    requireFrameActive("RenderGraph::endVsmPageRendering");
     if (activePass_ != ActivePass::VsmPage) {
-        throw std::logic_error("RenderGraph::endVsmPagePass called without an active page pass.");
+        throw std::logic_error("RenderGraph::endVsmPageRendering called without an active page pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
-void RenderGraph::beginShadowPass(uint32_t cascadeLayer)
+void RenderGraph::requireExecuting(uint32_t passIndex, const char* operation) const
 {
-    beginShadowPassInternal(cascadeLayer, /*viewMask=*/0);
+    requireFrameActive(operation);
+    if (activePass_ != ActivePass::Executor || passIndex == kInvalidRenderGraphHandle || executingPass_ != passIndex) {
+        throw std::logic_error(std::string(operation) + " must be called from its pass's execute callback.");
+    }
 }
 
-void RenderGraph::beginLayeredShadowPass(uint32_t cascadeCount)
+void RenderGraph::beginShadowCascadeRendering(uint32_t cascadeLayer)
+{
+    beginShadowRenderingInternal(cascadeLayer, /*viewMask=*/0);
+}
+
+void RenderGraph::beginLayeredShadowRendering(uint32_t cascadeCount)
 {
     if (cascadeCount == 0) {
-        throw std::invalid_argument("RenderGraph::beginLayeredShadowPass needs at least one cascade.");
+        throw std::invalid_argument("RenderGraph::beginLayeredShadowRendering needs at least one cascade.");
     }
     // Every cascade is a view of the same pass, so the mask is the low
     // cascadeCount bits and the attachment is the whole array view.
-    beginShadowPassInternal(0, (1u << cascadeCount) - 1u);
+    beginShadowRenderingInternal(0, (1u << cascadeCount) - 1u);
 }
 
-void RenderGraph::beginShadowPassInternal(uint32_t cascadeLayer, uint32_t viewMask)
+void RenderGraph::beginShadowRenderingInternal(uint32_t cascadeLayer, uint32_t viewMask)
 {
-    requireFrameActive("RenderGraph::beginShadowPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginShadowPass called while another pass is active.");
-    }
+    requireExecuting(frame_.passIndices.shadow, "RenderGraph::beginShadowCascadeRendering");
     const bool layered = viewMask != 0;
     if (layered) {
         // Views index array layers directly, so the mask cannot outrun the array.
         if (viewMask >= (1u << frame_.shadowMap->layerCount())) {
-            throw std::out_of_range("RenderGraph::beginLayeredShadowPass view mask exceeds the cascade array.");
+            throw std::out_of_range("RenderGraph::beginLayeredShadowRendering view mask exceeds the cascade array.");
         }
     } else if (cascadeLayer >= frame_.shadowMap->layerCount()) {
-        throw std::out_of_range("RenderGraph::beginShadowPass cascade layer is out of range.");
+        throw std::out_of_range("RenderGraph::beginShadowCascadeRendering cascade layer is out of range.");
     }
 
-    if (!beginDeclaredPass(frame_.passIndices.shadow)) {
-        throw std::logic_error("RenderGraph::beginShadowPass was culled but the renderer attempted to record it.");
+    // The graph emitted the pass's barriers ahead of the callback, which covers
+    // the first cascade. Each later one re-emits them, exactly as a per-cascade
+    // begin always did.
+    if (executingRenderingScopes_++ > 0 && !beginDeclaredPass(frame_.passIndices.shadow)) {
+        throw std::logic_error("RenderGraph::beginShadowCascadeRendering reached a culled pass.");
     }
 
     VkClearValue shadowDepthClear{};
@@ -827,29 +806,22 @@ void RenderGraph::beginShadowPassInternal(uint32_t cascadeLayer, uint32_t viewMa
     activePass_ = ActivePass::Shadow;
 }
 
-void RenderGraph::endShadowPass(bool /*finalCascade*/)
+void RenderGraph::endShadowRendering()
 {
-    requireFrameActive("RenderGraph::endShadowPass");
+    requireFrameActive("RenderGraph::endShadowRendering");
     if (activePass_ != ActivePass::Shadow) {
-        throw std::logic_error("RenderGraph::endShadowPass called without an active shadow pass.");
+        throw std::logic_error("RenderGraph::endShadowRendering called without an open shadow cascade scope.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
-void RenderGraph::beginPunctualShadowPass(bool clearWholeAtlas)
+void RenderGraph::beginPunctualShadowRendering(bool clearWholeAtlas)
 {
-    requireFrameActive("RenderGraph::beginPunctualShadowPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginPunctualShadowPass called while another pass is active.");
-    }
+    requireExecuting(frame_.passIndices.punctualShadow, "RenderGraph::beginPunctualShadowRendering");
     if (frame_.punctualShadowAtlas == nullptr) {
-        throw std::logic_error("RenderGraph::beginPunctualShadowPass requires an imported punctual shadow atlas.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.punctualShadow)) {
-        throw std::logic_error(
-            "RenderGraph::beginPunctualShadowPass was culled but the renderer attempted to record it.");
+        throw std::logic_error("RenderGraph::beginPunctualShadowRendering requires an imported punctual shadow atlas.");
     }
 
     VkClearValue atlasDepthClear{};
@@ -881,27 +853,21 @@ void RenderGraph::beginPunctualShadowPass(bool clearWholeAtlas)
     activePass_ = ActivePass::PunctualShadow;
 }
 
-void RenderGraph::endPunctualShadowPass()
+void RenderGraph::endPunctualShadowRendering()
 {
-    requireFrameActive("RenderGraph::endPunctualShadowPass");
+    requireFrameActive("RenderGraph::endPunctualShadowRendering");
     if (activePass_ != ActivePass::PunctualShadow) {
-        throw std::logic_error("RenderGraph::endPunctualShadowPass called without an active punctual shadow pass.");
+        throw std::logic_error(
+            "RenderGraph::endPunctualShadowRendering called without an active punctual shadow pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
-void RenderGraph::beginProbeCapturePass()
+void RenderGraph::beginProbeCaptureRendering()
 {
-    requireFrameActive("RenderGraph::beginProbeCapturePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginProbeCapturePass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.probeCapture)) {
-        throw std::logic_error(
-            "RenderGraph::beginProbeCapturePass was culled but the renderer attempted to record it.");
-    }
+    requireExecuting(frame_.passIndices.probeCapture, "RenderGraph::beginProbeCaptureRendering");
 
     const TextureResource& colorResource = textures_.at(frame_.probeCaptureAtlas.index);
     const TextureResource& depthResource = textures_.at(frame_.probeCaptureDepth.index);
@@ -956,39 +922,15 @@ void RenderGraph::beginProbeCapturePass()
     activePass_ = ActivePass::ProbeCapture;
 }
 
-void RenderGraph::endProbeCapturePass()
+void RenderGraph::endProbeCaptureRendering()
 {
-    requireFrameActive("RenderGraph::endProbeCapturePass");
+    requireFrameActive("RenderGraph::endProbeCaptureRendering");
     if (activePass_ != ActivePass::ProbeCapture) {
-        throw std::logic_error("RenderGraph::endProbeCapturePass called without an active probe capture pass.");
+        throw std::logic_error("RenderGraph::endProbeCaptureRendering called without an active probe capture pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginIrradianceProbePass()
-{
-    requireFrameActive("RenderGraph::beginIrradianceProbePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginIrradianceProbePass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.irradianceProbes)) {
-        throw std::logic_error(
-            "RenderGraph::beginIrradianceProbePass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::IrradianceProbes;
-}
-
-void RenderGraph::endIrradianceProbePass()
-{
-    requireFrameActive("RenderGraph::endIrradianceProbePass");
-    if (activePass_ != ActivePass::IrradianceProbes) {
-        throw std::logic_error("RenderGraph::endIrradianceProbePass called without an active probe pass.");
-    }
-
-    activePass_ = ActivePass::None;
+    activePass_ = ActivePass::Executor;
 }
 
 void RenderGraph::declareRayTracedShadowRead(RenderGraphBuilder& builder)
@@ -1104,56 +1046,6 @@ void RenderGraph::endRayTracedShadowResolvePass()
     if (activePass_ != ActivePass::RayTracedShadowResolve) {
         throw std::logic_error(
             "RenderGraph::endRayTracedShadowResolvePass called without an active ray-traced shadow resolve pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginPunctualShadowCullPass()
-{
-    requireFrameActive("RenderGraph::beginPunctualShadowCullPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginPunctualShadowCullPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.punctualShadowCull)) {
-        throw std::logic_error(
-            "RenderGraph::beginPunctualShadowCullPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::PunctualShadowCull;
-}
-
-void RenderGraph::endPunctualShadowCullPass()
-{
-    requireFrameActive("RenderGraph::endPunctualShadowCullPass");
-    if (activePass_ != ActivePass::PunctualShadowCull) {
-        throw std::logic_error(
-            "RenderGraph::endPunctualShadowCullPass called without an active punctual shadow cull pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginShadowGpuCullingPass()
-{
-    requireFrameActive("RenderGraph::beginShadowGpuCullingPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginShadowGpuCullingPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.shadowGpuCulling)) {
-        throw std::logic_error(
-            "RenderGraph::beginShadowGpuCullingPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::ShadowGpuCulling;
-}
-
-void RenderGraph::endShadowGpuCullingPass()
-{
-    requireFrameActive("RenderGraph::endShadowGpuCullingPass");
-    if (activePass_ != ActivePass::ShadowGpuCulling) {
-        throw std::logic_error(
-            "RenderGraph::endShadowGpuCullingPass called without an active shadow GPU culling pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -1843,6 +1735,14 @@ uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
     case RenderGraphBuiltinPass::BloomUpsample:
         // Declared once per level; without a level this names the first.
         return builtinPassIndex(pass, 0);
+    case RenderGraphBuiltinPass::ShadowGpuCulling:
+        return frame_.passIndices.shadowGpuCulling;
+    case RenderGraphBuiltinPass::PunctualShadowCull:
+        return frame_.passIndices.punctualShadowCull;
+    case RenderGraphBuiltinPass::VsmPage:
+        return frame_.passIndices.vsmPage;
+    case RenderGraphBuiltinPass::IrradianceProbes:
+        return frame_.passIndices.irradianceProbes;
     }
 
     return kInvalidRenderGraphHandle;
@@ -2031,12 +1931,15 @@ void RenderGraph::executePass(uint32_t passIndex)
     }
 
     activePass_ = ActivePass::Executor;
+    executingPass_ = passIndex;
+    executingRenderingScopes_ = 0;
     RenderGraphPassContext context(*this, commandBuffer, passIndex);
     pass.execute(context);
     if (activePass_ != ActivePass::Executor) {
         throw std::logic_error("RenderGraph::executePass: the callback left a pass open or closed one it did not own.");
     }
     activePass_ = ActivePass::None;
+    executingPass_ = kInvalidRenderGraphHandle;
 
     if (pass.colorAttachment) {
         vkCmdEndRendering(commandBuffer);
@@ -2138,10 +2041,14 @@ void RenderGraph::declareGeometryPasses()
     // Skipped on a fully cached frame, when the renderer redraws no cascade.
     // The shadow map stays imported and the main pass still declares its read,
     // so it keeps the layout its sampler claims; only the write pass goes away.
-    // Ahead of CSMShadowPass, because that is where it records: the cull is
-    // hoisted out of the cascade loop inside recordCascadeShadowPass. One
-    // dispatch produces the union of every cascade frustum, so there is one of
-    // these however many cascades are redrawn.
+    // Ahead of CSMShadowPass, because that is where it records: the cull runs
+    // once ahead of the cascade loop. One dispatch produces the union of every
+    // cascade frustum, so there is one of these however many cascades are
+    // redrawn.
+    //
+    // Both sit in one scope, which is what the cascade profiler number has
+    // always covered: the cull and every cascade.
+    pushScope("CSMShadowPass", "CSMShadowPass");
     const bool shadowCullDeclared = frame_.resources.shadowGpuCullingEnabled &&
                                     frame_.shadowCullIndirectOutput.valid() && frame_.shadowCullVisibleCounts.valid();
     if (shadowCullDeclared) {
@@ -2194,6 +2101,7 @@ void RenderGraph::declareGeometryPasses()
                         }
                     });
     }
+    popScope();
 
     // Only declared when a light actually got a tile. The atlas texture is
     // still imported and still read by the main pass below, so a frame that
