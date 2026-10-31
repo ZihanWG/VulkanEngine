@@ -2176,3 +2176,74 @@ TEST_CASE("The frame trace names recorded passes with their barrier counts", "[r
           "Render graph frame trace: P2[3/0/2] P0[2/1/1]");
     CHECK(ve::renderer::formatRenderGraphFrameTrace(passes, {}) == "Render graph frame trace:");
 }
+
+// planScopeTransition: which group scopes close and open between two steps. A
+// mistake here moves a timestamp to the wrong side of a pass, which reads as a
+// plausible number in the profiler rather than as an error.
+namespace {
+
+using ve::renderer::planScopeTransition;
+using ve::renderer::RenderGraphScope;
+using ve::renderer::RenderGraphScopeTransition;
+
+constexpr uint32_t kNoScope = ve::renderer::kInvalidRenderGraphHandle;
+
+// The bloom chain's shape: 0 is the outer chain label, 1 and 2 the downsample
+// and upsample groups inside it, 3 an unrelated root scope.
+std::vector<RenderGraphScope> bloomScopes()
+{
+    return {
+        {"BloomMipChain", nullptr, kNoScope},
+        {"Bloom Downsample Chain", "Bloom Downsample Chain", 0},
+        {"Bloom Upsample Chain", "Bloom Upsample Chain", 0},
+        {"Other", "Other", kNoScope},
+    };
+}
+
+} // namespace
+
+TEST_CASE("Entering a nested scope opens it and every parent, outermost first", "[rendergraph][scope]")
+{
+    const std::vector<uint32_t> open{};
+    CHECK(planScopeTransition(bloomScopes(), open, 1) == RenderGraphScopeTransition{0, {0, 1}});
+}
+
+TEST_CASE("Moving to a sibling closes only the scope they do not share", "[rendergraph][scope]")
+{
+    // Downsample to upsample: the chain label stays open around both, which is
+    // what keeps the two groups inside one BloomMipChain label.
+    const std::vector<uint32_t> open{0, 1};
+    CHECK(planScopeTransition(bloomScopes(), open, 2) == RenderGraphScopeTransition{1, {2}});
+}
+
+TEST_CASE("Staying inside the same scope changes nothing", "[rendergraph][scope]")
+{
+    // Consecutive levels of one group: re-opening the scope per level would time
+    // each level separately, which is exactly what the group exists to avoid.
+    const std::vector<uint32_t> open{0, 1};
+    CHECK(planScopeTransition(bloomScopes(), open, 1) == RenderGraphScopeTransition{0, {}});
+}
+
+TEST_CASE("A step outside every scope closes them all", "[rendergraph][scope]")
+{
+    const std::vector<uint32_t> open{0, 2};
+    CHECK(planScopeTransition(bloomScopes(), open, kNoScope) == RenderGraphScopeTransition{2, {}});
+}
+
+TEST_CASE("A step in an unrelated scope closes the open chain before opening its own", "[rendergraph][scope]")
+{
+    const std::vector<uint32_t> open{0, 1};
+    CHECK(planScopeTransition(bloomScopes(), open, 3) == RenderGraphScopeTransition{2, {3}});
+}
+
+TEST_CASE("A step in a parent scope closes the child and keeps the parent", "[rendergraph][scope]")
+{
+    const std::vector<uint32_t> open{0, 1};
+    CHECK(planScopeTransition(bloomScopes(), open, 0) == RenderGraphScopeTransition{1, {}});
+}
+
+TEST_CASE("A scope index past the table ends the chain instead of reading past it", "[rendergraph][scope]")
+{
+    const std::vector<uint32_t> open{0};
+    CHECK(planScopeTransition(bloomScopes(), open, 17) == RenderGraphScopeTransition{1, {}});
+}

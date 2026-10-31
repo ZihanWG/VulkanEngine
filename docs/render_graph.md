@@ -511,13 +511,11 @@ to end.
 | VSM page marking, page cull, page render | `VsmPageMarkPass` |
 | `recordCascadeShadowPass` | `CSMShadowPass` |
 | `recordPunctualShadows` | `PunctualShadowAtlasPass` |
-| `recordGpuCullingCommands` | `MainGpuCullingPass` |
-| synchronous cluster build and light cull | *none* |
+| synchronous cluster build and light cull | `MainGpuCullingPass` |
 | fog volume first-use clear | *none* |
 | `recordIrradianceProbePasses` | `ProbeCapture` |
 | `recordMainPassGeometry` | `MainHDRPass`; it also records `DepthPrepass`, `RayTracedShadowTrace`, `RayTracedShadowTemporal`, the filter's `RayTracedShadowRadius`, `RayTracedShadowBlurH` and `RayTracedShadowBlurV`, and `RayTracedShadowResolve` ahead of it |
-| `DepthPyramid` build or invalidation | `DepthPyramidPass` |
-| `recordMipChainBloomCommands` | `BloomDownsampleMip0` |
+| invalidating the depth pyramid on a frame that does not build it | `DepthPyramidPass` |
 | portfolio screenshot, and the capture taken before the overlay | `CompositePass` |
 | the capture taken after the overlay | `ImGuiPass` |
 
@@ -532,8 +530,7 @@ occlusion re-test, SSR, GTAO and the transparent pass — because they are one
 region as far as state goes: the viewport, the global descriptor set, the
 indirect buffers, the base push constants and a mutable flag tracking whether
 the bindless sets are currently bound are all set up by the main pass and
-reused by the rest. The mip-chain bloom recorder covers seven for the same kind
-of reason.
+reused by the rest.
 
 The exception is `DepthPrepass`, which is declared immediately before
 `MainHDRPass` and recorded inside its unit, so that unit anchors on the second
@@ -542,11 +539,14 @@ order and no reordering happens, so the scheduled position is the same either
 way; the prepass opens and closes its own rendering scope and the main pass
 loads the depth it leaves, which is why they are one recorder at all.
 
-The two units with no anchor have no declared pass to name. The synchronous
-cluster build is the fallback path for work the renderer submits on the compute
-queue itself, which `docs/async_compute.md` describes and the graph does not
-model; the fog volume's first-use clear is frame setup, not a pass. Both run with
-the last anchored unit registered before them, which is where they always ran.
+Two units have no pass of their own. The synchronous cluster build is the
+fallback path for work the renderer submits on the compute queue itself, which
+`docs/async_compute.md` describes and the graph does not model. It is anchored on
+`MainGpuCullingPass`, so it records right after the cull, and on the CPU culling
+fallback, where that pass is not declared, it runs with the unit registered
+before it — where it always ran. The fog volume's first-use clear is frame setup,
+not a pass, and has no anchor at all. The depth pyramid's invalidation unit has a
+pass to name but only does work on frames that do not declare it.
 
 **No reordering happens.** The scheduled order is today's order — verified as
 equal to the recorded order every frame — and the captured frame stayed
@@ -578,10 +578,20 @@ closes the rendering scope around the callback; `builder.transitionAfterPass` is
 how `ImGuiPass` gets its present transition behind its body. The profiler belongs
 to the renderer, which hands the graph two hooks for it.
 
-Recorded by callbacks: `RayTracingSceneBuild`, `VolumetricFogPass`,
-`TAAResolvePass`, `BloomExtractPass`, `BloomBlurHorizontal`, `BloomBlurVertical`,
-`LuminancePass`, `HistogramExposurePass`, `CompositePass` and `ImGuiPass`.
-Everything else is still a unit.
+Some profiler scopes cover a run of passes rather than one: the bloom mip chain
+is timed as "Bloom Downsample Chain" and "Bloom Upsample Chain", not per level.
+Those are graph scopes, declared by bracketing `addPass` calls with `pushScope`
+and `popScope`. The graph opens a scope ahead of the first pass in it that
+records and closes it when the frame moves to a step outside it;
+`planScopeTransition`, a pure function, decides which scopes close and open
+between two steps. A pass declared once per level is bound with the instanced
+`bindExecutor` overload.
+
+Recorded by callbacks: `RayTracingSceneBuild`, `MainGpuCullingPass`,
+`VolumetricFogPass`, `DepthPyramidPass`, `TAAResolvePass`, `BloomExtractPass`,
+`BloomBlurHorizontal`, `BloomBlurVertical`, every `BloomDownsampleMip` and
+`BloomUpsampleMip` level, `LuminancePass`, `HistogramExposurePass`,
+`CompositePass` and `ImGuiPass`. Everything else is still a unit.
 
 Each run also logs the last frame's recorded pass order with the barrier counts
 the graph emitted for each pass:

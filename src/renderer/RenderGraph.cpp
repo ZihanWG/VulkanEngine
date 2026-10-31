@@ -428,6 +428,10 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     recordedOrderViolations_.clear();
     unrecordedPassIndices_.clear();
     debugResources_.clear();
+    scopes_.clear();
+    currentScope_ = kInvalidRenderGraphHandle;
+    openScopes_.clear();
+    openScopeProfiled_.clear();
 
     frame_ = {};
     frame_.commandBuffer = commandBuffer;
@@ -1105,30 +1109,6 @@ void RenderGraph::endRayTracedShadowResolvePass()
     activePass_ = ActivePass::None;
 }
 
-void RenderGraph::beginMainGpuCullingPass()
-{
-    requireFrameActive("RenderGraph::beginMainGpuCullingPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginMainGpuCullingPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.mainGpuCulling)) {
-        throw std::logic_error(
-            "RenderGraph::beginMainGpuCullingPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::MainGpuCulling;
-}
-
-void RenderGraph::endMainGpuCullingPass()
-{
-    requireFrameActive("RenderGraph::endMainGpuCullingPass");
-    if (activePass_ != ActivePass::MainGpuCulling) {
-        throw std::logic_error("RenderGraph::endMainGpuCullingPass called without an active main GPU culling pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
 void RenderGraph::beginPunctualShadowCullPass()
 {
     requireFrameActive("RenderGraph::beginPunctualShadowCullPass");
@@ -1619,98 +1599,6 @@ void RenderGraph::endDepthPyramidMidPass()
     activePass_ = ActivePass::None;
 }
 
-void RenderGraph::beginDepthPyramidPass()
-{
-    requireFrameActive("RenderGraph::beginDepthPyramidPass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginDepthPyramidPass called while another pass is active.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.depthPyramid)) {
-        throw std::logic_error(
-            "RenderGraph::beginDepthPyramidPass was culled but the renderer attempted to record it.");
-    }
-
-    activePass_ = ActivePass::DepthPyramid;
-}
-
-void RenderGraph::endDepthPyramidPass()
-{
-    requireFrameActive("RenderGraph::endDepthPyramidPass");
-    if (activePass_ != ActivePass::DepthPyramid) {
-        throw std::logic_error("RenderGraph::endDepthPyramidPass called without an active depth pyramid pass.");
-    }
-
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginBloomDownsamplePass(uint32_t level)
-{
-    requireFrameActive("RenderGraph::beginBloomDownsamplePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginBloomDownsamplePass called while another pass is active.");
-    }
-    if (level >= frame_.passIndices.bloomDownsampleChain.size() || level >= frame_.bloomDownsampleChain.size()) {
-        throw std::out_of_range("RenderGraph::beginBloomDownsamplePass level is out of range.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.bloomDownsampleChain[level])) {
-        throw std::logic_error(
-            "RenderGraph::beginBloomDownsamplePass was culled but the renderer attempted to record it.");
-    }
-
-    VkClearValue clearColor{};
-    clearColor.color.float32[0] = 0.0f;
-    clearColor.color.float32[1] = 0.0f;
-    clearColor.color.float32[2] = 0.0f;
-    clearColor.color.float32[3] = 1.0f;
-    beginColorRendering(textures_.at(frame_.bloomDownsampleChain[level].index), clearColor);
-    activePass_ = ActivePass::BloomDownsample;
-}
-
-void RenderGraph::endBloomDownsamplePass()
-{
-    requireFrameActive("RenderGraph::endBloomDownsamplePass");
-    if (activePass_ != ActivePass::BloomDownsample) {
-        throw std::logic_error("RenderGraph::endBloomDownsamplePass called without an active bloom downsample pass.");
-    }
-
-    vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
-}
-
-void RenderGraph::beginBloomUpsamplePass(uint32_t level)
-{
-    requireFrameActive("RenderGraph::beginBloomUpsamplePass");
-    if (activePass_ != ActivePass::None) {
-        throw std::logic_error("RenderGraph::beginBloomUpsamplePass called while another pass is active.");
-    }
-    if (level >= frame_.passIndices.bloomUpsampleChain.size() || level >= frame_.bloomUpsampleChain.size()) {
-        throw std::out_of_range("RenderGraph::beginBloomUpsamplePass level is out of range.");
-    }
-    if (!beginDeclaredPass(frame_.passIndices.bloomUpsampleChain[level])) {
-        throw std::logic_error(
-            "RenderGraph::beginBloomUpsamplePass was culled but the renderer attempted to record it.");
-    }
-
-    VkClearValue clearColor{};
-    clearColor.color.float32[0] = 0.0f;
-    clearColor.color.float32[1] = 0.0f;
-    clearColor.color.float32[2] = 0.0f;
-    clearColor.color.float32[3] = 1.0f;
-    beginColorRendering(textures_.at(frame_.bloomUpsampleChain[level].index), clearColor);
-    activePass_ = ActivePass::BloomUpsample;
-}
-
-void RenderGraph::endBloomUpsamplePass()
-{
-    requireFrameActive("RenderGraph::endBloomUpsamplePass");
-    if (activePass_ != ActivePass::BloomUpsample) {
-        throw std::logic_error("RenderGraph::endBloomUpsamplePass called without an active bloom upsample pass.");
-    }
-
-    vkCmdEndRendering(frame_.commandBuffer);
-    activePass_ = ActivePass::None;
-}
-
 void RenderGraph::endFrame()
 {
     requireFrameActive("RenderGraph::endFrame");
@@ -1769,6 +1657,7 @@ uint32_t RenderGraph::addPass(
     pass.executionType = executionType;
     pass.sideEffect = sideEffect;
     pass.transitionSummary = "Declared; waiting for execution.";
+    pass.scope = currentScope_;
 
     passes_.push_back(std::move(pass));
     const uint32_t index = static_cast<uint32_t>(passes_.size() - 1);
@@ -1950,6 +1839,10 @@ uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
         return frame_.passIndices.composite;
     case RenderGraphBuiltinPass::ImGui:
         return frame_.passIndices.imgui;
+    case RenderGraphBuiltinPass::BloomDownsample:
+    case RenderGraphBuiltinPass::BloomUpsample:
+        // Declared once per level; without a level this names the first.
+        return builtinPassIndex(pass, 0);
     }
 
     return kInvalidRenderGraphHandle;
@@ -1965,9 +1858,80 @@ bool RenderGraph::bindExecutor(RenderGraphBuiltinPass pass, RenderGraphPassExecu
 
     RenderPassNode& node = passes_[passIndex];
     node.execute = std::move(executor.execute);
-    node.executeLabel = executor.label;
+    node.executeLabel = std::move(executor.label);
     node.executeProfileScope = executor.profileScope;
     return true;
+}
+
+bool RenderGraph::bindExecutor(RenderGraphBuiltinPass pass, uint32_t instance, RenderGraphPassExecutor executor)
+{
+    requireFrameActive("RenderGraph::bindExecutor");
+    const uint32_t passIndex = builtinPassIndex(pass, instance);
+    if (passIndex >= passes_.size()) {
+        return false;
+    }
+
+    RenderPassNode& node = passes_[passIndex];
+    node.execute = std::move(executor.execute);
+    node.executeLabel = std::move(executor.label);
+    node.executeProfileScope = executor.profileScope;
+    return true;
+}
+
+uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass, uint32_t instance) const
+{
+    const auto at = [instance](const std::vector<uint32_t>& indices) {
+        return instance < indices.size() ? indices[instance] : kInvalidRenderGraphHandle;
+    };
+    switch (pass) {
+    case RenderGraphBuiltinPass::BloomDownsample:
+        return at(frame_.passIndices.bloomDownsampleChain);
+    case RenderGraphBuiltinPass::BloomUpsample:
+        return at(frame_.passIndices.bloomUpsampleChain);
+    default:
+        return builtinPassIndex(pass);
+    }
+}
+
+void RenderGraph::pushScope(const char* label, const char* profileScope)
+{
+    scopes_.push_back({label, profileScope, currentScope_});
+    currentScope_ = static_cast<uint32_t>(scopes_.size() - 1);
+}
+
+void RenderGraph::popScope()
+{
+    if (currentScope_ == kInvalidRenderGraphHandle) {
+        throw std::logic_error("RenderGraph::popScope called with no scope open.");
+    }
+    currentScope_ = scopes_[currentScope_].parent;
+}
+
+void RenderGraph::transitionScopes(uint32_t target)
+{
+    const VkCommandBuffer commandBuffer = frame_.commandBuffer;
+    const RenderGraphScopeTransition transition = planScopeTransition(scopes_, openScopes_, target);
+    for (size_t closed = 0; closed < transition.closeCount; ++closed) {
+        const RenderGraphScope& scope = scopes_[openScopes_.back()];
+        if (openScopeProfiled_.back() != 0 && profilerHooks_.endScope) {
+            profilerHooks_.endScope(commandBuffer);
+        }
+        if (scope.label != nullptr) {
+            rhi::debug::endLabel(commandBuffer);
+        }
+        openScopes_.pop_back();
+        openScopeProfiled_.pop_back();
+    }
+    for (const uint32_t scopeIndex : transition.toOpen) {
+        const RenderGraphScope& scope = scopes_[scopeIndex];
+        if (scope.label != nullptr) {
+            rhi::debug::beginLabel(commandBuffer, scope.label);
+        }
+        const bool profiled = scope.profileScope != nullptr && profilerHooks_.beginScope &&
+                              profilerHooks_.beginScope(commandBuffer, scope.profileScope);
+        openScopes_.push_back(scopeIndex);
+        openScopeProfiled_.push_back(profiled ? 1 : 0);
+    }
 }
 
 void RenderGraph::setProfilerHooks(RenderGraphProfilerHooks hooks)
@@ -1993,6 +1957,18 @@ void RenderGraph::recordScheduledUnits(std::span<RenderGraphScheduledUnit> units
     unitRecordCosts_.reserve(plan.size());
 
     for (const RenderGraphExecutionStep& step : plan) {
+        // A pass sits in the scope it was declared in, and a unit in its anchor's;
+        // a unit with no scheduled anchor stays wherever the frame already is, the
+        // same way it inherits its position.
+        if (step.kind == RenderGraphExecutionStep::Kind::Pass) {
+            transitionScopes(passes_[step.index].scope);
+        } else {
+            const uint32_t anchor = units[step.index].passIndex;
+            if (anchor < passes_.size() && !passes_[anchor].culled) {
+                transitionScopes(passes_[anchor].scope);
+            }
+        }
+
         if (step.kind == RenderGraphExecutionStep::Kind::Pass) {
             const auto start = std::chrono::steady_clock::now();
             executePass(step.index);
@@ -2022,6 +1998,7 @@ void RenderGraph::recordScheduledUnits(std::span<RenderGraphScheduledUnit> units
              unitIndex,
              false});
     }
+    transitionScopes(kInvalidRenderGraphHandle);
 }
 
 void RenderGraph::executePass(uint32_t passIndex)
@@ -2035,7 +2012,7 @@ void RenderGraph::executePass(uint32_t passIndex)
     // Label and profiler scope outside the barriers, in that order: where every
     // recorder put them, so a pass keeps its timestamp range and the command
     // stream does not change when the graph takes the pass over.
-    if (pass.executeLabel != nullptr) {
+    if (!pass.executeLabel.empty()) {
         rhi::debug::beginLabel(commandBuffer, pass.executeLabel);
     }
     const bool profileScope = pass.executeProfileScope != nullptr && profilerHooks_.beginScope &&
@@ -2068,7 +2045,7 @@ void RenderGraph::executePass(uint32_t passIndex)
     if (profileScope && profilerHooks_.endScope) {
         profilerHooks_.endScope(commandBuffer);
     }
-    if (pass.executeLabel != nullptr) {
+    if (!pass.executeLabel.empty()) {
         rhi::debug::endLabel(commandBuffer);
     }
 }
@@ -3024,6 +3001,10 @@ void RenderGraph::declareBloomAndTaaPasses()
                     builder.colorAttachment(frame_.bloomPong, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
                 });
 
+    // The chain is timed as two numbers, downsample and upsample, not one per
+    // level; the scopes are what the recorder used to open around its loops.
+    pushScope("BloomMipChain", nullptr);
+    pushScope("Bloom Downsample Chain", "Bloom Downsample Chain");
     frame_.passIndices.bloomDownsampleChain.reserve(frame_.bloomDownsampleChain.size());
     for (uint32_t level = 0; level < frame_.bloomDownsampleChain.size(); ++level) {
         const RGTextureHandle source = level == 0 ? postProcessSource() : frame_.bloomDownsampleChain[level - 1];
@@ -3044,9 +3025,12 @@ void RenderGraph::declareBloomAndTaaPasses()
                     builder.writeTexture(frame_.bloomDownsampleChain[level],
                                          RGAccess::ColorAttachmentWrite,
                                          "Writes a downsampled bloom mip-chain level.");
+                builder.colorAttachment(frame_.bloomDownsampleChain[level], VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
             }));
     }
+    popScope();
 
+    pushScope("Bloom Upsample Chain", "Bloom Upsample Chain");
     frame_.passIndices.bloomUpsampleChain.assign(frame_.bloomUpsampleChain.size(), kInvalidRenderGraphHandle);
     for (uint32_t reverseIndex = 0; reverseIndex < frame_.bloomUpsampleChain.size(); ++reverseIndex) {
         const uint32_t level = static_cast<uint32_t>(frame_.bloomUpsampleChain.size() - 1u - reverseIndex);
@@ -3066,8 +3050,11 @@ void RenderGraph::declareBloomAndTaaPasses()
                     builder.writeTexture(frame_.bloomUpsampleChain[level],
                                          RGAccess::ColorAttachmentWrite,
                                          "Writes the progressively upsampled bloom chain.");
+                builder.colorAttachment(frame_.bloomUpsampleChain[level], VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
             });
     }
+    popScope();
+    popScope();
 }
 
 void RenderGraph::declareExposureCompositePasses()
@@ -3813,6 +3800,29 @@ std::vector<RenderGraphExecutionStep> buildExecutionPlan(std::span<const uint32_
              entry.index});
     }
     return plan;
+}
+
+RenderGraphScopeTransition
+planScopeTransition(const std::vector<RenderGraphScope>& scopes, std::span<const uint32_t> open, uint32_t target)
+{
+    // The target's chain, outermost first. Bounded by the scope count so a
+    // malformed parent link cannot loop.
+    std::vector<uint32_t> chain;
+    for (uint32_t scope = target; scope < scopes.size() && chain.size() <= scopes.size();
+         scope = scopes[scope].parent) {
+        chain.push_back(scope);
+    }
+    std::reverse(chain.begin(), chain.end());
+
+    size_t shared = 0;
+    while (shared < open.size() && shared < chain.size() && open[shared] == chain[shared]) {
+        ++shared;
+    }
+
+    RenderGraphScopeTransition transition;
+    transition.closeCount = open.size() - shared;
+    transition.toOpen.assign(chain.begin() + static_cast<std::ptrdiff_t>(shared), chain.end());
+    return transition;
 }
 
 std::string formatRenderGraphFrameTrace(const std::vector<RenderPassNode>& passes,

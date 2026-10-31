@@ -380,9 +380,12 @@ struct RenderPassNode {
     std::function<void(RenderGraphPassContext&)> execute;
     // Debug label and GPU profiler scope the graph opens around the pass when it
     // records it, outside the barriers -- where the recorders always put them, so
-    // a pass's timestamp range still covers its barriers. Null for none.
-    const char* executeLabel = nullptr;
+    // a pass's timestamp range still covers its barriers. Empty / null for none.
+    std::string executeLabel;
     const char* executeProfileScope = nullptr;
+    // Innermost RenderGraphScope the pass was declared inside, or
+    // kInvalidRenderGraphHandle for none.
+    uint32_t scope = kInvalidRenderGraphHandle;
     // Declared by the setup callback; see RGColorAttachment and
     // RGPostPassTransition. Only honoured when the graph records the pass.
     std::optional<RGColorAttachment> colorAttachment;
@@ -854,17 +857,50 @@ enum class RenderGraphBuiltinPass {
     Luminance,
     HistogramExposure,
     Composite,
-    ImGui
+    ImGui,
+    // One pass per level; named with the level through the instanced overloads.
+    BloomDownsample,
+    BloomUpsample
 };
 
 // What a caller binds to a declared pass so the graph records it: the commands,
 // and the label and profiler scope names the pass has always been reported
 // under. See RenderPassNode::execute.
 struct RenderGraphPassExecutor {
-    const char* label = nullptr;
+    std::string label;
     const char* profileScope = nullptr;
     std::function<void(RenderGraphPassContext&)> execute;
 };
+
+// A debug label and optional GPU profiler scope around a run of consecutive
+// passes -- the bloom mip chain's "Bloom Downsample Chain", which times every
+// level as one number. Declared by bracketing addPass calls with pushScope and
+// popScope; the graph opens a scope ahead of the first pass in it that records,
+// and closes it when the frame moves to a step outside it.
+struct RenderGraphScope {
+    const char* label = nullptr;
+    const char* profileScope = nullptr;
+    uint32_t parent = kInvalidRenderGraphHandle;
+};
+
+// How to move from the scopes open now to the ones a step needs: close the
+// innermost `closeCount` of `open`, then open `toOpen`, outermost first.
+struct RenderGraphScopeTransition {
+    size_t closeCount = 0;
+    std::vector<uint32_t> toOpen;
+
+    friend bool operator==(const RenderGraphScopeTransition&, const RenderGraphScopeTransition&) = default;
+};
+
+// Pure, for the same reason buildExecutionPlan is: whether a scope's timestamps
+// bracket the right passes is decided here, and nothing checks it downstream.
+//
+// `open` is the stack of open scopes, outermost first. `target` is the
+// innermost scope the next step belongs to, or kInvalidRenderGraphHandle for
+// none. A scope already open that the target sits inside stays open; everything
+// above the shared prefix closes. A scope index past `scopes` ends the chain.
+[[nodiscard]] RenderGraphScopeTransition
+planScopeTransition(const std::vector<RenderGraphScope>& scopes, std::span<const uint32_t> open, uint32_t target);
 
 // How the graph opens and closes a GPU profiler scope. The profiler belongs to
 // the renderer, so the graph is handed these rather than the profiler itself.
@@ -996,8 +1032,6 @@ public:
     // caller sets a viewport per (probe, cube face) inside it.
     void beginProbeCapturePass();
     void endProbeCapturePass();
-    void beginMainGpuCullingPass();
-    void endMainGpuCullingPass();
     // The ray-traced shadow mask's two dispatches, recorded between the depth
     // prepass and the main pass inside the main-pass recorder, outside any
     // rendering scope.
@@ -1058,12 +1092,6 @@ public:
     // that needs a clean opaque depth/G-buffer and before the TAA resolve.
     void beginTransparentPass();
     void endTransparentPass();
-    void beginDepthPyramidPass();
-    void endDepthPyramidPass();
-    void beginBloomDownsamplePass(uint32_t level);
-    void endBloomDownsamplePass();
-    void beginBloomUpsamplePass(uint32_t level);
-    void endBloomUpsamplePass();
     void endFrame();
 
     uint32_t addPass(std::string name, SetupCallback setup);
@@ -1183,6 +1211,15 @@ public:
     // recordScheduledUnits. Returns false, binding nothing, when this frame does
     // not declare the pass -- the same frames its unit used to return early on.
     bool bindExecutor(RenderGraphBuiltinPass pass, RenderGraphPassExecutor executor);
+    // The same for a pass declared once per level -- BloomDownsample and
+    // BloomUpsample -- naming the level.
+    bool bindExecutor(RenderGraphBuiltinPass pass, uint32_t instance, RenderGraphPassExecutor executor);
+    [[nodiscard]] uint32_t builtinPassIndex(RenderGraphBuiltinPass pass, uint32_t instance) const;
+
+    // Brackets passes declared between them in a RenderGraphScope. Declaration
+    // time only; scopes nest.
+    void pushScope(const char* label, const char* profileScope);
+    void popScope();
 
     // Kept across frames. Without hooks the graph records no profiler scopes.
     void setProfilerHooks(RenderGraphProfilerHooks hooks);
@@ -1238,7 +1275,6 @@ private:
         PunctualShadow,
         ProbeCapture,
         IrradianceProbes,
-        MainGpuCulling,
         ShadowGpuCulling,
         PunctualShadowCull,
         DepthPrepass,
@@ -1250,10 +1286,7 @@ private:
         Gtao,
         GtaoBlur,
         Transparent,
-        DepthPyramidMid,
-        DepthPyramid,
-        BloomDownsample,
-        BloomUpsample
+        DepthPyramidMid
     };
 
     enum class TextureOwner {
@@ -1487,6 +1520,9 @@ private:
     // Records a pass's RGPostPassTransitions as their own batch and adds them to
     // the pass's barrier counts.
     void recordPostPassTransitions(uint32_t passIndex);
+    // Opens and closes RenderGraphScopes so the next step sits inside `target`'s
+    // chain; kInvalidRenderGraphHandle closes everything.
+    void transitionScopes(uint32_t target);
     // renderArea for a pass writing a scene-sized target. Clamped to the
     // resource so a render extent that has not caught up with a resize becomes a
     // smaller area rather than an out-of-bounds one.
@@ -1527,6 +1563,12 @@ private:
     RenderGraphBackstopSummary backstopSummary_;
     std::vector<RenderGraphUnitCost> unitRecordCosts_;
     RenderGraphProfilerHooks profilerHooks_;
+    // This frame's scopes, the one addPass puts new passes in, and -- while
+    // recording -- the open stack with whether each opened a profiler scope.
+    std::vector<RenderGraphScope> scopes_;
+    uint32_t currentScope_ = kInvalidRenderGraphHandle;
+    std::vector<uint32_t> openScopes_;
+    std::vector<uint8_t> openScopeProfiled_;
     bool frameActive_ = false;
     ActivePass activePass_ = ActivePass::None;
 
