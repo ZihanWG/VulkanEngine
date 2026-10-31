@@ -1839,6 +1839,10 @@ uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
         return frame_.passIndices.composite;
     case RenderGraphBuiltinPass::ImGui:
         return frame_.passIndices.imgui;
+    case RenderGraphBuiltinPass::BloomDownsample:
+    case RenderGraphBuiltinPass::BloomUpsample:
+        // Declared once per level; without a level this names the first.
+        return builtinPassIndex(pass, 0);
     }
 
     return kInvalidRenderGraphHandle;
