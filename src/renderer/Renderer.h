@@ -1032,13 +1032,12 @@ private:
     // CSMShadowPass's callback: every cascade the cache says to redraw, each in
     // its own rendering scope (or all of them in one, multiview).
     void recordCascadeShadowCascades(VkCommandBuffer commandBuffer);
-    // The cache bookkeeping after the cascades, which runs every frame, and the
-    // empty profiler scope a fully cached frame still reports.
-    void finishCascadeShadowFrame(VkCommandBuffer commandBuffer);
+    // CSMShadowCache's callback: the cache bookkeeping after the cascades, which
+    // runs every frame.
+    void finishCascadeShadowFrame();
     [[nodiscard]] bool cascadeNeedsRedraw(uint32_t cascadeIndex) const;
-    // The VSM page counters and idle transition on a frame that declares no
-    // page pass.
-    void finishVsmPageFrame(VkCommandBuffer commandBuffer);
+    // The VSM page counters on a frame that declares no page pass.
+    void finishVsmPageFrame();
     // The probe shading-parameter upload. Recorded right after fog, ahead of the
     // capture and the convolution, because the capture reads those parameters
     // too, for the multi-bounce lookup.

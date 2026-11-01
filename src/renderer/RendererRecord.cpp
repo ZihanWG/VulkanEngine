@@ -1304,6 +1304,13 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .luminancePassEnabled = postProcess_.willRecordLuminancePass(),
         .mipChainBloomSelected = postProcess_.willRecordMipChainBloom(),
         .histogramPassEnabled = postProcess_.willRecordHistogramPass(),
+        // The conditions recordVsmPagePoolIdleTransition and the cluster build
+        // record under, so the passes are declared exactly when they do work.
+        .vsmPagePoolIdleTransitionPending =
+            !isVsmPageRenderingActive() && virtualShadowMap_.pagePoolValid() && !vsmPagePoolIdleTransitionDone_,
+        .clusterBuildOnGraphicsQueue = clusteredLighting_.available() && useClusteredLighting_ &&
+                                       clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty() &&
+                                       !frameAsyncComputeActive_,
     };
 }
 
@@ -1574,17 +1581,16 @@ void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
                                      vsmPageCommandStride_);
 }
 
-void Renderer::finishVsmPageFrame(VkCommandBuffer commandBuffer)
+void Renderer::finishVsmPageFrame()
 {
-    // A frame that declares no page pass still reports zero pages, and still
-    // owes the pool its idle transition when marking runs without rendering.
+    // A frame that declares no page pass still reports zero pages. The pool's
+    // idle transition is its own pass, VsmPagePoolIdle.
     if (renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::VsmPage) !=
         renderer::kInvalidRenderGraphHandle) {
         return;
     }
     vsmPageDrawsRecorded_ = 0;
     vsmSkinnedPageDrawsRecorded_ = 0;
-    recordVsmPagePoolIdleTransition(commandBuffer);
 }
 
 void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
@@ -2179,24 +2185,8 @@ void Renderer::recordCascadeShadowCascades(VkCommandBuffer commandBuffer)
     }
 }
 
-void Renderer::finishCascadeShadowFrame(VkCommandBuffer commandBuffer)
+void Renderer::finishCascadeShadowFrame()
 {
-    // A fully cached frame declares neither shadow pass, so the graph opens no
-    // CSMShadowPass scope. The empty one recorded here keeps the profiler
-    // reporting the cascades every frame, at their real cost of nothing, as it
-    // always has -- a scope that vanished on cached frames would change what a
-    // p10 over it measures.
-    const bool cascadesDeclared =
-        renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Shadow) != renderer::kInvalidRenderGraphHandle;
-    if (!cascadesDeclared) {
-        const bool csmProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CSMShadowPass");
-        rhi::debug::beginLabel(commandBuffer, "CSMShadowPass");
-        rhi::debug::endLabel(commandBuffer);
-        if (csmProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
-    }
-
     const uint32_t cascadeCount = activeCascadeCount();
 
     // What the image now holds. Recorded here rather than where the hashes are
@@ -3309,107 +3299,89 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                     renderScaleSettings_.sharpness,
                                     showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
 
-    std::array<renderer::RenderGraphScheduledUnit, 9> frameUnits{{
-        {renderGraph_.builtinPassIndex(Builtin::VsmPageMark),
-         [this, commandBuffer]() {
-             // Page marking reads the depth pyramid the previous frame left, so it
-             // runs before anything this frame writes. The page cull is not a
-             // graph pass, and sits between marking and the page pass, which is
-             // separate because compute cannot be recorded inside a
-             // dynamic-rendering scope, and that scope has to stay single so pages
-             // this frame does not touch keep their cached depth.
-             recordVsmPageCull(commandBuffer);
-         }},
-        {renderGraph_.builtinPassIndex(Builtin::VsmPage),
-         [this, commandBuffer]() { finishVsmPageFrame(commandBuffer); }},
-        {renderGraph_.builtinPassIndex(Builtin::Shadow),
-         [this, commandBuffer]() { finishCascadeShadowFrame(commandBuffer); }},
-        {renderGraph_.builtinPassIndex(Builtin::PunctualShadow), [this]() { finishPunctualShadowFrame(); }},
-        {renderer::kInvalidRenderGraphHandle,
-         [this, commandBuffer]() {
-             // Runs whether or not fog is on: binding 8 claims a sampled layout
-             // unconditionally, so the volume has to reach it even on a cold start
-             // with fog disabled. No-op after the first frame. Fog switching off has
-             // to leave a neutral volume behind, because the skybox samples it
-             // unconditionally, and detecting that here covers every path that can
-             // disable fog -- settings load, preset, toggle.
-             const bool fogActiveThisFrame = isVolumetricFogActive();
-             if (fogWasActive_ && !fogActiveThisFrame) {
-                 volumetricFog_.markVolumeNeedsClear();
-             }
-             fogWasActive_ = fogActiveThisFrame;
-             volumetricFog_.ensureVolumeInitialized(commandBuffer);
-         }},
-        {renderGraph_.builtinPassIndex(Builtin::MainGpuCulling),
-         [this, commandBuffer]() {
-             // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then
-             // cull every light into its froxels. Both write buffers the main HDR
-             // fragment shader reads, and fog injection too when fog is on --
-             // frameClusterConsumerStages_ names both. No graph pass of its own --
-             // the async path submits these on the compute queue, which the
-             // renderer owns -- so it is anchored on the main cull and runs right
-             // after it, or with the unit before it when the cull is not declared.
-             const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
-                                                  clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
-             if (!clusteredLightingActive || frameAsyncComputeActive_) {
-                 return;
+    // Page marking reads the depth pyramid the previous frame left, so it runs
+    // before anything this frame writes. The page cull sits between marking and
+    // the page pass, which is separate because compute cannot be recorded inside
+    // a dynamic-rendering scope, and that scope has to stay single so pages this
+    // frame does not touch keep their cached depth.
+    renderGraph_.bindExecutor(Builtin::VsmPageCull, {"", nullptr, [this](RenderGraphPassContext& context) {
+                                                         recordVsmPageCull(context.commandBuffer());
+                                                     }});
+    renderGraph_.bindExecutor(Builtin::VsmPagePoolIdle, {"", nullptr, [this](RenderGraphPassContext& context) {
+                                                             recordVsmPagePoolIdleTransition(context.commandBuffer());
+                                                         }});
+    renderGraph_.bindExecutor(Builtin::CascadeShadowCache,
+                              {"", nullptr, [this](RenderGraphPassContext&) { finishCascadeShadowFrame(); }});
+    renderGraph_.bindExecutor(Builtin::FogVolumeInit,
+                              {"", nullptr, [this](RenderGraphPassContext& context) {
+                                   // Runs whether or not fog is on: binding 8 claims a
+                                   // sampled layout unconditionally, so the volume has to
+                                   // reach it even on a cold start with fog disabled. Fog
+                                   // switching off has to leave a neutral volume behind,
+                                   // because the skybox samples it unconditionally, and
+                                   // detecting that here covers every path that can
+                                   // disable fog -- settings load, preset, toggle.
+                                   const bool fogActiveThisFrame = isVolumetricFogActive();
+                                   if (fogWasActive_ && !fogActiveThisFrame) {
+                                       volumetricFog_.markVolumeNeedsClear();
+                                   }
+                                   fogWasActive_ = fogActiveThisFrame;
+                                   volumetricFog_.ensureVolumeInitialized(context.commandBuffer());
+                               }});
+    // Clustered (Forward+) light assignment on this queue: rebuild the froxel
+    // AABBs, then cull every light into its froxels. Both write buffers the main
+    // HDR fragment shader reads, and fog injection too when fog is on --
+    // frameClusterConsumerStages_ names both. The async path submits the same
+    // work on the compute queue instead, and the pass is not declared.
+    renderGraph_.bindExecutor(
+        Builtin::ClusterBuild,
+        {"", nullptr, [this](RenderGraphPassContext& context) {
+             const VkCommandBuffer cb = context.commandBuffer();
+             {
+                 const renderer::GpuProfileScope buildScope(gpuProfiler_, currentFrame_, cb, "ClusterBuild");
+                 rhi::debug::beginLabel(cb, "ClusterBuild");
+                 clusteredLighting_.recordClusterBuild(cb, currentFrame_);
+                 rhi::debug::endLabel(cb);
              }
              {
-                 const renderer::GpuProfileScope buildScope(gpuProfiler_, currentFrame_, commandBuffer, "ClusterBuild");
-                 rhi::debug::beginLabel(commandBuffer, "ClusterBuild");
-                 clusteredLighting_.recordClusterBuild(commandBuffer, currentFrame_);
-                 rhi::debug::endLabel(commandBuffer);
+                 const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, cb, "LightCull");
+                 rhi::debug::beginLabel(cb, "LightCull");
+                 clusteredLighting_.recordLightCull(cb, currentFrame_, frameClusterConsumerStages_);
+                 rhi::debug::endLabel(cb);
              }
-             {
-                 const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "LightCull");
-                 rhi::debug::beginLabel(commandBuffer, "LightCull");
-                 clusteredLighting_.recordLightCull(commandBuffer, currentFrame_, frameClusterConsumerStages_);
-                 rhi::debug::endLabel(commandBuffer);
-             }
-         }},
-        // Anchored on fog, which is declared right before the probe passes, so
-        // the upload lands after fog and ahead of the capture and convolution --
-        // where it ran when it was part of the probe recorder.
-        {renderGraph_.builtinPassIndex(Builtin::VolumetricFog),
-         [this, commandBuffer]() { recordProbeShadingParams(commandBuffer); }},
-        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Composite),
-         [this, commandBuffer, imageIndex]() {
-             // Anchored on the composite, so it runs right after the composite's
-             // callback and ahead of the overlay: the copies sit between the two.
-             //
-             // The portfolio screenshot is always taken here, before the overlay:
-             // a portfolio shot with a debug panel across it is not a portfolio
-             // shot. The regression capture can be asked for the other side of
-             // the overlay instead, which is the only way anything the debug UI
-             // reports and the log does not can be seen from a scripted run.
-             //
-             // Layout-neutral by construction: recordCopy reads the swapchain's
-             // tracked layout on entry and leaves it in COLOR_ATTACHMENT_OPTIMAL
-             // either way, which is what the ImGui pass wants before it and what
-             // the graph's present transition wants after it.
-             recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
-             if (!frameCaptureIncludesUi_) {
-                 recordFrameCaptureCopy(commandBuffer, imageIndex);
-             }
-         }},
-        {renderGraph_.builtinPassIndex(Builtin::ImGui),
-         [this, commandBuffer, imageIndex]() {
-             // Anchored on the overlay, so it runs after the overlay's callback and
-             // the present transition behind it.
-             if (frameCaptureIncludesUi_) {
-                 recordFrameCaptureCopy(commandBuffer, imageIndex);
-             }
-         }},
-    }};
-    // Records the bound passes and the units in the graph's stable topological
-    // order. A unit remains responsible for calling its begin/end pass helpers;
-    // a bound pass gets its barriers and rendering scope from the graph.
-    renderGraph_.recordScheduledUnits(frameUnits);
+         }});
+    renderGraph_.bindExecutor(Builtin::ProbeShadingParams, {"", nullptr, [this](RenderGraphPassContext& context) {
+                                                                recordProbeShadingParams(context.commandBuffer());
+                                                            }});
+    // The portfolio screenshot is always taken before the overlay: a portfolio
+    // shot with a debug panel across it is not a portfolio shot. The regression
+    // capture can be asked for the other side of the overlay instead, which is
+    // the only way anything the debug UI reports and the log does not can be
+    // seen from a scripted run.
+    renderGraph_.bindExecutor(Builtin::FrameCapture,
+                              {"", nullptr, [this, imageIndex](RenderGraphPassContext& context) {
+                                   recordPortfolioScreenshotCopy(context.commandBuffer(), imageIndex);
+                                   if (!frameCaptureIncludesUi_) {
+                                       recordFrameCaptureCopy(context.commandBuffer(), imageIndex);
+                                   }
+                               }});
+    renderGraph_.bindExecutor(Builtin::FrameCaptureAfterOverlay,
+                              {"", nullptr, [this, imageIndex](RenderGraphPassContext& context) {
+                                   if (frameCaptureIncludesUi_) {
+                                       recordFrameCaptureCopy(context.commandBuffer(), imageIndex);
+                                   }
+                               }});
 
-    // CPU state the recorded frame leaves behind. Here, after recording, rather
-    // than in a unit: nothing recorded after the geometry region reads either,
-    // and a unit with no scheduled pass to anchor on would have inherited a
-    // position ahead of the main pass, which does read them.
+    // Records every pass through its callback, in the graph's execution order.
+    renderGraph_.recordPasses();
+
+    // CPU state the recorded frame leaves behind. Here, after recording: nothing
+    // recorded reads any of it, and declaring a pass for work that records no
+    // command would only clutter the frame.
+    //
+    // The counters a frame with no VSM page pass or punctual atlas pass reports.
+    finishVsmPageFrame();
+    finishPunctualShadowFrame();
     //
     // A skipped pyramid build means whatever is in the image is from an
     // unknown frame: mark it unusable rather than leaving a stale pyramid

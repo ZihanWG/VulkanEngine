@@ -1352,27 +1352,26 @@ void Renderer::emitFrameCpuBreakdown() const
 
 void Renderer::emitRecordCpuBreakdown() const
 {
-    const std::vector<renderer::RenderGraphUnitCost>& unitCosts = renderGraph_.unitRecordCosts();
-    if (unitCosts.empty()) {
+    const std::vector<renderer::RenderGraphPassCost>& passCosts = renderGraph_.passRecordCosts();
+    if (passCosts.empty()) {
         return;
     }
 
-    std::vector<renderer::RenderGraphUnitCost> sorted = unitCosts;
+    std::vector<renderer::RenderGraphPassCost> sorted = passCosts;
     std::sort(sorted.begin(),
               sorted.end(),
-              [](const renderer::RenderGraphUnitCost& lhs, const renderer::RenderGraphUnitCost& rhs) {
+              [](const renderer::RenderGraphPassCost& lhs, const renderer::RenderGraphPassCost& rhs) {
                   return lhs.milliseconds > rhs.milliseconds;
               });
 
     // Whole-frame recording time says whether splitting recording across threads
-    // could pay at all; this says which units would have to be split for it to,
+    // could pay at all; this says which passes would have to be split for it to,
     // and it is the number that showed the answer was one pass rather than
-    // seventeen. The unit index disambiguates units that share a pass type name.
+    // seventeen. The pass index disambiguates passes that share a type name.
     std::ostringstream message;
-    message << std::fixed << std::setprecision(3) << "Record CPU by unit:";
-    for (const renderer::RenderGraphUnitCost& cost : sorted) {
-        message << "\n  [" << (cost.graphExecuted ? "pass " : "") << cost.unitIndex << "] " << cost.name << ": "
-                << cost.milliseconds << " ms";
+    message << std::fixed << std::setprecision(3) << "Record CPU by pass:";
+    for (const renderer::RenderGraphPassCost& cost : sorted) {
+        message << "\n  [" << cost.passIndex << "] " << cost.name << ": " << cost.milliseconds << " ms";
     }
     Logger::info(message.str());
 }

@@ -240,6 +240,20 @@ void RenderGraphBuilder::transitionAfterPass(RGTextureHandle handle, RGAccess ac
     pass_.postPassTransitions.push_back({handle, access});
 }
 
+void RenderGraphBuilder::orderAfter(uint32_t passIndex)
+{
+    if (passIndex == kInvalidRenderGraphHandle) {
+        return;
+    }
+    // The pass being declared is the last one in the list, so anything it can
+    // name is earlier. A later index would be an edge pointing forward, which
+    // the declaration order cannot express and the schedule would ignore.
+    if (passIndex + 1 >= graph_.passes_.size()) {
+        throw std::logic_error("RenderGraphBuilder::orderAfter names a pass that is not declared before this one.");
+    }
+    pass_.orderAfter.push_back(passIndex);
+}
+
 RenderGraph::RenderGraph() = default;
 
 const char* renderPassTypeName(RenderPassType type)
@@ -303,6 +317,20 @@ const char* renderPassTypeName(RenderPassType type)
         return "Composite";
     case RenderPassType::ImGui:
         return "ImGui";
+    case RenderPassType::VsmPageCull:
+        return "VSM Page Cull";
+    case RenderPassType::VsmPagePoolIdle:
+        return "VSM Page Pool Idle";
+    case RenderPassType::CascadeShadowCache:
+        return "Cascade Shadow Cache";
+    case RenderPassType::FogVolumeInit:
+        return "Fog Volume Init";
+    case RenderPassType::ClusterBuild:
+        return "Cluster Build";
+    case RenderPassType::ProbeShadingParams:
+        return "Probe Shading Params";
+    case RenderPassType::FrameCapture:
+        return "Frame Capture";
     }
 
     return "Unknown";
@@ -1554,6 +1582,22 @@ uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
         return frame_.passIndices.gtaoBlur;
     case RenderGraphBuiltinPass::Transparent:
         return frame_.passIndices.transparent;
+    case RenderGraphBuiltinPass::VsmPageCull:
+        return frame_.passIndices.vsmPageCull;
+    case RenderGraphBuiltinPass::VsmPagePoolIdle:
+        return frame_.passIndices.vsmPagePoolIdle;
+    case RenderGraphBuiltinPass::CascadeShadowCache:
+        return frame_.passIndices.cascadeShadowCache;
+    case RenderGraphBuiltinPass::FogVolumeInit:
+        return frame_.passIndices.fogVolumeInit;
+    case RenderGraphBuiltinPass::ClusterBuild:
+        return frame_.passIndices.clusterBuild;
+    case RenderGraphBuiltinPass::ProbeShadingParams:
+        return frame_.passIndices.probeShadingParams;
+    case RenderGraphBuiltinPass::FrameCapture:
+        return frame_.passIndices.frameCapture;
+    case RenderGraphBuiltinPass::FrameCaptureAfterOverlay:
+        return frame_.passIndices.frameCaptureAfterOverlay;
     }
 
     return kInvalidRenderGraphHandle;
@@ -1654,64 +1698,26 @@ void RenderGraph::setProfilerHooks(RenderGraphProfilerHooks hooks)
     profilerHooks_ = std::move(hooks);
 }
 
-void RenderGraph::recordScheduledUnits(std::span<RenderGraphScheduledUnit> units)
+void RenderGraph::recordPasses()
 {
-    requireFrameActive("RenderGraph::recordScheduledUnits");
+    requireFrameActive("RenderGraph::recordPasses");
 
-    std::vector<uint32_t> anchors;
-    anchors.reserve(units.size());
-    for (const RenderGraphScheduledUnit& unit : units) {
-        anchors.push_back(unit.passIndex);
-    }
-    const std::vector<RenderGraphExecutionStep> plan = buildExecutionPlan(executionOrder_, passes_, anchors);
+    const std::vector<uint32_t> plan = buildExecutionPlan(executionOrder_, passes_);
 
     // Cleared here rather than in beginFrame: the report that reads this runs at
     // the top of the next frame, after beginFrame has already run, so clearing
     // there would hand it an empty list every time.
-    unitRecordCosts_.clear();
-    unitRecordCosts_.reserve(plan.size());
+    passRecordCosts_.clear();
+    passRecordCosts_.reserve(plan.size());
 
-    for (const RenderGraphExecutionStep& step : plan) {
-        // A pass sits in the scope it was declared in, and a unit in its anchor's;
-        // a unit with no scheduled anchor stays wherever the frame already is, the
-        // same way it inherits its position.
-        if (step.kind == RenderGraphExecutionStep::Kind::Pass) {
-            transitionScopes(passes_[step.index].scope);
-        } else {
-            const uint32_t anchor = units[step.index].passIndex;
-            if (anchor < passes_.size() && !passes_[anchor].culled) {
-                transitionScopes(passes_[anchor].scope);
-            }
-        }
-
-        if (step.kind == RenderGraphExecutionStep::Kind::Pass) {
-            const auto start = std::chrono::steady_clock::now();
-            executePass(step.index);
-            unitRecordCosts_.push_back(
-                {renderPassTypeName(passes_[step.index].type),
-                 std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count(),
-                 step.index,
-                 true});
-            continue;
-        }
-
-        const uint32_t unitIndex = step.index;
-        if (!units[unitIndex].record) {
-            continue;
-        }
-        const uint32_t passIndex = units[unitIndex].passIndex;
-        // A unit with no pass this frame -- the synchronous cluster build, the
-        // fog volume's first-use clear -- still costs recording time, and it is
-        // exactly the kind of work that would be missed by a report keyed only on
-        // declared passes.
-        const char* name = passIndex < passes_.size() ? renderPassTypeName(passes_[passIndex].type) : "Unanchored";
+    for (const uint32_t passIndex : plan) {
+        transitionScopes(passes_[passIndex].scope);
         const auto start = std::chrono::steady_clock::now();
-        units[unitIndex].record();
-        unitRecordCosts_.push_back(
-            {name,
+        executePass(passIndex);
+        passRecordCosts_.push_back(
+            {renderPassTypeName(passes_[passIndex].type),
              std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count(),
-             unitIndex,
-             false});
+             passIndex});
     }
     transitionScopes(kInvalidRenderGraphHandle);
 }
@@ -1814,6 +1820,21 @@ void RenderGraph::buildFrameGraphDeclarations()
     declareExposureCompositePasses();
 }
 
+uint32_t RenderGraph::addWorkPass(std::string name,
+                                  RenderPassType type,
+                                  RenderPassExecutionType executionType,
+                                  std::initializer_list<uint32_t> after)
+{
+    // Side effect: what these passes write is not a graph resource, so nothing
+    // downstream declares a read and liveness analysis would cull them away.
+    const std::vector<uint32_t> predecessors(after);
+    return addPass(std::move(name), type, executionType, true, [predecessors](RenderGraphBuilder& builder) {
+        for (const uint32_t predecessor : predecessors) {
+            builder.orderAfter(predecessor);
+        }
+    });
+}
+
 void RenderGraph::declareGeometryPasses()
 {
     // First pass of the frame: it reads the depth pyramid the PREVIOUS frame
@@ -1839,18 +1860,35 @@ void RenderGraph::declareGeometryPasses()
     // still imported and still read by the main pass below, so a frame that
     // redraws nothing gets the read-layout transition without the write pass --
     // the same asymmetry the punctual shadow atlas uses.
+    //
+    // The page cull feeds it: one compute dispatch over every dirty page, on
+    // request buffers that are not graph resources, so its place between the
+    // marking and the page pass is an explicit edge rather than an inferred one.
     if (frame_.vsmPagePool != nullptr && frame_.resources.vsmDirtyPageCount > 0) {
+        frame_.passIndices.vsmPageCull = addWorkPass("VsmPageCullPass",
+                                                     RenderPassType::VsmPageCull,
+                                                     RenderPassExecutionType::Compute,
+                                                     {frame_.passIndices.vsmPageMark});
         frame_.passIndices.vsmPage =
             addPass("VsmPagePass",
                     RenderPassType::VsmPage,
                     RenderPassExecutionType::Graphics,
                     false,
                     [this](RenderGraphBuilder& builder) {
+                        builder.orderAfter(frame_.passIndices.vsmPageCull);
                         frame_.vsmPagePoolDepth = builder.writeTexture(
                             frame_.vsmPagePoolDepth,
                             RGAccess::DepthStencilAttachmentWrite,
                             "Draws this frame's dirty clipmap pages into the virtual shadow page pool.");
                     });
+    }
+
+    // Marking on, page rendering off: the pool exists but is not a graph
+    // resource this frame, and still owes its one move to the layout the
+    // material descriptors claim.
+    if (frame_.resources.vsmPagePoolIdleTransitionPending) {
+        frame_.passIndices.vsmPagePoolIdle =
+            addWorkPass("VsmPagePoolIdle", RenderPassType::VsmPagePoolIdle, RenderPassExecutionType::Transfer, {});
     }
 
     // Skipped on a fully cached frame, when the renderer redraws no cascade.
@@ -1916,6 +1954,14 @@ void RenderGraph::declareGeometryPasses()
                         }
                     });
     }
+    // What the cascades now hold, committed every frame -- including a fully
+    // cached one, which declares neither pass above. Inside the scope, so the
+    // CSMShadowPass profiler number exists every frame, at its real cost of
+    // nothing when everything was cached.
+    frame_.passIndices.cascadeShadowCache = addWorkPass("CSMShadowCache",
+                                                        RenderPassType::CascadeShadowCache,
+                                                        RenderPassExecutionType::Graphics,
+                                                        {frame_.passIndices.shadow});
     popScope();
 
     // Only declared when a light actually got a tile. The atlas texture is
@@ -1975,6 +2021,12 @@ void RenderGraph::declareGeometryPasses()
     // the shadow and punctual culls above whose consumers drop their reads with
     // the pass: the CPU path uploads the identical commands from the host, so
     // the read is real, it just has no producer inside the frame.
+    // The fog volume's first-use clear, and the neutral volume fog switching off
+    // has to leave: the skybox and the main pass sample it whether or not fog
+    // runs. A no-op after the first frame.
+    frame_.passIndices.fogVolumeInit =
+        addWorkPass("FogVolumeInit", RenderPassType::FogVolumeInit, RenderPassExecutionType::Transfer, {});
+
     if (frame_.resources.mainGpuCullingEnabled) {
         frame_.passIndices.mainGpuCulling =
             addPass("MainGpuCullingPass",
@@ -2004,6 +2056,17 @@ void RenderGraph::declareGeometryPasses()
                     });
     }
 
+    // Clustered light assignment on this queue: rebuild the froxel AABBs, then
+    // cull every light into its froxels. The lists are buffers the graph does
+    // not track -- the async path submits the same work on the compute queue --
+    // so fog and the main pass, which read them, name this pass explicitly.
+    if (frame_.resources.clusterBuildOnGraphicsQueue) {
+        frame_.passIndices.clusterBuild = addWorkPass("ClusterBuild",
+                                                      RenderPassType::ClusterBuild,
+                                                      RenderPassExecutionType::Compute,
+                                                      {frame_.passIndices.mainGpuCulling});
+    }
+
     // Declared after the main cull, which is where the renderer records them.
     // They used to be declared before it and recorded after, a disagreement that
     // cost nothing while nothing acted on the declared order and became a
@@ -2025,6 +2088,8 @@ void RenderGraph::declareGeometryPasses()
                     // actually runs rather than because it was exempted.
                     false,
                     [this](RenderGraphBuilder& builder) {
+                        builder.orderAfter(frame_.passIndices.fogVolumeInit);
+                        builder.orderAfter(frame_.passIndices.clusterBuild);
                         builder.readTexture(frame_.shadowMapDepth,
                                             RGAccess::ShaderRead,
                                             "Samples the cascaded shadow map to shadow the fog froxels.");
@@ -2056,6 +2121,13 @@ void RenderGraph::declareGeometryPasses()
                     });
     }
 
+    // The probe shading parameters, refreshed in this frame's own command buffer
+    // so one buffer serves every frame in flight. The capture reads them for the
+    // multi-bounce lookup and the main pass for shading; neither through a graph
+    // resource, so both name this pass.
+    frame_.passIndices.probeShadingParams =
+        addWorkPass("ProbeShadingParams", RenderPassType::ProbeShadingParams, RenderPassExecutionType::Transfer, {});
+
     if (frame_.resources.probeCaptureEnabled && frame_.probeCaptureAtlas.valid() && frame_.probeCaptureDepth.valid()) {
         frame_.passIndices.probeCapture =
             addPass("ProbeCapture",
@@ -2063,6 +2135,7 @@ void RenderGraph::declareGeometryPasses()
                     RenderPassExecutionType::Graphics,
                     false,
                     [this](RenderGraphBuilder& builder) {
+                        builder.orderAfter(frame_.passIndices.probeShadingParams);
                         builder.readTexture(frame_.shadowMapDepth,
                                             RGAccess::ShaderRead,
                                             "Samples the cascaded shadow map so captured radiance is shadowed.");
@@ -2114,6 +2187,7 @@ void RenderGraph::declareGeometryPasses()
             // degrades.
             true,
             [this](RenderGraphBuilder& builder) {
+                builder.orderAfter(frame_.passIndices.probeShadingParams);
                 // Read-write, not write: the border dispatch copies core texels
                 // the fill dispatch produced, and later phases blend new radiance
                 // against what the atlas already holds.
@@ -2322,6 +2396,13 @@ void RenderGraph::declareGeometryPasses()
         RenderPassExecutionType::Graphics,
         false,
         [this](RenderGraphBuilder& builder) {
+            // What it samples or walks that the graph does not track: the cluster
+            // lists, the probe shading parameters, the fog volume's first-use
+            // clear, and the idle VSM pool's layout.
+            builder.orderAfter(frame_.passIndices.clusterBuild);
+            builder.orderAfter(frame_.passIndices.probeShadingParams);
+            builder.orderAfter(frame_.passIndices.fogVolumeInit);
+            builder.orderAfter(frame_.passIndices.vsmPagePoolIdle);
             builder.readTexture(
                 frame_.shadowMapDepth, RGAccess::ShaderRead, "Samples the cascaded shadow-map array for lighting.");
             declareRayTracedShadowRead(builder);
@@ -2891,11 +2972,21 @@ void RenderGraph::declareExposureCompositePasses()
             builder.colorAttachment(frame_.swapchainColor, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
         });
 
+    // The portfolio screenshot, and the regression capture unless it asked for
+    // the overlay: copies of the swapchain between the composite and the
+    // overlay. recordCopy reads the swapchain's tracked layout on entry and
+    // leaves it where it found it, so the copies need no graph declaration.
+    frame_.passIndices.frameCapture = addWorkPass("FrameCapture",
+                                                  RenderPassType::FrameCapture,
+                                                  RenderPassExecutionType::Transfer,
+                                                  {frame_.passIndices.composite});
+
     frame_.passIndices.imgui = addPass("ImGuiPass",
                                        RenderPassType::ImGui,
                                        RenderPassExecutionType::Graphics,
                                        true,
                                        [this](RenderGraphBuilder& builder) {
+                                           builder.orderAfter(frame_.passIndices.frameCapture);
                                            frame_.swapchainColor = builder.readWriteTexture(
                                                frame_.swapchainColor,
                                                RGAccess::ColorAttachmentWrite,
@@ -2905,6 +2996,12 @@ void RenderGraph::declareExposureCompositePasses()
                                            // present transition is recorded behind its body.
                                            builder.transitionAfterPass(frame_.swapchainColor, RGAccess::Present);
                                        });
+
+    // The regression capture taken behind the overlay and its present transition.
+    frame_.passIndices.frameCaptureAfterOverlay = addWorkPass("FrameCaptureAfterOverlay",
+                                                              RenderPassType::FrameCapture,
+                                                              RenderPassExecutionType::Transfer,
+                                                              {frame_.passIndices.imgui});
 }
 
 void RenderGraph::compilePassCulling()
@@ -3295,6 +3392,15 @@ std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<Rende
             }
         }
 
+        // Declared ordering with no resource behind it. Only an earlier pass that
+        // survived culling: a culled one does not run, so there is nothing to
+        // wait for.
+        for (const uint32_t predecessor : pass.orderAfter) {
+            if (predecessor < passIndex && schedule[predecessor].scheduled) {
+                addPredecessor(predecessor);
+            }
+        }
+
         // Committed after the whole pass is examined, so a read-modify-write is
         // judged against the state the pass found rather than the one it leaves.
         for (const RenderResourceUsage& usage : pass.resourceUsages) {
@@ -3474,58 +3580,15 @@ std::vector<std::string> RenderGraph::describeBackstopFindings() const
     return findings;
 }
 
-std::vector<RenderGraphExecutionStep> buildExecutionPlan(std::span<const uint32_t> executionOrder,
-                                                         const std::vector<RenderPassNode>& passes,
-                                                         std::span<const uint32_t> unitAnchors)
+std::vector<uint32_t> buildExecutionPlan(std::span<const uint32_t> executionOrder,
+                                         const std::vector<RenderPassNode>& passes)
 {
-    // Every step gets a slot: 0 is ahead of every pass, and slot p + 1 is the
-    // pass at execution position p. Within a slot the pass's own callback comes
-    // first, then units in registration order -- which is all the sort key says.
-    struct Keyed {
-        size_t slot = 0;
-        uint8_t kindRank = 0;
-        uint32_t index = 0;
-    };
-
-    std::vector<size_t> slotOfPass(passes.size(), 0);
-    std::vector<Keyed> keyed;
-    keyed.reserve(executionOrder.size() + unitAnchors.size());
-    for (size_t position = 0; position < executionOrder.size(); ++position) {
-        const uint32_t passIndex = executionOrder[position];
-        if (passIndex >= passes.size()) {
-            continue;
+    std::vector<uint32_t> plan;
+    plan.reserve(executionOrder.size());
+    for (const uint32_t passIndex : executionOrder) {
+        if (passIndex < passes.size() && passes[passIndex].execute) {
+            plan.push_back(passIndex);
         }
-        slotOfPass[passIndex] = position + 1;
-        if (passes[passIndex].execute) {
-            keyed.push_back({position + 1, 0, passIndex});
-        }
-    }
-
-    // A unit whose pass this frame does not schedule -- a recorder with no graph
-    // pass of its own, or one whose pass is conditional and absent -- runs with
-    // the last anchored unit registered before it. Sorting it to the end instead
-    // would move work the graph knows nothing about, such as the synchronous
-    // cluster build, past the composite.
-    size_t inherited = 0;
-    for (uint32_t unitIndex = 0; unitIndex < unitAnchors.size(); ++unitIndex) {
-        const uint32_t anchor = unitAnchors[unitIndex];
-        const size_t slot = anchor < slotOfPass.size() ? slotOfPass[anchor] : 0;
-        if (slot != 0) {
-            inherited = slot;
-        }
-        keyed.push_back({inherited, 1, unitIndex});
-    }
-
-    std::stable_sort(keyed.begin(), keyed.end(), [](const Keyed& lhs, const Keyed& rhs) {
-        return lhs.slot != rhs.slot ? lhs.slot < rhs.slot : lhs.kindRank < rhs.kindRank;
-    });
-
-    std::vector<RenderGraphExecutionStep> plan;
-    plan.reserve(keyed.size());
-    for (const Keyed& entry : keyed) {
-        plan.push_back(
-            {entry.kindRank == 0 ? RenderGraphExecutionStep::Kind::Pass : RenderGraphExecutionStep::Kind::Unit,
-             entry.index});
     }
     return plan;
 }
