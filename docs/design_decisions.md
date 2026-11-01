@@ -813,8 +813,9 @@ thing it meant to measure.
 
 **Decision.** Recording stays single-threaded. What shipped instead is the
 instrumentation that answers whether it should be: `Record CPU` next to the
-existing `Frame prep CPU` in the timings block, and a `Record CPU by unit`
-breakdown logged separately.
+existing `Frame prep CPU` in the timings block, and a per-unit recording
+breakdown logged separately (now `Record CPU by pass`, since every unit became
+a pass).
 
 **Why.** The case for threading recording rested on a number nobody had. Having
 it changed the shape of the answer twice.

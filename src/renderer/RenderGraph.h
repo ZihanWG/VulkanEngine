@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <span>
@@ -129,7 +130,16 @@ enum class RenderPassType {
     Luminance,
     HistogramExposure,
     Composite,
-    ImGui
+    ImGui,
+    // Work with no graph resource of its own, declared as side-effect passes so
+    // the graph records it at its place in the frame.
+    VsmPageCull,
+    VsmPagePoolIdle,
+    CascadeShadowCache,
+    FogVolumeInit,
+    ClusterBuild,
+    ProbeShadingParams,
+    FrameCapture
 };
 
 enum class RenderPassExecutionType {
@@ -373,10 +383,9 @@ struct RenderPassNode {
     // Declaration problems validateDeclarations found for this pass, joined for
     // display. Empty on a well-formed pass, which is the normal state.
     std::string declarationIssues;
-    // The pass's commands, when the graph records it rather than a caller's
-    // scheduled unit. The graph emits the pass's barriers, calls this, and closes
-    // the pass; the callback never calls a begin/end pair itself. Empty for a
-    // pass a unit still records.
+    // The pass's commands. The graph emits the pass's barriers, calls this, and
+    // closes the pass. Empty only on a pass nothing bound this frame, which the
+    // endFrame backstop reports as declared but never recorded.
     std::function<void(RenderGraphPassContext&)> execute;
     // Debug label and GPU profiler scope the graph opens around the pass when it
     // records it, outside the barriers -- where the recorders always put them, so
@@ -390,6 +399,11 @@ struct RenderPassNode {
     // RGPostPassTransition. Only honoured when the graph records the pass.
     std::optional<RGColorAttachment> colorAttachment;
     std::vector<RGPostPassTransition> postPassTransitions;
+    // Earlier passes this one must follow although no graph resource says so:
+    // the cluster light lists and the probe shading parameters are buffers the
+    // graph does not track, and the passes that read them still have to come
+    // after the ones that write them. See RenderGraphBuilder::orderAfter.
+    std::vector<uint32_t> orderAfter;
 };
 
 // Declaration validation. The graph's declarations describe what each pass
@@ -742,6 +756,13 @@ struct RenderGraphFrameResources {
     // anyway makes the endFrame backstop report a mismatch on a frame where the
     // renderer is behaving correctly.
     bool histogramPassEnabled = false;
+    // Declares VsmPagePoolIdle: page marking runs without page rendering, so
+    // the pool is not a graph resource, and its one-time move to the layout the
+    // material descriptors claim is still owed.
+    bool vsmPagePoolIdleTransitionPending = false;
+    // Declares ClusterBuild: clustered lighting is active and its passes are
+    // recorded on this queue rather than submitted on the async compute queue.
+    bool clusterBuildOnGraphicsQueue = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -762,17 +783,7 @@ struct RenderGraphResourceDebugInfo {
     VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
-// A recorder the graph may invoke, and the pass whose scheduled position decides
-// when it runs. A recorder covering several declared passes names the first of
-// them. A recorder with no pass of its own -- the synchronous cluster build, the
-// fog volume's first-use clear -- leaves the index invalid and runs with the last
-// anchored unit registered before it.
-struct RenderGraphScheduledUnit {
-    uint32_t passIndex = kInvalidRenderGraphHandle;
-    std::function<void()> record;
-};
-
-// CPU wall time one scheduled unit spent recording. The GPU profiler answers
+// CPU wall time one pass's callback spent recording. The GPU profiler answers
 // "what did this pass cost the GPU"; this is the other half, and without it the
 // only visible number is the whole-frame recording total, which cannot say what
 // splitting recording across threads would actually buy.
@@ -780,54 +791,21 @@ struct RenderGraphScheduledUnit {
 // `name` has static storage duration -- it comes from renderPassTypeName -- so a
 // cost outlives the frame whose passes_ produced it, which the per-frame reset
 // would otherwise invalidate.
-struct RenderGraphUnitCost {
+struct RenderGraphPassCost {
     const char* name = "";
     float milliseconds = 0.0f;
-    // Registration index of the unit. Two units can share a pass type name --
-    // the cascade and punctual shadow passes both report "Shadow" -- and a
-    // breakdown that cannot tell them apart sends you to read the wrong one.
-    // For a pass the graph executed itself, its pass index instead.
-    uint32_t unitIndex = 0;
-    bool graphExecuted = false;
+    // Two passes can share a type name -- every bloom level reports "Bloom
+    // Downsample" -- and a breakdown that cannot tell them apart sends you to
+    // read the wrong one.
+    uint32_t passIndex = 0;
 };
 
-// One step of a frame's recording: a declared pass the graph records through its
-// own execute callback, or one of the caller's scheduled units.
-struct RenderGraphExecutionStep {
-    enum class Kind : uint8_t {
-        Pass,
-        Unit
-    };
-
-    Kind kind = Kind::Unit;
-    // A pass index for Kind::Pass, a unit's registration index for Kind::Unit.
-    uint32_t index = 0;
-
-    friend bool operator==(const RenderGraphExecutionStep&, const RenderGraphExecutionStep&) = default;
-};
-
-// The order a frame is recorded in, while passes move one at a time from scheduled
-// units to execute callbacks. Pure, for the same reason cullUnusedPasses is: the
-// order is the whole contract, and it needs no device to check.
-//
-// `unitAnchors[u]` is unit u's pass index, as RenderGraphScheduledUnit names it.
-//
-// - Every pass in `executionOrder` that has an execute callback is a step, at its
-//   position. A pass with no callback contributes nothing on its own: some unit
-//   records it.
-// - A unit anchored to a pass in `executionOrder` runs at that pass's position,
-//   after the pass's own callback if it has one.
-// - A unit whose anchor is invalid or not scheduled this frame runs with the last
-//   anchored unit registered before it -- the rule recordScheduledUnits always had,
-//   so work the graph does not model (the synchronous cluster build) does not
-//   move. With no anchored unit before it, it runs ahead of every pass.
-// - Units sharing a position keep their registration order.
-//
-// With no execute callbacks at all this is exactly the order recordScheduledUnits
-// produced before callbacks existed, which is what lets passes migrate one by one.
-[[nodiscard]] std::vector<RenderGraphExecutionStep> buildExecutionPlan(std::span<const uint32_t> executionOrder,
-                                                                       const std::vector<RenderPassNode>& passes,
-                                                                       std::span<const uint32_t> unitAnchors);
+// The passes a frame records, in order: those in `executionOrder` with an execute
+// callback. A scheduled pass without one is left out, and the endFrame backstop
+// reports it as declared but never recorded. Pure, for the same reason
+// cullUnusedPasses is: it needs no device to check.
+[[nodiscard]] std::vector<uint32_t> buildExecutionPlan(std::span<const uint32_t> executionOrder,
+                                                       const std::vector<RenderPassNode>& passes);
 
 // One line naming every recorded pass, in recording order, with the barriers the
 // graph emitted for it: `Name[image/buffer/submits]`. A refactor that moves who
@@ -836,9 +814,7 @@ struct RenderGraphExecutionStep {
 [[nodiscard]] std::string formatRenderGraphFrameTrace(const std::vector<RenderPassNode>& passes,
                                                       std::span<const uint32_t> recordedOrder);
 
-// The passes a caller can anchor a scheduled unit to. Deliberately only the ones
-// with a recorder factored out far enough to be invoked by the graph; the rest
-// of the frame is still recorded in place.
+// The passes a caller binds an execute callback to.
 enum class RenderGraphBuiltinPass {
     RayTracingSceneBuild,
     VsmPageMark,
@@ -878,7 +854,15 @@ enum class RenderGraphBuiltinPass {
     SsrTrace,
     Gtao,
     GtaoBlur,
-    Transparent
+    Transparent,
+    VsmPageCull,
+    VsmPagePoolIdle,
+    CascadeShadowCache,
+    FogVolumeInit,
+    ClusterBuild,
+    ProbeShadingParams,
+    FrameCapture,
+    FrameCaptureAfterOverlay
 };
 
 // What a caller binds to a declared pass so the graph records it: the commands,
@@ -952,6 +936,10 @@ public:
     void colorAttachment(RGTextureHandle handle, VkAttachmentLoadOp loadOp, VkClearValue clearValue = {});
     // A transition the graph records after the pass body; see RGPostPassTransition.
     void transitionAfterPass(RGTextureHandle handle, RGAccess access);
+    // This pass follows `passIndex`, an earlier one, although no declared
+    // resource orders them. kInvalidRenderGraphHandle -- a conditional pass this
+    // frame does not declare -- adds nothing.
+    void orderAfter(uint32_t passIndex);
 
 private:
     RenderGraphBuilder(RenderGraph& graph, RenderPassNode& pass);
@@ -1182,11 +1170,11 @@ public:
         return backstopSummary_;
     }
 
-    // Last frame's per-unit recording cost, in the order the units ran. Survives
-    // the next beginFrame so a once-per-second report can print it.
-    [[nodiscard]] const std::vector<RenderGraphUnitCost>& unitRecordCosts() const
+    // Last frame's per-pass recording cost, in the order the passes ran.
+    // Survives the next beginFrame so a once-per-second report can print it.
+    [[nodiscard]] const std::vector<RenderGraphPassCost>& passRecordCosts() const
     {
-        return unitRecordCosts_;
+        return passRecordCosts_;
     }
 
     // True when the derived graph could not be fully ordered this frame.
@@ -1195,14 +1183,13 @@ public:
         return executionOrderCycleDetected_;
     }
 
-    // Index of a pass a scheduled unit can anchor to, or kInvalidRenderGraphHandle
-    // when this frame does not declare it.
+    // Index of a builtin pass, or kInvalidRenderGraphHandle when this frame does
+    // not declare it.
     [[nodiscard]] uint32_t builtinPassIndex(RenderGraphBuiltinPass pass) const;
 
-    // Hands a declared pass its commands for this frame, so the graph records it
-    // instead of a scheduled unit. Call between beginFrame and
-    // recordScheduledUnits. Returns false, binding nothing, when this frame does
-    // not declare the pass -- the same frames its unit used to return early on.
+    // Hands a declared pass its commands for this frame. Call between beginFrame
+    // and recordPasses. Returns false, binding nothing, when this frame does not
+    // declare the pass.
     bool bindExecutor(RenderGraphBuiltinPass pass, RenderGraphPassExecutor executor);
     // The same for a pass declared once per level -- BloomDownsample and
     // BloomUpsample -- naming the level.
@@ -1217,15 +1204,10 @@ public:
     // Kept across frames. Without hooks the graph records no profiler scopes.
     void setProfilerHooks(RenderGraphProfilerHooks hooks);
 
-    // Records the frame in buildExecutionPlan's order: each pass with an execute
-    // callback through that callback, and each of the caller's recorders at its
-    // anchor's position. Units with no pass this frame, or with equal positions,
-    // keep the order they were registered in.
-    //
-    // This is where the graph stops describing the frame and starts driving it.
-    // It drives only what it holds a callback or a unit for; everything else is
-    // still recorded in place, and the endFrame backstop is what covers both.
-    void recordScheduledUnits(std::span<RenderGraphScheduledUnit> units);
+    // Records every scheduled pass through its execute callback, in the graph's
+    // execution order. This is where the graph stops describing the frame and
+    // starts recording it.
+    void recordPasses();
 
     // formatRenderGraphFrameTrace for the frame last ended. Valid until the next
     // beginFrame, which is what makes the end of a run the place to read it.
@@ -1370,6 +1352,14 @@ private:
         uint32_t histogramExposure = kInvalidRenderGraphHandle;
         uint32_t composite = kInvalidRenderGraphHandle;
         uint32_t imgui = kInvalidRenderGraphHandle;
+        uint32_t vsmPageCull = kInvalidRenderGraphHandle;
+        uint32_t vsmPagePoolIdle = kInvalidRenderGraphHandle;
+        uint32_t cascadeShadowCache = kInvalidRenderGraphHandle;
+        uint32_t fogVolumeInit = kInvalidRenderGraphHandle;
+        uint32_t clusterBuild = kInvalidRenderGraphHandle;
+        uint32_t probeShadingParams = kInvalidRenderGraphHandle;
+        uint32_t frameCapture = kInvalidRenderGraphHandle;
+        uint32_t frameCaptureAfterOverlay = kInvalidRenderGraphHandle;
     };
 
     struct FrameState {
@@ -1456,6 +1446,12 @@ private:
     void buildFrameGraphDeclarations();
     // buildFrameGraphDeclarations() groups (see RenderGraph.cpp); each declares a
     // contiguous run of passes in the same order as before.
+    // A side-effect pass with no declared resources, ordered after `after`:
+    // work whose inputs and outputs the graph does not track.
+    uint32_t addWorkPass(std::string name,
+                         RenderPassType type,
+                         RenderPassExecutionType executionType,
+                         std::initializer_list<uint32_t> after);
     void declareGeometryPasses();
     void declareBloomAndTaaPasses();
     void declareExposureCompositePasses();
@@ -1545,7 +1541,7 @@ private:
     // Accumulated across frames, never cleared by beginFrame -- that is the
     // whole point of it.
     RenderGraphBackstopSummary backstopSummary_;
-    std::vector<RenderGraphUnitCost> unitRecordCosts_;
+    std::vector<RenderGraphPassCost> passRecordCosts_;
     RenderGraphProfilerHooks profilerHooks_;
     // The pass whose execute callback is running, and how many rendering
     // scopes that callback has opened through the in-callback helpers.

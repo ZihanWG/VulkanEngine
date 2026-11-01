@@ -500,68 +500,55 @@ result is exactly the order the passes were declared in — handing the order to
 the graph changes nothing about what runs or when. What it changes is who
 decides, and a unit test pins that the two still agree.
 
-`Renderer::recordRenderCommands` is now the passes it binds as execute
-callbacks and a short list of recorders handed to
-`RenderGraph::recordScheduledUnits`, and nothing else: `beginFrame`, the
-bindings and units, `endFrame`. Every declared pass is recorded by its callback;
-the units are the work with no pass of its own.
+`Renderer::recordRenderCommands` is now the callbacks it binds and nothing else:
+`beginFrame`, the bindings, `recordPasses`, `endFrame`. Every piece of recorded
+work is a declared pass.
 
-| Unit | Anchor pass |
-| --- | --- |
-| VSM page cull, between marking and the page pass | `VsmPageMarkPass` |
-| VSM page counters and the pool's idle transition, on a frame with no page pass | `VsmPagePass` |
-| cascade cache bookkeeping, and the empty `CSMShadowPass` profiler scope of a fully cached frame | `CSMShadowPass` |
-| punctual atlas counters, on a frame with no atlas pass | `PunctualShadowAtlasPass` |
-| fog volume first-use clear | *none* |
-| synchronous cluster build and light cull | `MainGpuCullingPass` |
-| probe shading-parameter upload | `VolumetricFogPass` |
-| portfolio screenshot, and the capture taken before the overlay | `CompositePass` |
-| the capture taken after the overlay | `ImGuiPass` |
+Some of that work has no graph resource of its own: what it writes is a buffer
+the graph does not track, or nothing on the GPU at all. Those are side-effect
+passes with no declared resources, and where their order matters it is stated
+with `builder.orderAfter`, an explicit edge the schedule treats like one a
+resource implies.
 
-The two screenshot units are anchored on the passes they follow: a unit runs
-right after its anchor's execute callback, so the copies land between the
-composite and the overlay, and behind the overlay's present transition.
+| Work pass | Ordered after | Ordered before |
+| --- | --- | --- |
+| `VsmPageCullPass` | `VsmPageMarkPass` | `VsmPagePass` |
+| `VsmPagePoolIdle`, the pool's one-time layout move when marking runs without page rendering | | `MainHDRPass` |
+| `CSMShadowCache`, the cascade cache bookkeeping | `CSMShadowPass` | |
+| `FogVolumeInit`, the fog volume's first-use clear | | `VolumetricFogPass`, `MainHDRPass` |
+| `ClusterBuild`, light assignment on the graphics queue | `MainGpuCullingPass` | `VolumetricFogPass`, `MainHDRPass` |
+| `ProbeShadingParams` | | `ProbeCapture`, `IrradianceProbeUpdate`, `MainHDRPass` |
+| `FrameCapture`, the portfolio screenshot and the capture taken before the overlay | `CompositePass` | `ImGuiPass` |
+| `FrameCaptureAfterOverlay` | `ImGuiPass` | |
 
-Two units have no pass of their own. The synchronous cluster build is the
-fallback path for work the renderer submits on the compute queue itself, which
-`docs/async_compute.md` describes and the graph does not model. It is anchored on
-`MainGpuCullingPass`, so it records right after the cull, and on the CPU culling
-fallback, where that pass is not declared, it runs with the unit registered
-before it — where it always ran. The fog volume's first-use clear is frame setup,
-not a pass, and has no anchor at all. The VSM, cascade and punctual bookkeeping
-units have a pass to name but only do work on frames that do not declare it.
+`CSMShadowCache` is declared every frame inside the `CSMShadowPass` scope, so
+that profiler number exists every frame — at its real cost of nothing on a fully
+cached frame, which declares neither shadow pass. `ClusterBuild` is declared only
+when the cluster passes record on this queue; the async path submits them on the
+compute queue, which `docs/async_compute.md` describes and the graph does not
+model.
 
-Two pieces of CPU state are left to after the units run: invalidating the depth
-pyramid on a frame that did not build it, and marking the ambient-occlusion
-target written. Nothing recorded after the geometry region reads either, and as
-units they would have had no scheduled pass to anchor on on exactly the frames
-they matter — the inherited position would have put them ahead of the main
-pass, which reads both.
+Four pieces of CPU state are left to after recording: invalidating the depth
+pyramid on a frame that did not build it, marking the ambient-occlusion target
+written, and the VSM page and punctual atlas counters of a frame that declared
+no such pass. Nothing recorded reads any of them.
 
-### A unit's inherited position moves when the unit before it goes
+### Why the units went
 
-A unit whose anchor this frame does not schedule runs with the last anchored
-unit registered before it. Moving a pass from a unit to a callback removes that
-unit, so the units after it inherit from an earlier one — and land earlier.
+Until every pass had a callback, work without a pass of its own was a *unit*: a
+recorder anchored on a pass, running right after it — or, when its anchor was
+not scheduled, with the last anchored unit registered before it. That inherited
+position moved whenever a unit before it went. When fog became a callback the
+fog unit went, and the probe recorder, which inherited from it on frames without
+a capture (the cold-start seed and the debug-pattern path), inherited from the
+cluster build instead and recorded `IrradianceProbeUpdate` ahead of
+`VolumetricFogPass`. Nothing depends on the order of the two, so no barrier,
+backstop result or pixel changed, and the default captures never showed it,
+because their last frame has a capture. The per-frame GPU scope list did.
 
-The probe recorder was the case. It was anchored on `ProbeCapture` and inherited
-from the fog unit on frames without a capture, which is the cold-start seed and
-the debug-pattern path: it recorded the probe update right after fog. When fog
-became a callback, the fog unit went, and the probe unit inherited from the
-cluster build instead, so on those frames `IrradianceProbeUpdate` recorded
-ahead of `VolumetricFogPass`. Nothing depends on the order of the two, so
-nothing failed — no barrier changed, the backstop had no edge to break, and the
-pixels were identical — and the default captures never showed it, because their
-last frame has a capture. The per-frame GPU scope list did: it named the two in
-the other order.
-
-The capture and the update are callbacks now, each at its own position, and the
-shading-parameter upload they share is a unit anchored on fog, the pass declared
-right before them. Every configuration of the check below records in the order
-it did before any pass moved to a callback.
-
-The general rule: when a unit goes, check what the units after it inherit
-from.
+A pass cannot drift that way: its position is its declaration, and what it
+depends on is either a resource or an `orderAfter` edge. Every configuration of
+the check below records in the order it did before any pass moved to a callback.
 
 **No reordering happens.** The scheduled order is today's order — verified as
 equal to the recorded order every frame — and the captured frame stayed
@@ -569,19 +556,17 @@ bit-identical through the whole extraction.
 
 ### Execute callbacks
 
-A pass can also carry its own commands: `addPass` takes an optional execute
-callback, and `recordScheduledUnits` then records that pass itself — it emits
+A pass carries its own commands: `addPass` takes an execute callback, and
+`recordPasses` records each pass through it — it emits
 the pass's barriers, calls the callback with a `RenderGraphPassContext` (the
 command buffer and handle resolution), and closes the pass. The graph marks
 itself busy for the duration of the call, and the in-callback rendering helpers
 below check it is the right pass's callback that calls them.
 
 The recording order comes from `buildExecutionPlan`, a pure function over the
-execution order, the passes and the units' anchors. A callback pass records at
-its scheduled position, a unit anchored on it right after it, and everything
-else exactly as before. With no callbacks the plan is the old unit order, and a
-unit test checks that against the old algorithm, which is what lets passes move
-from units to callbacks one at a time.
+execution order and the passes: every scheduled pass with a callback, in order. A
+scheduled pass without one is left out, and the endFrame backstop reports it as
+declared but never recorded.
 
 `RenderGraph::bindExecutor` hands a declared pass its callback for the frame,
 together with the debug label and GPU profiler scope it has always been reported
@@ -648,8 +633,8 @@ Render graph frame trace: ... MainHDRPass[6/0/1] DepthPyramidMidPass[2/0/1] ...
 ```
 
 as `Name[image/buffer/submits]`. A `--deterministic` run ends on the same frame
-every time, so moving a pass from a unit to a callback has to leave this line
-unchanged. That is a stronger check than the golden image, since a missing
+every time, so a change to who records a pass has to leave this line unchanged
+(an added work pass carries no barriers, `[0/0/0]`). That is a stronger check than the golden image, since a missing
 barrier rarely shows up in pixels.
 
 ### What this does not buy
@@ -665,8 +650,8 @@ queue is a real change rather than a reshuffle — now has somewhere to plug in.
 
 ### Declaration order has to match recording order
 
-The passes are declared in `declareGeometryPasses` and recorded by the units in
-`recordRenderCommands`. While nothing acted on the declared order those two could
+The passes are declared in `declareGeometryPasses` and were then recorded by
+units in `recordRenderCommands`. While nothing acted on the declared order those two could
 disagree for free, and they did: `VolumetricFogPass`, `ProbeCapture` and the
 irradiance probe update were declared before `MainGpuCullingPass` and recorded
 after it.
@@ -681,11 +666,9 @@ The three declarations moved to where the passes actually run. None of them
 touches a resource `MainGpuCullingPass` touches, so no edge, version chain or
 culling outcome changed with them.
 
-The general rule this leaves: **a pass whose ordering constraint the graph does
-not model must have its declared position agree with where it has to run**, or
-the unit must be left unanchored so it follows the units around it. The
-synchronous cluster build and the fog volume's first-use clear are unanchored for
-exactly that reason.
+The general rule this leaves: **an ordering constraint the graph does not model
+has to be stated**, which is what `orderAfter` is for. Fog and the main pass name
+`ClusterBuild` that way, and the probe passes name `ProbeShadingParams`.
 
 ### The backstop
 
@@ -1201,9 +1184,10 @@ the default.
 - The graph does not schedule across queues. Async compute exists in the engine --
   `ClusterBuild` and `LightCull` run on a dedicated compute queue so they can
   overlap the shadow passes (see [async_compute.md](async_compute.md)) -- but the
-  renderer owns that submission and its semaphores, not the graph. Those passes
-  have no graph pass of their own: on the graphics-queue fallback they record
-  inside the culling unit and carry their own barrier to their readers.
+  renderer owns that submission and its semaphores, not the graph. On the
+  graphics-queue fallback they record in the `ClusterBuild` work pass and carry
+  their own barrier to their readers; on the async path the graph has no pass for
+  them at all.
 - Memory aliasing covers the bloom chain and the velocity/thin-G-buffer pair, and
   is **off by default** (`enableTransientAliasing`). See "Transient memory
   aliasing" below.
@@ -1228,9 +1212,8 @@ the default.
   not check".
 - No reordering is performed. The scheduled order equals the declaration order by
   construction; see "Which analyses a reordering would break".
-- The unit granularity is coarser than the pass granularity in two places: the
-  main-pass recorder covers six declared passes and the mip-chain bloom recorder
-  seven, because each is one region of shared recording state.
+- The geometry region's callbacks still rely on Vulkan state an earlier pass left
+  bound; see "Passes still share drawing state through the command buffer".
 - Versions, layouts and barriers are per resource, not per subresource. See
   "Per-subresource tracking has no consumer here" for the survey that says this
   costs nothing today and for what would change that.
@@ -1260,8 +1243,8 @@ Still manual, and correctly so:
 - The fog's injection-to-integration edge, for the same reason.
 - Each cull's fill-to-dispatch reset, its copy to the readback buffer and the
   host-visibility barrier after it. All inside the pass that owns them.
-- `ensureVolumeInitialized`, the fog's one-time clear. Frame setup, not a pass,
-  which is why its scheduled unit has no anchor.
+- `ensureVolumeInitialized`, the fog's one-time clear. Frame setup with no graph
+  resource, recorded by the `FogVolumeInit` work pass.
 - The portfolio screenshot copy, which transitions the swapchain image between
   `CompositePass` and `ImGuiPass` and back.
 

@@ -367,7 +367,8 @@ That is a 94% cut to this pass's recording and a ~60% cut to the frame's total
 recording, on a scene where CPU frame work already exceeds the GPU frame. The
 `~40us` in the table above was the demo scene; this pass was the single largest
 recording cost in the frame once the scene is big enough to matter, which is what
-`Record CPU by unit` in the log now shows directly. It no longer is: most of that
+the per-unit recording breakdown in the log (now `Record CPU by pass`) shows
+directly. It no longer is: most of that
 cost turned out to be a redundant second cull, removed on the CPU path itself --
 see "The CPU path stopped culling twice" below.
 
