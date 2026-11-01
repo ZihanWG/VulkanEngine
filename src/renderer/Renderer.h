@@ -1045,6 +1045,62 @@ private:
     // Fog injection and scattering. Ordered after the cluster passes, whose light
     // lists it walks, and before the main HDR pass, which samples the volume.
     void recordVolumetricFogPass(VkCommandBuffer commandBuffer);
+    // Declares every pass of the frame with its recorder: the geometry, shadow,
+    // capture and overlay passes here, the post-process ones through
+    // PostProcessStack::declareGraphPasses. See RendererGraph.cpp.
+    void declareFrameGraph(MainPassFrameState& mainPassState, uint32_t imageIndex, float probeDebugGain);
+    // This frame's pass indices, for declarations that order against one
+    // another and for the bookkeeping after recording that asks what ran.
+    struct FrameGraphPasses {
+        uint32_t rayTracingSceneBuild = renderer::kInvalidRenderGraphHandle;
+        uint32_t rayTracedShadowTrace = renderer::kInvalidRenderGraphHandle;
+        // Indexed by RayTracedShadowFilterStage.
+        uint32_t rayTracedShadowTemporal = renderer::kInvalidRenderGraphHandle;
+        std::array<uint32_t, 3> rayTracedShadowFilter{renderer::kInvalidRenderGraphHandle,
+                                                      renderer::kInvalidRenderGraphHandle,
+                                                      renderer::kInvalidRenderGraphHandle};
+        uint32_t rayTracedShadowResolve = renderer::kInvalidRenderGraphHandle;
+        uint32_t vsmPageMark = renderer::kInvalidRenderGraphHandle;
+        uint32_t vsmPage = renderer::kInvalidRenderGraphHandle;
+        uint32_t shadow = renderer::kInvalidRenderGraphHandle;
+        uint32_t punctualShadow = renderer::kInvalidRenderGraphHandle;
+        uint32_t volumetricFog = renderer::kInvalidRenderGraphHandle;
+        uint32_t probeCapture = renderer::kInvalidRenderGraphHandle;
+        uint32_t irradianceProbes = renderer::kInvalidRenderGraphHandle;
+        uint32_t mainGpuCulling = renderer::kInvalidRenderGraphHandle;
+        uint32_t shadowGpuCulling = renderer::kInvalidRenderGraphHandle;
+        uint32_t punctualShadowCull = renderer::kInvalidRenderGraphHandle;
+        uint32_t depthPrepass = renderer::kInvalidRenderGraphHandle;
+        uint32_t mainHdr = renderer::kInvalidRenderGraphHandle;
+        uint32_t depthPyramidMid = renderer::kInvalidRenderGraphHandle;
+        uint32_t mainGpuCullingPhase2 = renderer::kInvalidRenderGraphHandle;
+        uint32_t mainHdrPhase2 = renderer::kInvalidRenderGraphHandle;
+        uint32_t ssrCopy = renderer::kInvalidRenderGraphHandle;
+        uint32_t ssrTrace = renderer::kInvalidRenderGraphHandle;
+        uint32_t gtao = renderer::kInvalidRenderGraphHandle;
+        uint32_t gtaoBlur = renderer::kInvalidRenderGraphHandle;
+        uint32_t transparent = renderer::kInvalidRenderGraphHandle;
+        uint32_t depthPyramid = renderer::kInvalidRenderGraphHandle;
+        uint32_t taaResolve = renderer::kInvalidRenderGraphHandle;
+        uint32_t bloomExtract = renderer::kInvalidRenderGraphHandle;
+        uint32_t bloomBlurHorizontal = renderer::kInvalidRenderGraphHandle;
+        uint32_t bloomBlurVertical = renderer::kInvalidRenderGraphHandle;
+        std::vector<uint32_t> bloomDownsampleChain;
+        std::vector<uint32_t> bloomUpsampleChain;
+        uint32_t luminance = renderer::kInvalidRenderGraphHandle;
+        uint32_t histogramExposure = renderer::kInvalidRenderGraphHandle;
+        uint32_t composite = renderer::kInvalidRenderGraphHandle;
+        uint32_t imgui = renderer::kInvalidRenderGraphHandle;
+        uint32_t vsmPageCull = renderer::kInvalidRenderGraphHandle;
+        uint32_t vsmPagePoolIdle = renderer::kInvalidRenderGraphHandle;
+        uint32_t cascadeShadowCache = renderer::kInvalidRenderGraphHandle;
+        uint32_t fogVolumeInit = renderer::kInvalidRenderGraphHandle;
+        uint32_t clusterBuild = renderer::kInvalidRenderGraphHandle;
+        uint32_t probeShadingParams = renderer::kInvalidRenderGraphHandle;
+        uint32_t frameCapture = renderer::kInvalidRenderGraphHandle;
+        uint32_t frameCaptureAfterOverlay = renderer::kInvalidRenderGraphHandle;
+    };
+    FrameGraphPasses frameGraphPasses_{};
     // The geometry region's callbacks. The main HDR pass fills `state` with
     // the drawing state phase 2 and the transparent pass reuse.
     void recordMainHdrPass(VkCommandBuffer commandBuffer, MainPassFrameState& state);

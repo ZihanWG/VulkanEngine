@@ -345,6 +345,9 @@ struct BufferBarrierScopes {
 
 class RenderGraphPassContext;
 
+// The clear every full-screen colour pass uses.
+inline constexpr VkClearValue kOpaqueBlack{{{0.0f, 0.0f, 0.0f, 1.0f}}};
+
 // The one colour target a graph-recorded raster pass renders into. The graph
 // opens the dynamic-rendering scope over the whole image before the pass's
 // execute callback and closes it after.
@@ -814,57 +817,6 @@ struct RenderGraphPassCost {
 [[nodiscard]] std::string formatRenderGraphFrameTrace(const std::vector<RenderPassNode>& passes,
                                                       std::span<const uint32_t> recordedOrder);
 
-// The passes a caller binds an execute callback to.
-enum class RenderGraphBuiltinPass {
-    RayTracingSceneBuild,
-    VsmPageMark,
-    Shadow,
-    PunctualShadow,
-    MainGpuCulling,
-    VolumetricFog,
-    ProbeCapture,
-    MainHdr,
-    DepthPyramid,
-    TaaResolve,
-    BloomExtract,
-    BloomDownsampleFirst,
-    BloomBlurHorizontal,
-    BloomBlurVertical,
-    Luminance,
-    HistogramExposure,
-    Composite,
-    ImGui,
-    // One pass per level; named with the level through the instanced overloads.
-    BloomDownsample,
-    BloomUpsample,
-    ShadowGpuCulling,
-    PunctualShadowCull,
-    VsmPage,
-    IrradianceProbes,
-    DepthPrepass,
-    RayTracedShadowTrace,
-    RayTracedShadowTemporal,
-    // One pass per RayTracedShadowFilterStage; the stage is the instance.
-    RayTracedShadowFilter,
-    RayTracedShadowResolve,
-    DepthPyramidMid,
-    MainGpuCullingPhase2,
-    MainHdrPhase2,
-    SsrCopy,
-    SsrTrace,
-    Gtao,
-    GtaoBlur,
-    Transparent,
-    VsmPageCull,
-    VsmPagePoolIdle,
-    CascadeShadowCache,
-    FogVolumeInit,
-    ClusterBuild,
-    ProbeShadingParams,
-    FrameCapture,
-    FrameCaptureAfterOverlay
-};
-
 // What a caller binds to a declared pass so the graph records it: the commands,
 // and the label and profiler scope names the pass has always been reported
 // under. See RenderPassNode::execute.
@@ -909,6 +861,76 @@ planScopeTransition(const std::vector<RenderGraphScope>& scopes, std::span<const
 struct RenderGraphProfilerHooks {
     std::function<bool(VkCommandBuffer, const char*)> beginScope;
     std::function<void(VkCommandBuffer)> endScope;
+};
+
+// The handles of the frame being built, which callers declare their passes
+// against. A declaration threads the version forward by writing the handle a
+// write returns back here, so a later pass reading the field names that version.
+// Valid between beginFrame and endFrame.
+struct RenderGraphBlackboard {
+    RGTextureHandle swapchainColor{};
+    RGTextureHandle mainDepth{};
+    RGTextureHandle shadowMapDepth{};
+    RGTextureHandle punctualShadowAtlasDepth{};
+    RGTextureHandle vsmPagePoolDepth{};
+    RGTextureHandle sceneColor{};
+    RGTextureHandle velocity{};
+    RGTextureHandle normalRoughness{};
+    RGTextureHandle ambientOcclusion{};
+    RGTextureHandle ambientOcclusionRaw{};
+    RGTextureHandle rayTracedShadowMask{};
+    RGTextureHandle rayTracedShadowTrace{};
+    RGTextureHandle rayTracedShadowFilter{};
+    RGTextureHandle rayTracedShadowHistoryWrite{};
+    RGTextureHandle rayTracedShadowHistoryRead{};
+    RGTextureHandle ssrSceneColorCopy{};
+    RGTextureHandle taaHistoryRead{};
+    RGTextureHandle taaHistoryWrite{};
+    // Deliberately absent: the post-process source used to be snapshotted
+    // here before any pass had declared anything, which made every reader of
+    // it name version 0 of a target four writes old. It is resolved at the
+    // point of use instead; see postProcessSource below.
+    bool taaHistoryIsPostProcessSource = false;
+    RGTextureHandle bloomExtract{};
+    RGTextureHandle bloomPing{};
+    RGTextureHandle bloomPong{};
+    std::vector<RGTextureHandle> bloomDownsampleChain;
+    std::vector<RGTextureHandle> bloomUpsampleChain;
+    RGTextureHandle depthPyramid{};
+    RGTextureHandle fogScatterWrite{};
+    RGTextureHandle fogScatterRead{};
+    RGTextureHandle fogIntegrated{};
+    RGTextureHandle probeIrradianceAtlas{};
+    RGTextureHandle probeDepthAtlas{};
+    RGTextureHandle probeCaptureAtlas{};
+    RGTextureHandle probeCaptureDepth{};
+    RGBufferHandle mainCullInput{};
+    RGBufferHandle mainCullIndirectOutput{};
+    RGBufferHandle mainCullVisibleCounts{};
+    RGBufferHandle mainCullReadback{};
+    RGBufferHandle shadowCullIndirectOutput{};
+    RGBufferHandle shadowCullVisibleCounts{};
+    RGBufferHandle shadowCullReadback{};
+    RGBufferHandle punctualCullIndirectOutput{};
+    RGBufferHandle punctualCullVisibleCounts{};
+    RGBufferHandle luminancePartials{};
+    RGBufferHandle luminanceReadback{};
+    RGBufferHandle luminanceHistogram{};
+    RGBufferHandle histogramReadback{};
+    RGBufferHandle exposureState{};
+    RGBufferHandle rayTracingTopLevel{};
+    // Whether beginFrame imported these; their passes are only declared then.
+    bool punctualShadowAtlasImported = false;
+    bool vsmPagePoolImported = false;
+
+    // The HDR target the post-process chain reads: the TAA resolve when it ran,
+    // the scene colour otherwise. Resolved at the point of use rather than
+    // snapshotted, because a handle taken before the main pass wrote names a
+    // version four writes stale.
+    [[nodiscard]] RGTextureHandle postProcessSource() const
+    {
+        return taaHistoryIsPostProcessSource ? taaHistoryWrite : sceneColor;
+    }
 };
 
 class RenderGraph;
@@ -1048,11 +1070,6 @@ public:
     // check keeps meaning what it says.
     void beginDepthPrepassRendering();
     void endDepthPrepassRendering();
-    [[nodiscard]] bool hasDepthPrepass() const
-    {
-        return frame_.passIndices.depthPrepass != kInvalidRenderGraphHandle;
-    }
-
     void beginMainHdrPassRendering();
     void endMainHdrPassRendering();
     // Two-phase occlusion: the second (load, no clear) main HDR pass for the
@@ -1081,13 +1098,34 @@ public:
                      RenderPassExecutionType executionType,
                      bool sideEffect,
                      SetupCallback setup);
-    // A pass the graph records itself: see RenderPassNode::execute.
+    // A pass with its commands: see RenderPassNode::execute and
+    // RenderGraphPassExecutor. Declared between beginFrame and compile.
     uint32_t addPass(std::string name,
                      RenderPassType type,
                      RenderPassExecutionType executionType,
                      bool sideEffect,
                      SetupCallback setup,
-                     ExecuteCallback execute);
+                     RenderGraphPassExecutor executor);
+    // A side-effect pass with no declared resources, ordered after `after`:
+    // work whose inputs and outputs the graph does not track.
+    uint32_t addWorkPass(std::string name,
+                         RenderPassType type,
+                         RenderPassExecutionType executionType,
+                         std::initializer_list<uint32_t> after,
+                         RenderGraphPassExecutor executor);
+
+    // The frame's handles, to declare passes against.
+    [[nodiscard]] RenderGraphBlackboard& blackboard()
+    {
+        return frame_;
+    }
+    [[nodiscard]] const RenderGraphFrameResources& frameResources() const
+    {
+        return frame_.resources;
+    }
+
+    // Culls, validates and schedules what callers declared since beginFrame.
+    void compile();
 
     RGTextureHandle importTexture(const RenderGraphImageResource& resource);
     RGTextureHandle createTransientTexture(const RGTextureDesc& desc, const RenderGraphImageResource& backingResource);
@@ -1183,19 +1221,6 @@ public:
         return executionOrderCycleDetected_;
     }
 
-    // Index of a builtin pass, or kInvalidRenderGraphHandle when this frame does
-    // not declare it.
-    [[nodiscard]] uint32_t builtinPassIndex(RenderGraphBuiltinPass pass) const;
-
-    // Hands a declared pass its commands for this frame. Call between beginFrame
-    // and recordPasses. Returns false, binding nothing, when this frame does not
-    // declare the pass.
-    bool bindExecutor(RenderGraphBuiltinPass pass, RenderGraphPassExecutor executor);
-    // The same for a pass declared once per level -- BloomDownsample and
-    // BloomUpsample -- naming the level.
-    bool bindExecutor(RenderGraphBuiltinPass pass, uint32_t instance, RenderGraphPassExecutor executor);
-    [[nodiscard]] uint32_t builtinPassIndex(RenderGraphBuiltinPass pass, uint32_t instance) const;
-
     // Brackets passes declared between them in a RenderGraphScope. Declaration
     // time only; scopes nest.
     void pushScope(const char* label, const char* profileScope);
@@ -1223,17 +1248,10 @@ private:
     // Shared body of the per-cascade and layered shadow passes; viewMask == 0
     // selects the single-layer form.
     void beginShadowRenderingInternal(uint32_t cascadeLayer, uint32_t viewMask);
-    // Throws unless the graph is inside `passIndex`'s execute callback with no
-    // rendering scope of the callback's own open.
-    void requireExecuting(uint32_t passIndex, const char* operation) const;
-    // Every pass that runs the main fragment shader declares this, because that
-    // shader is what traces: the main pass, the phase-2 re-draw and the
-    // transparent pass. Declares nothing on a frame that does not trace.
-    void declareRayTracedShadowRead(RenderGraphBuilder& builder);
-    // The same three passes read the ray-traced shadow mask. Declared on every
-    // frame the mask exists, unlike the TLAS read: the ray-query variant samples
-    // binding 17 on every frame it runs, traced or not.
-    void declareRayTracedShadowMaskRead(RenderGraphBuilder& builder);
+    // Throws unless the graph is inside the execute callback of a pass of this
+    // type with no rendering scope of the callback's own open.
+    void requireExecuting(RenderPassType type, const char* operation) const;
+    [[nodiscard]] bool declaresPassOfType(RenderPassType type) const;
     // Emits a pass's barriers and runs its execute callback.
     void executePass(uint32_t passIndex);
 
@@ -1313,56 +1331,9 @@ private:
         bool graphManaged = false;
     };
 
-    struct BuiltinPassIndices {
-        uint32_t rayTracingSceneBuild = kInvalidRenderGraphHandle;
-        uint32_t rayTracedShadowTrace = kInvalidRenderGraphHandle;
-        // Indexed by RayTracedShadowFilterStage.
-        uint32_t rayTracedShadowTemporal = kInvalidRenderGraphHandle;
-        std::array<uint32_t, 3> rayTracedShadowFilter{
-            kInvalidRenderGraphHandle, kInvalidRenderGraphHandle, kInvalidRenderGraphHandle};
-        uint32_t rayTracedShadowResolve = kInvalidRenderGraphHandle;
-        uint32_t vsmPageMark = kInvalidRenderGraphHandle;
-        uint32_t vsmPage = kInvalidRenderGraphHandle;
-        uint32_t shadow = kInvalidRenderGraphHandle;
-        uint32_t punctualShadow = kInvalidRenderGraphHandle;
-        uint32_t volumetricFog = kInvalidRenderGraphHandle;
-        uint32_t probeCapture = kInvalidRenderGraphHandle;
-        uint32_t irradianceProbes = kInvalidRenderGraphHandle;
-        uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
-        uint32_t shadowGpuCulling = kInvalidRenderGraphHandle;
-        uint32_t punctualShadowCull = kInvalidRenderGraphHandle;
-        uint32_t depthPrepass = kInvalidRenderGraphHandle;
-        uint32_t mainHdr = kInvalidRenderGraphHandle;
-        uint32_t depthPyramidMid = kInvalidRenderGraphHandle;
-        uint32_t mainGpuCullingPhase2 = kInvalidRenderGraphHandle;
-        uint32_t mainHdrPhase2 = kInvalidRenderGraphHandle;
-        uint32_t ssrCopy = kInvalidRenderGraphHandle;
-        uint32_t ssrTrace = kInvalidRenderGraphHandle;
-        uint32_t gtao = kInvalidRenderGraphHandle;
-        uint32_t gtaoBlur = kInvalidRenderGraphHandle;
-        uint32_t transparent = kInvalidRenderGraphHandle;
-        uint32_t depthPyramid = kInvalidRenderGraphHandle;
-        uint32_t taaResolve = kInvalidRenderGraphHandle;
-        uint32_t bloomExtract = kInvalidRenderGraphHandle;
-        uint32_t bloomBlurHorizontal = kInvalidRenderGraphHandle;
-        uint32_t bloomBlurVertical = kInvalidRenderGraphHandle;
-        std::vector<uint32_t> bloomDownsampleChain;
-        std::vector<uint32_t> bloomUpsampleChain;
-        uint32_t luminance = kInvalidRenderGraphHandle;
-        uint32_t histogramExposure = kInvalidRenderGraphHandle;
-        uint32_t composite = kInvalidRenderGraphHandle;
-        uint32_t imgui = kInvalidRenderGraphHandle;
-        uint32_t vsmPageCull = kInvalidRenderGraphHandle;
-        uint32_t vsmPagePoolIdle = kInvalidRenderGraphHandle;
-        uint32_t cascadeShadowCache = kInvalidRenderGraphHandle;
-        uint32_t fogVolumeInit = kInvalidRenderGraphHandle;
-        uint32_t clusterBuild = kInvalidRenderGraphHandle;
-        uint32_t probeShadingParams = kInvalidRenderGraphHandle;
-        uint32_t frameCapture = kInvalidRenderGraphHandle;
-        uint32_t frameCaptureAfterOverlay = kInvalidRenderGraphHandle;
-    };
-
-    struct FrameState {
+    // What the graph keeps about the frame being built. The handles callers
+    // declare against are its blackboard base; the rest is the graph's own.
+    struct FrameState : RenderGraphBlackboard {
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
         rhi::VulkanSwapchain* swapchain = nullptr;
         rhi::VulkanShadowMap* shadowMap = nullptr;
@@ -1372,66 +1343,10 @@ private:
         // Null when the page pool failed to allocate or the subsystem is off.
         rhi::VulkanShadowMap* vsmPagePool = nullptr;
         RenderGraphFrameResources resources{};
-        BuiltinPassIndices passIndices{};
         uint32_t imageIndex = 0;
         VkImage swapchainImage = VK_NULL_HANDLE;
-        RGTextureHandle swapchainColor{};
-        RGTextureHandle mainDepth{};
-        RGTextureHandle shadowMapDepth{};
-        RGTextureHandle punctualShadowAtlasDepth{};
-        RGTextureHandle vsmPagePoolDepth{};
-        RGTextureHandle sceneColor{};
-        RGTextureHandle velocity{};
-        RGTextureHandle normalRoughness{};
-        RGTextureHandle ambientOcclusion{};
-        RGTextureHandle ambientOcclusionRaw{};
-        RGTextureHandle rayTracedShadowMask{};
-        RGTextureHandle rayTracedShadowTrace{};
-        RGTextureHandle rayTracedShadowFilter{};
-        RGTextureHandle rayTracedShadowHistoryWrite{};
-        RGTextureHandle rayTracedShadowHistoryRead{};
-        RGTextureHandle ssrSceneColorCopy{};
-        RGTextureHandle taaHistoryRead{};
-        RGTextureHandle taaHistoryWrite{};
-        // Deliberately absent: the post-process source used to be snapshotted
-        // here before any pass had declared anything, which made every reader of
-        // it name version 0 of a target four writes old. It is resolved at the
-        // point of use instead; see RenderGraph::postProcessSource.
-        bool taaHistoryIsPostProcessSource = false;
-        RGTextureHandle bloomExtract{};
-        RGTextureHandle bloomPing{};
-        RGTextureHandle bloomPong{};
-        std::vector<RGTextureHandle> bloomDownsampleChain;
-        std::vector<RGTextureHandle> bloomUpsampleChain;
-        RGTextureHandle depthPyramid{};
-        RGTextureHandle fogScatterWrite{};
-        RGTextureHandle fogScatterRead{};
-        RGTextureHandle fogIntegrated{};
-        RGTextureHandle probeIrradianceAtlas{};
-        RGTextureHandle probeDepthAtlas{};
-        RGTextureHandle probeCaptureAtlas{};
-        RGTextureHandle probeCaptureDepth{};
-        RGBufferHandle mainCullInput{};
-        RGBufferHandle mainCullIndirectOutput{};
-        RGBufferHandle mainCullVisibleCounts{};
-        RGBufferHandle mainCullReadback{};
-        RGBufferHandle shadowCullIndirectOutput{};
-        RGBufferHandle shadowCullVisibleCounts{};
-        RGBufferHandle shadowCullReadback{};
-        RGBufferHandle punctualCullIndirectOutput{};
-        RGBufferHandle punctualCullVisibleCounts{};
-        RGBufferHandle luminancePartials{};
-        RGBufferHandle luminanceReadback{};
-        RGBufferHandle luminanceHistogram{};
-        RGBufferHandle histogramReadback{};
-        RGBufferHandle exposureState{};
-        RGBufferHandle rayTracingTopLevel{};
     };
 
-    // The HDR target the post-process chain reads: the TAA resolve's output when
-    // TAA is on, the scene colour otherwise. Resolved on each call rather than
-    // stored, so it always names the current version of whichever it is.
-    [[nodiscard]] RGTextureHandle postProcessSource() const;
     void requireFrameActive(const char* operation) const;
     // beginFrame() helpers (see RenderGraph.cpp): import the externally-owned
     // swapchain/shadow targets, create the transient frame textures, and import
@@ -1443,18 +1358,6 @@ private:
                                     uint32_t imageIndex);
     void createTransientFrameTextures();
     void importFrameBuffers();
-    void buildFrameGraphDeclarations();
-    // buildFrameGraphDeclarations() groups (see RenderGraph.cpp); each declares a
-    // contiguous run of passes in the same order as before.
-    // A side-effect pass with no declared resources, ordered after `after`:
-    // work whose inputs and outputs the graph does not track.
-    uint32_t addWorkPass(std::string name,
-                         RenderPassType type,
-                         RenderPassExecutionType executionType,
-                         std::initializer_list<uint32_t> after);
-    void declareGeometryPasses();
-    void declareBloomAndTaaPasses();
-    void declareExposureCompositePasses();
     void compilePassCulling();
     // Runs validateDeclarations over the culled pass list and writes what it
     // finds onto the pass nodes, where the debug panel picks it up.

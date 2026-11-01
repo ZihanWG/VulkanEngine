@@ -1157,7 +1157,7 @@ cannot answer, not to restate the ones it already did.
 
 ## Where it sits in the frame
 
-`VsmPageMarkPass` is declared first in `declareGeometryPasses()`, before
+`VsmPageMarkPass` is declared first in `Renderer::declareFrameGraph`, before
 `CSMShadowPass`: it reads the pyramid the *previous* frame left behind, so it has
 to precede anything this frame writes. It is a compute pass with no rendering
 scope, declared `sideEffect` because the bitmask it writes is not a graph

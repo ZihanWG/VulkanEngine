@@ -336,6 +336,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/Renderer.cpp
     src/renderer/RendererDebugUi.cpp
     src/renderer/RendererFrame.cpp
+    src/renderer/RendererGraph.cpp
     src/renderer/RendererRecord.cpp
     src/renderer/RendererResources.cpp
     src/renderer/RendererScene.cpp
