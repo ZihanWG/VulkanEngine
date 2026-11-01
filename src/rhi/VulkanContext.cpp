@@ -244,9 +244,12 @@ void VulkanContext::createInstance(const Window& window)
 
     VkInstanceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-#if defined(__APPLE__)
-    createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
-#endif
+    // The flag and the extension travel together: the flag without the
+    // extension is invalid, and the extension without the flag still hides
+    // portability drivers. requiredInstanceExtensions decides on the extension.
+    if (containsExtension(extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
+        createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
     if (options_.synchronizationValidation) {
         createInfo.pNext = &layerSettingsCreateInfo;
     } else {
@@ -338,9 +341,14 @@ std::vector<const char*> VulkanContext::requiredInstanceExtensions(const Window&
                             }) != availableExtensions.end();
     };
 
-#if defined(__APPLE__)
-    appendUniqueExtension(extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-#endif
+    // Whether a portability driver such as MoltenVK is installed is a property
+    // of the machine's drivers, not of the host OS: a Mac can also carry a
+    // native one (KosmicKrisp), and nothing stops a portability driver on Linux
+    // or Windows. So ask the loader rather than the compiler, and let device
+    // scoring choose among everything it then enumerates.
+    if (hasExtension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
+        appendUniqueExtension(extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    }
 
     const bool debugUtilsAvailable = hasExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     if (!containsExtension(extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) && debugUtilsAvailable) {

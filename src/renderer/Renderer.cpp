@@ -2873,6 +2873,15 @@ void Renderer::updateDynamicResolution()
     const float gpuFrameMs = freshGpuFrameMs_;
     freshGpuFrameMs_ = 0.0f;
 
+    // On a device without timestamp queries (KosmicKrisp reports
+    // timestampValidBits = 0) no measurement ever arrives, and the controller
+    // would hold the current scale indefinitely while looking enabled.
+    if (dynamicResolutionSettings_.enabled && !gpuProfiler_.available() && !dynamicResolutionNoTimerWarned_) {
+        Logger::warn("Dynamic resolution is enabled, but this device has no GPU timestamps to drive it; the render "
+                     "scale stays where it is.");
+        dynamicResolutionNoTimerWarned_ = true;
+    }
+
     const float scale = dynamicResolution_.update(gpuFrameMs, renderScaleSettings_.scale, dynamicResolutionSettings_);
     if (scale == renderScaleSettings_.scale) {
         return;

@@ -56,8 +56,9 @@ From `build/debug`:
 ```
 
 Expected startup logs include SDL using the Cocoa video driver, SDL loading the
-Vulkan SDK loader, Vulkan API version 1.3, Apple M3 or the local Apple GPU, and
-`VK_KHR_portability_subset` when MoltenVK exposes it.
+Vulkan SDK loader, Vulkan API version 1.3, the selected GPU together with the
+driver running it (`Selected Vulkan physical device: Apple M3 (MoltenVK, ...)`),
+and `VK_KHR_portability_subset` when MoltenVK exposes it.
 
 ## Running from Terminal
 
@@ -71,6 +72,41 @@ export SDL_VIDEODRIVER=cocoa
 ```
 
 This remains the simplest way to run a non-bundle Debug build.
+
+## Choosing the Driver: MoltenVK or KosmicKrisp
+
+Vulkan SDK 1.4.350.1 installs two drivers for the same Apple GPU: MoltenVK, a
+portability layer over Metal, and KosmicKrisp, a native Mesa driver. The
+renderer runs on either; nothing in it is switched by platform. Every path is
+chosen from what the device reports, and the startup capability report says
+which one is live.
+
+`setup-env.sh` exports `VK_DRIVER_FILES` (and the older `VK_ICD_FILENAMES`)
+pointing at MoltenVK only, so the workflow above always gets MoltenVK. To run on
+KosmicKrisp, override the variable after sourcing:
+
+```sh
+source "$HOME/VulkanSDK/1.4.350.1/setup-env.sh"
+export VK_DRIVER_FILES="$VULKAN_SDK/share/vulkan/icd.d/libkosmickrisp_icd.json"
+./VulkanEngine
+```
+
+With neither variable set, the loader enumerates both. They score identically,
+so the first one enumerated is selected and the log names the one that was not
+(`Equally ranked and not selected: ...`).
+
+What changes on KosmicKrisp, as that SDK version reports it:
+
+- No `VK_KHR_portability_subset`: it is a native driver.
+- `drawIndirectCount` is supported, so GPU culling takes the compacted
+  `vkCmdDrawIndexedIndirectCount` path instead of fixed per-object slots.
+- `timestampValidBits` is 0, so the GPU profiler is unavailable. Per-pass GPU
+  timings, the measurement protocol, and the dynamic resolution controller all
+  depend on it; the controller logs a warning and holds its scale.
+- One queue family with one queue, so async compute and the transfer queue
+  stay on the graphics queue, and `MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES` has
+  no effect.
+- The device reports Vulkan 1.3, which is what the renderer requires.
 
 ## Verifying
 
@@ -86,7 +122,10 @@ tools/dev/verify_renderer.sh full   # fast, sync, ASan/UBSan tests, Release buil
 `sync` sets `MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1` unless the variable is
 already set. Without it MoltenVK exposes no compute-only or transfer-only queue
 family, the async compute and upload paths fall back to the graphics queue, and
-the queue-family ownership transfers `sync` exists to check never run. `full`
+the queue-family ownership transfers `sync` exists to check never run. Only
+MoltenVK reads the variable, so `sync` reads the capability report of its own
+run and prints a warning for each queue that is still missing -- which is every
+run on KosmicKrisp. `full`
 runs the ASan/UBSan leg here; on Windows it is skipped, because MSVC builds
 without the sanitizers.
 
@@ -162,7 +201,9 @@ existing repository/build paths.
 - Volk initializes from SDL3's `SDL_Vulkan_GetVkGetInstanceProcAddr()` result so
   SDL surface creation and engine Vulkan calls use the same loader path.
 - Instance creation enables `VK_KHR_portability_enumeration` and sets
-  `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR` on Apple platforms.
+  `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR` whenever the loader offers
+  the extension, on any platform; without it a portability driver such as
+  MoltenVK is not enumerated at all.
 - Logical device creation always requires `VK_KHR_swapchain` and enables
   `VK_KHR_portability_subset` only when the selected physical device reports it.
 
@@ -213,9 +254,9 @@ paths, what the frame looks like -- still needs a run on a real Mac.
 ### `VK_ERROR_INCOMPATIBLE_DRIVER` during `vkCreateInstance`
 
 On macOS this usually means portability enumeration was not enabled. Confirm the
-enabled instance extensions include `VK_KHR_portability_enumeration` and that the
-instance create flags include `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR`
-on Apple builds.
+Debug log's enabled instance extensions include `VK_KHR_portability_enumeration`;
+the renderer enables it, and the matching create flag, whenever the loader
+offers it. A loader too old to offer it cannot enumerate MoltenVK.
 
 ### Segmentation fault inside `Cocoa_Vulkan_CreateSurface`
 

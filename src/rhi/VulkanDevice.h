@@ -161,6 +161,20 @@ public:
     {
         return portabilityFallbacks_;
     }
+    // The device was created with VK_KHR_portability_subset, i.e. it runs on a
+    // portability-layer driver such as MoltenVK rather than a native one.
+    [[nodiscard]] bool portabilitySubsetEnabled() const
+    {
+        return portabilitySubsetEnabled_;
+    }
+    // Whether MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES is worth suggesting for a
+    // missing queue: only on a portability driver, and not when
+    // --portability-fallbacks took the queues away, which no variable undoes.
+    // A native driver such as KosmicKrisp ignores the variable entirely.
+    [[nodiscard]] bool specializedQueueHintApplies() const
+    {
+        return portabilitySubsetEnabled_ && !portabilityFallbacks_;
+    }
     // Acceleration structures and ray queries: both extensions enabled, both
     // feature bits on, and the entry points resolved. Says nothing about whether
     // a renderer path uses them -- that is the renderer's decision.
@@ -224,6 +238,7 @@ private:
     VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
     std::filesystem::path shaderDirectory_;
     bool portabilityFallbacks_ = false;
+    bool portabilitySubsetEnabled_ = false;
     // Digest of shaderDirectory_ taken when the cache was created; reused when
     // saving so the blob is stamped with the shaders its pipelines came from.
     uint64_t shaderHash_ = 0;

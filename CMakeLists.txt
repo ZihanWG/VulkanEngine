@@ -371,6 +371,7 @@ add_library(VulkanEngineRuntime STATIC
     src/rhi/VulkanTimestampQuery.cpp
     src/rhi/AsyncComputeQueueSelection.cpp
     src/rhi/DeviceExtensionSelection.cpp
+    src/rhi/PhysicalDeviceSelection.cpp
     src/rhi/PortabilityFallbacks.cpp
     src/rhi/TransferQueueSelection.cpp
     src/rhi/VulkanTransientMemoryPool.cpp

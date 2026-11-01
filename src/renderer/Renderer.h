@@ -1329,6 +1329,9 @@ private:
     // none did. Written by pushGpuTimingSample and consumed once by
     // updateDynamicResolution.
     float freshGpuFrameMs_ = 0.0f;
+    // Set once the "enabled, but no GPU timer to drive it" warning has been
+    // logged, so a settings file that turns the controller on says so once.
+    bool dynamicResolutionNoTimerWarned_ = false;
     // In-progress value of the render-scale slider. Committing a scale rebuilds
     // every screen-sized target, so the drag edits this and only writes through
     // to renderScaleSettings_ when it ends.
