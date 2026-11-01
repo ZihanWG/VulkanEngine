@@ -34,9 +34,9 @@ overview; these documents describe implementation details and limitations.
   collected from design_decisions.md and mesh_lod.md for a reader.
 - [GPU Profiling](profiling.md): Timestamp query profiler design, frame-latency
   readback model, profiled ranges, and known timing limitations.
-- [Render Graph 2.0](render_graph.md): Logical resource handles, pass
-  declarations, conservative image transitions, selected buffer barriers,
-  liveness metadata, and graph UI.
+- [Render Graph](render_graph.md): Every pass declared with its resources and
+  its recording callback; culling, declaration validation, scheduling, inferred
+  image and buffer barriers, the frame trace and backstop, and graph UI.
 - [GPU Culling](gpu_culling.md): GPU frustum culling, two-phase Hi-Z occlusion
   (on by default, with a same-frame re-test), occlusion test scene, counters, and
   fallbacks.

@@ -1,176 +1,547 @@
-# Render Graph 2.0
+# Render Graph
 
-Phase 4 upgraded the earlier manual pass list into a small engine-style render graph. The current goal is to centralize pass/resource declarations plus conservative image and selected buffer synchronization without changing the renderer's visible output or rewriting unrelated renderer systems.
+The frame is a render graph. Every pass is declared once, with the resources it
+reads and writes and the callback that records its commands; the graph culls
+what nothing needs, checks the declarations against each other, orders the
+passes, infers the barriers between them, and records each one through its
+callback.
 
-## Current Architecture
+It is deliberately small. It runs on one queue, it does not reorder passes, its
+barriers are conservative and whole-resource, and transient memory aliasing
+exists but is off by default. Each of those is a measured or argued decision
+rather than an omission, and "Known Limitations" says which.
 
-`Renderer` still owns the frame loop and records the Vulkan commands for each pass. `RenderGraph` now owns the logical frame description:
+## Overview
 
-- logical texture and buffer handles
-- imported and transient resource descriptions
-- per-pass read/write declarations
-- conservative image layout/access transition inference
-- conservative buffer access barrier inference for selected declared pass-to-pass dependencies
-- pass execution, side-effect, and culling metadata
-- ImGui debug data for pass/resource visualization
+A frame runs in five steps:
 
-Every pass is declared with its execute callback, beside the code that records it: the renderer's passes in `RendererGraph.cpp`, the post-process stack's in `PostProcessStack::declareGraphPasses`. A frame is `beginFrame` (resource imports), the declarations, `compile` (culling, validation, scheduling), `recordPasses` and `endFrame`; see "Execute callbacks".
+1. `RenderGraph::beginFrame` imports the frame's resources -- the swapchain image,
+   the shadow maps, the per-frame buffers, the scene-sized targets -- and puts
+   their handles on the frame's blackboard.
+2. The passes are declared. The renderer's are in `Renderer::declareFrameGraph`
+   (`RendererGraph.cpp`): the virtual shadow map, cascade and punctual shadow
+   passes, culling, fog, probes, the geometry region, the frame captures and the
+   overlay. The post-process stack's are in `PostProcessStack::declareGraphPasses`:
+   TAA, both bloom chains, exposure and the composite.
+3. `compile` culls dead passes, validates the declarations and derives the
+   execution order.
+4. `recordPasses` records every scheduled pass: for each, it emits the barriers
+   its declarations imply, opens its debug label and GPU profiler scope, and
+   calls its callback.
+5. `endFrame` checks that what was recorded matches what was declared, and
+   closes the command buffer. Submission stays with `Renderer::drawFrame`.
 
-## Resource Versions
+Declaration order is the frame's order. Every edge the graph derives points
+backwards, and the schedule breaks ties on declaration index, so the order it
+computes is the order the passes were declared in -- which is what lets the
+graph make the order its own decision without changing the frame.
+
+## Resources
+
+### Handles, versions and the blackboard
+
+Passes name textures and buffers by `RGTextureHandle` and `RGBufferHandle`,
+frame-local indices that stay valid from `beginFrame` to `endFrame`. Nothing in a
+declaration sees a `VkImage` or `VkBuffer`; a callback resolves handles through
+its `RenderGraphPassContext`.
 
 A handle names a resource **and which of its versions**. Every declared write
 produces a new version and the builder hands back a handle for it, so a
 declaration threads the result forward:
 
 ```cpp
-frame_.sceneColor = builder.writeTexture(frame_.sceneColor, RGAccess::ColorAttachmentWrite, "...");
+board.sceneColor = builder.writeTexture(board.sceneColor, RGAccess::ColorAttachmentWrite, "...");
 ```
+
+`board` is the frame's `RenderGraphBlackboard`, from `RenderGraph::blackboard()`:
+the handles `beginFrame` imported, which declarations read and write back.
+Storing the returned handle there is what makes a later reader name that
+version.
 
 Barriers and resource lookup ignore the version -- every version of a resource
 is the same `VkImage`. What it buys is that a reader names the version it
-consumes, so the declared data flow no longer depends on where a pass happens to
-sit in the file. That is what lets `validatePassOrder` judge an order other than
-the recorded one, and it makes holding a handle from before an intervening write
-a detectable mistake (`StaleVersionRead`) instead of an invisible one.
+consumes, so the declared data flow does not depend on where a pass sits in the
+file. That is what lets `validatePassOrder` judge an order other than the
+recorded one, and it makes holding a handle from before an intervening write a
+detectable mistake (`StaleVersionRead`) instead of an invisible one.
 
-This frame's version counts, at 1280x720 with the default settings: `SceneColor`
-reaches 4 (main, phase 2, SSR trace, transparent), `VelocityBuffer` and
-`NormalRoughnessGBuffer` 3, `SwapchainColor`, `MainDepth` and `DepthPyramidHiZ` 2.
+#### What versioning found
 
-### What versioning found
-
-The post-process source was snapshotted into `FrameState` *before any pass had
-declared anything*, and five passes read it: bloom extract, the first mip-chain
+The post-process source used to be snapshotted *before any pass had declared
+anything*, and five passes read it: bloom extract, the first mip-chain
 downsample, luminance, histogram exposure, and composite. With versions turned
-on, all five report `StaleVersionRead` -- they name version 0 of a target that
-four writes later is at version 4.
+on, all five reported `StaleVersionRead` -- they named version 0 of a target that
+four writes later was at version 4.
 
-The consequence is not cosmetic. With those stale handles the derived dependency
-graph puts the entire post-process chain at a longest chain of **9** instead of
-**17**, because it believes bloom, luminance and composite depend on the scene
-colour *before the main pass wrote it*. A scheduler acting on that graph would
-hoist the whole post-process chain above the main pass.
+The consequence was not cosmetic. With those stale handles the derived
+dependency graph put the post-process chain at a longest chain of **9** instead
+of **17**, because it believed bloom, luminance and composite depended on the
+scene colour *before the main pass wrote it*. A scheduler acting on that graph
+would have hoisted the whole post-process chain above the main pass.
 
-The fix is to resolve the source at the point of use rather than snapshot it:
-`RenderGraph::postProcessSource()` returns the TAA resolve target or the scene
-colour, reading whichever member currently holds the latest version. Both the
-defect and the fix were checked on a real frame: restoring the snapshot behaviour
-reports the five findings and drops the chain to 9; the fix reports none.
+The source is resolved at the point of use instead:
+`RenderGraphBlackboard::postProcessSource()` returns the TAA resolve target or
+the scene colour, whichever currently holds the latest version. Both the defect
+and the fix were checked on a real frame: restoring the snapshot reported the
+five findings and dropped the chain to 9; the fix reports none.
 
-## Resource Handles
+### Imported and transient resources
 
-Textures and buffers are referenced by frame-local handles:
+Imported resources are owned outside the graph, and their contents persist by
+contract:
 
-- `RGTextureHandle`
-- `RGBufferHandle`
+- the swapchain colour image and the main depth image
+- the cascaded shadow map array, the punctual shadow atlas and the virtual shadow
+  map page pool, each when it exists
+- the TAA history pair and the depth pyramid
+- the froxel fog volumes and the irradiance probe atlases, including the capture
+  atlas and its depth
+- the ray-traced shadow mask's images and the top-level acceleration structure's
+  buffer, on frames that trace
+- the per-frame culling, luminance, histogram and exposure buffers
 
-Handles are lightweight indices that are stable for one `beginFrame` / `endFrame` build. Pass declarations use handles instead of exposing `VkImage` or `VkBuffer` directly. The frame's handles live on `RenderGraph::blackboard()`, which declarations read and write back — a write returns the next version, and storing it there is what makes a later reader name it. `RenderGraphPassContext` resolves handles to Vulkan objects inside a pass's callback.
+Transient resources are the frame's scene-sized and bloom-sized targets:
+`SceneColor`, the velocity and normal-roughness G-buffer, the ambient occlusion
+target and its half-resolution raw input, SSR's scene-colour copy, and every
+image in both bloom chains. The graph describes them and tracks their state;
+their physical images are still created by the subsystems that own them and
+recreated on resize. "Transient Memory Aliasing" is how the graph can let some of
+them share memory.
 
-## Imported And Transient Resources
+## Declaring a pass
 
-Imported resources are owned outside the graph:
+```cpp
+passes.taaResolve = graph.addPass(
+    "TAAResolvePass", RenderPassType::TaaResolve, RenderPassExecutionType::Graphics, /*sideEffect=*/false,
+    [&](RenderGraphBuilder& builder) {
+        builder.readTexture(board.sceneColor, RGAccess::ShaderRead, "...");
+        board.taaHistoryWrite = builder.writeTexture(board.taaHistoryWrite, RGAccess::ColorAttachmentWrite, "...");
+        builder.colorAttachment(board.taaHistoryWrite, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
+    },
+    {"TAAResolvePass", "TAAResolvePass", [this](RenderGraphPassContext& context) {
+         recordTaaResolveCommands(context.commandBuffer());
+     }});
+```
 
-- swapchain color image
-- main depth image
-- cascaded shadow map array
-- punctual (spot/point) shadow atlas, when the atlas allocated successfully
-- TAA history read/write images
-- depth pyramid image
-- per-frame luminance, histogram, exposure, and culling buffers
+The setup callback runs inside `addPass`, so it may capture locals by reference.
+The executor -- a `RenderGraphPassExecutor` -- runs when the pass is recorded and
+carries three things: the debug label and GPU profiler scope the pass is reported
+under, and the callback.
 
-Transient graph resources are logical frame/render-target resources:
+What the builder declares:
 
-- `SceneColor`
-- `BloomExtract`
-- `BloomPing`
-- `BloomPong`
-- `BloomMipDownsampleN`
-- `BloomMipUpsampleN`
-
-In Phase 4, these transient resources are described and transitioned by the graph, but their physical `VulkanImage` allocation still lives in `Renderer` and is recreated with the swapchain/post-process resize path. This avoids a resource ownership rewrite while preparing for a future graph allocator or pool.
-
-## Pass Declarations
-
-Pass declarations are recorded with `RenderGraphBuilder`:
-
-- `readTexture`
-- `writeTexture`
-- `readWriteTexture`
-- `readBuffer`
-- `writeBuffer`
-- `readWriteBuffer`
-- `sideEffect`
-
-The currently declared passes are:
-
-- `CSMShadowPass`
-- `PunctualShadowAtlasPass` when at least one punctual light was assigned an atlas tile
-- `VolumetricFogPass` when fog is enabled; it declares only its shadow-map read, since its output volumes are not graph resources
-- `MainGpuCullingPass` when GPU culling will record this frame, i.e. not on the CPU culling fallback and not on an empty draw list
-- `MainHDRPass`
-- `DepthPyramidPass`
-- `TAAResolvePass` when TAA is enabled
-- `BloomExtractPass`
-- `BloomBlurHorizontal`
-- `BloomBlurVertical`
-- `BloomDownsampleMipN`
-- `BloomUpsampleMipN`
-- `LuminancePass`
-- `HistogramExposurePass`
-- `CompositePass`
-- `ImGuiPass`
-
-The graph now owns selected declared buffer pass-to-pass barriers:
-
-- `MainGpuCullingPass` storage writes to the main indirect command buffer and visible-count buffer before `MainHDRPass` indirect reads
-- `LuminancePass` storage writes to luminance partials before `HistogramExposurePass` reads them
-- `HistogramExposurePass` exposure-state writes before `CompositePass` reads the GPU exposure buffer
-
-Everything else is still synchronized by hand, in the subsystem that owns the
-resource rather than in one place. `RendererRecord.cpp` itself no longer records
-a single barrier; the remaining manual sites are:
-
-| File | What it synchronizes by hand |
+| Call | Declares |
 | --- | --- |
-| `GpuCulling.cpp` | Main cull reset/dispatch/draw, phase-2 count reset, visible-count copy and readback, and the shadow cull equivalents |
-| `PunctualShadows.cpp` | Punctual cull dispatch and its indirect/count consumers |
-| `VirtualShadowMapPass.cpp` | Page-marking and page-cull request buffers, which are not graph resources |
-| `PostProcessStack.cpp` | Histogram reset, the in-pass histogram-to-exposure reduce, and exposure host-read visibility |
-| `IrradianceProbeVolume.cpp` | Probe shading-param upload and the atlas update dispatches |
-| `DepthPyramid.cpp` | The mip chain's write-to-read sequencing inside its own pass |
-| `ClusteredLighting.cpp` | Cluster build to light cull, on the async compute queue |
-| `VolumetricFogPass.cpp` | Injection to scattering, between its own volumes |
-| `ScreenshotCapture.cpp` | Portfolio screenshot copy, which transitions the swapchain between `CompositePass` and `ImGuiPass` |
+| `readTexture`, `readBuffer` | a read of what this frame produced |
+| `readHistoryTexture` | a read of what the resource held at the end of the previous frame |
+| `readTextureForLayout` | a read whose contents do not matter -- see "Layout-only reads" |
+| `writeTexture`, `writeBuffer`, `readWriteTexture`, `readWriteBuffer` | a write, producing the next version |
+| `sideEffect` | that the pass must run even if nothing reads what it writes |
+| `colorAttachment` | the colour target the graph opens a rendering scope over around the callback |
+| `transitionAfterPass` | a transition recorded behind the pass body: the swapchain's move to `PRESENT_SRC` after the overlay |
+| `orderAfter` | that the pass follows an earlier one although no declared resource says so |
 
-Two of those categories are deliberate rather than pending: barriers
-for intra-pass sequencing (the depth pyramid's mip chain, fog's volumes, the
-histogram reduce) and for readback/host visibility stay explicit even for
-resources the graph does declare.
+### Read kinds
+
+What a read consumes. Barriers do not distinguish them -- a layout is a layout --
+but the rest of the graph does:
+
+| Kind | Consumes | Depends on the producer | Keeps the producer alive |
+| --- | --- | --- | --- |
+| `Produced` | what this frame's graph produced | yes | yes |
+| `History` | what the previous frame left | no | yes |
+| `LayoutOnly` | nothing | no | **no** |
+
+#### Previous-frame reads
+
+`readHistoryTexture` is identical to `readTexture` in barrier terms. It exists so
+that reading before anything wrote the resource reads as intent rather than as
+an ordering mistake, and so that culling keeps the pass the next frame needs
+(see "Passes the next frame needs"). The frame's history reads are:
+
+- `MainHDRPass` and `MainHDRPhase2` sampling ambient occlusion, which GTAO only
+  writes later in the frame
+- `VsmPageMarkPass` and `MainGpuCullingPass` sampling the Hi-Z depth pyramid
+- `TAAResolvePass` sampling the previous HDR history image
+- `TransparentPass` and `CompositePass` sampling ambient occlusion **when GTAO is
+  off**, because then nothing produces that image at all; with GTAO on the same
+  reads are ordinary same-frame dependencies on the blur, and are declared as such
+
+That last split is the point: the declaration states which frame the data comes
+from, and it changes with the setting that actually changes the answer.
+
+#### Layout-only reads
+
+A pass sometimes has to sample a resource it does not want. `composite.frag`
+binds both bloom chains and selects one in the shader, so the losing binding must
+still point at an image in a readable layout -- sampling one in
+`VK_IMAGE_LAYOUT_UNDEFINED` is not allowed -- while its contents are discarded.
+`readTextureForLayout` declares exactly that. A producer whose only reader is
+layout-only is dead, so culling removes it, and the content rules in
+`validateDeclarations` skip layout-only reads entirely.
+
+`CompositePass` declares the selected chain with `readTexture` and the loser with
+`readTextureForLayout`, both chains' passes are declared from the same predicate,
+`PostProcessStack::willRecordMipChainBloom`, and the composite's `bloomMethod`
+push constant reads it too, so the shader cannot select a chain that was never
+filled.
+
+Measured on the default scene at 1280x720 when it landed, passes actually
+recorded per frame:
+
+| Configuration | Before | After | Culled |
+| --- | --- | --- | --- |
+| mip chain (default) | 23 | **20** | the three legacy passes |
+| `useMipChain` off | 23 | **16** | the seven mip-chain passes |
+
+Both configurations ran with no declaration issues, no order violations, no
+unrecorded passes, and the validation layer clean. The captured frame was
+bit-identical to the pre-change capture, which is the point: the passes that went
+away were producing something nothing read.
+
+What the removed passes cost, on lavapipe -- not a frame-time claim for real
+hardware, and not quotable as one; it establishes that the removed work was not a
+rounding error. Two Release builds, the change reverted and restored, four
+interleaved 60-second runs:
+
+| Removed pass | Median, before |
+| --- | --- |
+| `BloomBlurVertical` | 4.215 ms |
+| `BloomBlurHorizontal` | 4.153 ms |
+| `BloomExtractPass` | 1.620 ms |
+
+These are top-level scopes, and after the change they do not appear in the log at
+all -- 46 occurrences of `BloomExtractPass` in a before run, zero in an after
+run. The mip chain was unchanged across the two builds (6.835 -> 7.215 and
+5.602 -> 5.709), which is what confirms the builds differed only in the legacy
+chain. The frame-total comparison from the same series is **void** and
+deliberately not quoted: the repeated controls drifted 1.3% and 2.3% against a 1%
+limit, the same order as the effect. A software rasterizer pays for a fullscreen
+pass in CPU fill where a GPU pays in bandwidth, so neither the milliseconds nor
+their share transfers; three fullscreen passes at bloom resolution, removed, is
+the part that does.
+
+### Raster targets and the transitions behind a pass
+
+A raster pass whose rendering scope is fixed names its colour target with
+`colorAttachment`, and the graph opens and closes the scope around the callback:
+the TAA resolve, the legacy bloom passes, every mip-chain level, the composite and
+the overlay.
+
+The rest open their scope from the callback, because its shape is decided while
+recording or its attachments are more than one colour target:
+
+| Helper | Pass | Why the callback opens it |
+| --- | --- | --- |
+| `beginShadowCascadeRendering`, `beginLayeredShadowRendering` | `CSMShadowPass` | which cascades the cache says to redraw |
+| `beginPunctualShadowRendering` | `PunctualShadowAtlasPass` | whether the cached atlas loads or clears |
+| `beginVsmPageRendering` | `VsmPagePass` | whether the cached page pool loads or clears |
+| `beginProbeCaptureRendering` | `ProbeCapture` | colour plus depth |
+| `beginDepthPrepassRendering` | `DepthPrepass` | depth only |
+| `beginMainHdrPassRendering`, `beginMainHdrPhase2Rendering` | `MainHDRPass`, `MainHDRPhase2` | three colour targets plus depth |
+| `beginSsrTraceRendering`, `beginGtaoRendering`, `beginGtaoBlurRendering` | SSR's trace, GTAO and its blur | sub-rect render areas |
+| `beginTransparentRendering` | `TransparentPass` | three colour targets plus depth, all loaded |
+
+Each checks that it is called from a callback of the right pass type, and emits
+no barriers -- the graph already has -- with one exception: each cascade after the
+first re-emits `CSMShadowPass`'s barriers, as each cascade's own begin always
+did, which is what keeps the recorded barrier set unchanged.
+
+### Work passes and explicit ordering
+
+Some work has no graph resource of its own: what it writes is a buffer the graph
+does not track, or nothing on the GPU at all. `addWorkPass` declares it as a
+side-effect pass with no resources, and where its order matters it says so with
+`orderAfter`, an edge `computePassSchedule` treats like one a resource implies.
+
+| Work pass | Ordered after | Ordered before |
+| --- | --- | --- |
+| `VsmPageCullPass` | `VsmPageMarkPass` | `VsmPagePass` |
+| `VsmPagePoolIdle`, the pool's one-time layout move when marking runs without page rendering | | `MainHDRPass` |
+| `CSMShadowCache`, the cascade cache bookkeeping | `CSMShadowPass` | |
+| `FogVolumeInit`, the fog volume's first-use clear | | `VolumetricFogPass`, `MainHDRPass` |
+| `ClusterBuild`, light assignment on the graphics queue | `MainGpuCullingPass` | `VolumetricFogPass`, `MainHDRPass` |
+| `ProbeShadingParams` | | `ProbeCapture`, `IrradianceProbeUpdate`, `MainHDRPass` |
+| `FrameCapture`, the portfolio screenshot and the capture taken before the overlay | `CompositePass` | `ImGuiPass` |
+| `FrameCaptureAfterOverlay` | `ImGuiPass` | |
+
+`orderAfter` only names earlier passes -- the builder refuses a later one, and the
+schedule ignores one that points forward or at a culled pass. `CSMShadowCache` is
+declared every frame inside the `CSMShadowPass` scope, so that profiler number
+exists every frame, at its real cost of nothing on a fully cached frame.
+`ClusterBuild` is declared only when the cluster passes record on this queue; the
+async path submits them on the compute queue, which
+[async_compute.md](async_compute.md) describes and the graph does not model.
+
+CPU state the recorded frame leaves behind is not a pass: invalidating the depth
+pyramid on a frame that did not build it, marking the ambient-occlusion target
+written, and the VSM page and punctual atlas counters of a frame without those
+passes are set after `recordPasses`, because nothing recorded reads any of them.
+
+### Profiler scopes over several passes
+
+Some profiler numbers cover a run of passes rather than one: the bloom mip chain
+is timed as "Bloom Downsample Chain" and "Bloom Upsample Chain", the ray-traced
+shadow filter's three stages as one "RayTracedShadowFilter", and the cascade cull
+and cascades as one "CSMShadowPass". Those are graph scopes, declared by
+bracketing `addPass` calls with `pushScope` and `popScope`. The graph opens a
+scope ahead of the first of its passes that records, and closes it when the frame
+moves to a pass outside it; `planScopeTransition`, a pure function, decides which
+scopes close and open between two passes.
+
+### The passes
+
+In declaration order, which is the frame's order. A pass in parentheses is
+declared only on the frames its condition names.
+
+| Region | Passes | Declared in |
+| --- | --- | --- |
+| Virtual shadow maps | (`VsmPageMarkPass`), (`VsmPageCullPass`, `VsmPagePass`), (`VsmPagePoolIdle`) | `Renderer::declareFrameGraph` |
+| Cascaded shadows | (`ShadowGpuCullingPass`), (`CSMShadowPass`), `CSMShadowCache` | |
+| Punctual shadows | (`PunctualShadowCullPass`), (`PunctualShadowAtlasPass`) | |
+| Culling and lighting | `FogVolumeInit`, (`MainGpuCullingPass`), (`ClusterBuild`), (`VolumetricFogPass`) | |
+| Probes | `ProbeShadingParams`, (`ProbeCapture`), (`IrradianceProbeUpdate`) | |
+| Ray-traced shadows | (`RayTracingSceneBuild`) | |
+| Geometry | (`DepthPrepass`), (`RayTracedShadowTrace`, `RayTracedShadowTemporal`, the filter's `RayTracedShadowRadius`, `RayTracedShadowBlurH` and `RayTracedShadowBlurV`, `RayTracedShadowResolve`), `MainHDRPass`, (`DepthPyramidMidPass`, `MainGpuCullingPhase2`, `MainHDRPhase2`), (`SSRCopyPass`, `SSRTracePass`), (`GTAOPass`, `GTAOBlurPass`), (`TransparentPass`), (`DepthPyramidPass`) | |
+| Post-process | (`TAAResolvePass`), `BloomExtractPass`, `BloomBlurHorizontal`, `BloomBlurVertical`, `BloomDownsampleMipN`, `BloomUpsampleMipN`, (`LuminancePass`), (`HistogramExposurePass`), `CompositePass` | `PostProcessStack::declareGraphPasses` |
+| Output | `FrameCapture`, `ImGuiPass`, `FrameCaptureAfterOverlay` | `Renderer::declareFrameGraph` |
+
+Both bloom chains are always declared; culling removes the one the composite does
+not sample. A conditional pass is declared from the same predicate its recorder
+uses -- `GpuCulling::willRecordMainCull`, `PunctualShadows::willRecordCull`,
+`PostProcessStack::willRecordLuminancePass` and the others -- so a declaration and
+its recording cannot drift apart; "The backstop" is how the ones that did were
+found.
+
+## Compile
+
+`compile` runs three GPU-free, unit-tested analyses over the declarations, in
+order: culling, validation, and the schedule.
+
+### Culling
+
+`cullUnusedPasses` sweeps backwards over the passes with a set of resources
+something still needs. A pass with no side effect is culled when none of its
+writes is needed, or when it writes nothing at all; a culled pass does not
+propagate its reads, which is what
+makes culling transitive back through a chain. A layout-only read does not count
+as a use, which is what removes the bloom chain the composite does not sample.
+Side-effect passes are never culled: the main cull writes a readback buffer the
+CPU reads, the overlay writes the image that is presented, every work pass writes
+something the graph does not track.
+
+A culled pass is not recorded: `buildExecutionPlan` leaves it out.
+
+#### Passes the next frame needs
+
+A pass can produce something only the *next* frame reads. Nothing in this frame's
+declarations consumes it, so a plain backward sweep drops it, and the frame after
+samples whatever was left behind.
+
+`DepthPyramidPass` is exactly that shape: the phase-2 re-test reads the mid-frame
+build, so nothing reads the end-of-frame one, and the next frame's page marking
+and main cull declare history reads on it. It used to survive on a hand-set
+side-effect flag -- a fine outcome and a bad mechanism, because a pass added in
+that shape without the flag was culled silently.
+
+`cullUnusedPasses` seeds its needed set from every history read before
+sweeping, which is a reader at the end of the frame: the sweep already knows how
+to keep the last writer of a needed resource and drop the ones before it. A
+history read does not mark the resource needed at its own position, because what
+it consumes is the previous frame. `DepthPyramidPass` is declared without the
+side-effect flag, which is the proof the rule is load-bearing: with the seeding
+removed the pass was culled, and the recorder of the time tried to record it
+anyway and threw. That was checked, not assumed. The other side-effect flags were
+not audited; removing one is a per-pass argument, not a sweep.
+
+### Declaration validation
+
+Nothing used to check that the declarations were self-consistent, so a pass could
+read a transient nothing had produced and the only symptom would be wrong pixels
+-- no validation error, no crash, nothing in a log. `validateDeclarations` checks
+the ways a declaration set can be wrong without looking at a device:
+
+| Issue | Meaning |
+| --- | --- |
+| `ReadsContentNoPassProduced` | A pass reads a graph-managed resource no earlier surviving pass wrote this frame, without saying the read is deliberate. Either the pass is ordered wrongly, or it means to read the previous frame and should declare that. |
+| `HistoryReadOfAliasedResource` | A previous-frame read of a pool-bound resource. Aliasing hands those bytes to another resource and the handoff barrier discards the contents, so there is no previous frame left to read. |
+| `ResourceDeclaredTwice` | One pass declares the same resource more than once. Usually a copy-paste slip, and it costs a barrier submission, since two barriers for one resource cannot share a dependency info. |
+| `HistoryReadAfterProducer` | A previous-frame read placed after a pass that writes the resource this frame. The declaration says "last frame" and the schedule hands it this frame's data. Unlike the two rules above, this one applies to imported resources too: what is wrong is the ordering, not who owns the memory. |
+| `StaleVersionRead` | A read naming an older version than the one current at that point: the handle was taken before an intervening write and never refreshed. Every version is the same image, so the pixels are right; what is wrong is that the declared data flow points at the wrong producer. |
+
+Imported resources are exempt from the first two: their contents persist by
+contract, which is what importing them means.
+
+The check reports, it does not throw. Every rule here has a legitimate-looking
+shape that only the author can adjudicate, and a graph that refuses to render is
+a worse diagnostic than one that renders and says what looks wrong. Findings
+appear in the ImGui Render Graph panel, on the pass that declared them, and are
+queryable through `RenderGraph::declarationIssues()`.
+
+The default configuration reports zero issues. That was checked both ways when the
+rules landed -- injecting an undeclared history read and a duplicate declaration
+into `MainHDRPass` made the panel report three findings on that pass, and turning
+`CompositePass`'s bloom read into a history read reported the fourth rule.
+
+### The schedule
+
+`computePassSchedule` derives, from the declarations alone, which passes each
+pass must follow. The edges are the three orderings a resource forces --
+read-after-write, write-after-read, write-after-write -- plus every `orderAfter`
+edge. A history read makes no read-after-write edge: it consumes the previous
+frame, not this frame's producer. Read-after-write edges resolve through the
+version a handle names, not through whichever write happens to be most recent, so
+the edge set is a property of the declarations rather than of where a pass sits.
+
+`computeExecutionOrder` turns that into an order: Kahn's algorithm over the
+predecessor sets, breaking ties on declaration index. Every derived edge points
+backwards by construction, so the result is the declaration order -- a unit test
+pins that the two agree -- and a cycle, which the declarations cannot produce,
+would leave the passes involved out of the order rather than emit them anywhere.
+
+#### Judging an order
+
+`validatePassOrder` takes a proposed order and reports the edges it breaks, and it
+does reject orders. Checked on a real frame at 1280x720 when it landed:
+
+| Proposed order | Violations |
+| --- | --- |
+| the recorded order | 0 |
+| exposure pair hoisted 13 slots, to just after `TransparentPass` | **0** |
+| the same hoist one step further, above `TransparentPass` | **2** |
+
+So moving `LuminancePass` and `HistogramExposurePass` out from behind the bloom
+chain is provably legal, and moving them one step too far is provably not.
+
+#### Slack
+
+How tightly the declared data flow pins the frame down: each pass's earliest legal
+slot, its slack against where it is recorded, and the frame's longest chain are
+shown in the debug panel. Measured on the default scene at 1280x720 when the
+analysis landed, the frame was recorded 25 steps deep but the declarations forced
+only 17:
+
+| Pass | Recorded slot | Earliest legal | Slack |
+| --- | --- | --- | --- |
+| `LuminancePass` | 21 | 8 | **13** |
+| `HistogramExposurePass` | 22 | 9 | **13** |
+| `CompositePass` | 23 | 15 | 8 |
+| `BloomDownsampleMip0`..`BloomUpsampleMip0` | 14-20 | 8-14 | 6 |
+| `DepthPyramidPass` | 10 | 5 | 5 |
+| `MainHDRPass`..`TransparentPass` | 3-9 | 1-7 | 2 |
+
+The auto-exposure pair is the clearest: both depend only on `TransparentPass`,
+and both are recorded after the entire bloom chain they have nothing to do with.
+The slack sits in the tail; the head of the frame has almost none, and reordering
+on a single queue would not be a performance win if it could move. Moving a pass
+to another queue would be -- which is the one change that would make scheduling
+matter.
+
+The same analysis is what showed that ten of the twenty-five passes were bloom,
+split across two independent chains of which the composite used one, and led to
+layout-only reads.
+
+#### Which analyses a reordering would break
+
+Nothing reorders today, but each analysis was examined for what a reordering
+would do to it:
+
+**`computeTextureLifetimes` had to move, and has.** Its intervals decide which
+resources may share bytes, so an interval describing a timeline other than the
+one the passes run on lets two simultaneously live resources overlap in memory --
+and nothing catches that: not the validation layer, not a barrier, not a test
+that does not happen to read the clobbered pixels. It takes the execution order
+and numbers its slots by position in it.
+
+**`cullUnusedPasses` does not need to.** Its answer is invariant under any legal
+reordering. The derived edges fix the relative order of every pair of passes that
+touch a common resource, and two passes touching no common resource cannot affect
+each other's liveness.
+
+**`validateDeclarations` splits.** Its content rules -- `ResourceDeclaredTwice`,
+`ReadsContentNoPassProduced`, `HistoryReadOfAliasedResource` -- are invariant for
+the same reason. Its two ordering rules, `StaleVersionRead` and
+`HistoryReadAfterProducer`, are not, and must not be: they report that the
+declared order and the declared data flow disagree, which is a statement about
+the declarations.
+
+**Barriers** have none of this problem: they are derived from live tracked state
+as each pass is recorded, so they follow whatever order the recording takes.
+
+**The geometry region's callbacks** would: see "Passes share drawing state
+through the command buffer".
+
+## Recording
+
+`recordPasses` walks `buildExecutionPlan` -- every scheduled pass with a
+callback, in execution order -- and for each one:
+
+1. moves between graph scopes, opening the ones the pass sits in;
+2. opens the pass's debug label, then its GPU profiler scope;
+3. emits the barriers its declarations imply, batched into one dependency;
+4. opens the rendering scope over its `colorAttachment`, if it named one;
+5. calls the callback with a `RenderGraphPassContext`;
+6. closes the rendering scope and records any `transitionAfterPass`;
+7. closes the profiler scope and the label.
+
+Label and profiler scope sit outside the barriers because that is where every
+hand-written recorder put them, so each pass's timestamp range covers its
+barriers and the profiler history stays comparable across the change. The
+profiler belongs to the renderer; the graph is handed two hooks for it.
+
+While a callback runs the graph marks itself busy, and the in-callback rendering
+helpers check that the running pass is of the type they open a scope for. A
+callback that leaves a rendering scope of its own open throws.
+
+### Passes share drawing state through the command buffer
+
+The main HDR pass sets up what phase 2 and the transparent pass draw with -- the
+viewport, the global descriptor set, the indirect buffers and the base push
+constants -- and hands those values to them in a `MainPassFrameState` it fills
+when it records. It is filled at the point the values have always been computed,
+because the base push constants include whether the ambient-occlusion history is
+usable, and GTAO changes that later in the frame.
+
+Each geometry callback binds exactly what the hand-written recorder bound at that
+point, which kept the command stream unchanged when the recorder was split. The
+cost is that callbacks still rely on Vulkan state an earlier pass left bound:
+phase 2 and the transparent pass rebind their own pipeline and sets, but a pass
+that did not would draw with whatever the pass before it bound. Nothing reorders
+passes, so nothing exercises that; a scheduler that moved a geometry pass would
+first have to make each callback bind everything it uses.
+
+### The frame trace
+
+Each run logs the last frame's recorded passes, in order, with the barriers the
+graph emitted for each:
+
+```
+Render graph frame trace: ... MainHDRPass[6/0/1] DepthPyramidMidPass[2/0/1] ...
+```
+
+as `Name[image/buffer/submits]`. A `--deterministic` run ends on the same frame
+every time, so a change to who records a pass has to leave this line unchanged
+-- a work pass that was added carries no barriers, `[0/0/0]`. That is a stronger
+check than the golden image, since a missing barrier rarely shows up in pixels.
+Together with the per-frame GPU scope list (`--gpu-timings-every-frame`), it is
+what every step of the move to callbacks was checked against; see "How it got
+here".
 
 ## Synchronization Inference
 
-Texture declarations use `RGAccess` values such as:
+Texture declarations use `RGAccess` values such as `ColorAttachmentWrite`,
+`DepthStencilAttachmentWrite`, `ShaderRead`, `StorageImageReadWrite`,
+`TransferSrc`, `TransferDst` and `Present`. As each pass is recorded, the graph
+maps its declared accesses to conservative Synchronization2 image barriers. It
+tracks the current layout and previous access of every graph texture, and writes
+the layout back to the owner of an imported one -- the swapchain, the shadow maps,
+the depth pyramid -- so the owner's own view of the image stays true.
 
-- `ColorAttachmentWrite`
-- `DepthStencilAttachmentWrite`
-- `ShaderRead`
-- `StorageImageReadWrite`
-- `TransferSrc`
-- `TransferDst`
-- `Present`
+Buffer declarations use `StorageBufferRead`, `StorageBufferWrite`,
+`StorageBufferReadWrite`, `StorageBufferClearAndReadWrite`, `IndirectRead`,
+`TransferSrc`, `TransferDst`, `HostRead`, and three acceleration-structure
+accesses:
 
-At pass begin, the graph maps the declared access to a conservative Synchronization2 image barrier. It tracks the current layout and previous access for graph-managed/imported textures and updates the owning layout state for swapchain, depth, shadow, scene color, and bloom images.
-
-Buffer declarations use existing buffer-oriented `RGAccess` values such as:
-
-- `StorageBufferRead`
-- `StorageBufferWrite`
-- `StorageBufferReadWrite`
-- `StorageBufferClearAndReadWrite`
-- `IndirectRead`
-- `TransferSrc`
-- `TransferDst`
-- `HostRead`
 - `AccelerationStructureBuild` and `AccelerationStructureRead`, declared on a
   top-level acceleration structure's storage buffer by the build and by the
   passes that trace against it ([ray_traced_shadows.md](ray_traced_shadows.md)).
@@ -179,9 +550,8 @@ Buffer declarations use existing buffer-oriented `RGAccess` values such as:
 - `AccelerationStructureComputeRead`, the same read from the ray-traced shadow
   mask's trace pass (`RayTracedShadowTrace`), scoped to the compute stage.
 
-At pass begin, the graph maps buffer accesses to conservative Synchronization2
-full-buffer barriers. What it tracks per buffer, for the frame
-(`BufferSyncState`, applied by `advanceBufferSync`):
+Buffer accesses become conservative full-buffer barriers. What the graph tracks
+per buffer, for the frame (`BufferSyncState`, applied by `advanceBufferSync`):
 
 - the last write's stage and access;
 - every reader since that write -- or since the frame began, while nothing has
@@ -224,8 +594,8 @@ after two readers, a write after another write, visibility per stage/access pair
 and what happens past the state's room for scopes. Each rule was checked by
 breaking it and watching a case fail.
 
-What it changed, counted over 60 frames of each configuration with the old rule
-evaluated beside the new one (a temporary log, not committed):
+What it changed when it landed, counted over 60 frames of each configuration
+with the old rule evaluated beside the new one (a temporary log, not committed):
 
 | Scene | Settings | Buffer barriers per frame, before -> after | Of which new | Wider first scope |
 | --- | --- | --- | --- | --- |
@@ -251,16 +621,18 @@ wait -- by then the depth transition after the main pass has waited for its
 fragment tests and every stage before them, and the Hi-Z barrier for the
 pyramid's compute -- so the frame cost was not measured.
 
-The implementation favors correctness and debug readability over barrier minimization. Same-layout write-after-write or write-after-read cases can still emit ordering barriers.
+The implementation favours correctness and debug readability over barrier
+minimization. Same-layout write-after-write or write-after-read cases can still
+emit ordering barriers.
 
 ### Checking the inferred barriers against something
 
-Everything above is inference, and until recently nothing checked the result.
-The unit tests cover the pure derivation functions, the golden gate compares
-pixels, and the validation layer's core checks confirm each call is well formed.
-None of the three can see a dependency that is missing: a barrier naming the
-wrong pipeline stage is a legal barrier, and the frame it fails to order still
-renders correctly on hardware that happened to serialize the work anyway.
+Everything above is inference. The unit tests cover the pure derivation
+functions, the golden gate compares pixels, and the validation layer's core checks
+confirm each call is well formed; none of the three can see a dependency that is
+missing. A barrier naming the wrong pipeline stage is a legal barrier, and the
+frame it fails to order still renders correctly on hardware that happened to
+serialize the work anyway.
 
 Synchronization validation can see it, and `--sync-validation` turns it on
 (`VK_EXT_layer_settings`, `validate_sync`, set at instance creation because there
@@ -295,25 +667,23 @@ meant to order.
 
 `VK_PIPELINE_STAGE_2_COPY_BIT` covers `vkCmdCopy*` and nothing else;
 `vkCmdBlitImage` is in the blit stage and `vkCmdFillBuffer`/`vkCmdUpdateBuffer`
-are in the clear stage. The graph now maps both transfer accesses to
-`ALL_TRANSFER`, which covers copy, blit, resolve and clear alike, and a test pins
-the stage for textures and buffers alike. The same narrow spelling was repeated
-by hand in `VirtualShadowMapPass` and `IrradianceProbeVolume`; both are fixed.
+are in the clear stage. The graph maps both transfer accesses to `ALL_TRANSFER`,
+which covers copy, blit, resolve and clear alike, and a test pins the stage for
+textures and buffers alike. The same narrow spelling was repeated by hand in
+`VirtualShadowMapPass` and `IrradianceProbeVolume`; both were fixed.
 
-`RGAccess::StorageBufferClearAndReadWrite` is new, and exists because a pass
-declares a resource once while these passes genuinely touch it twice -- a
-transfer clear and then a shader read-write. It names the union of the two
-scopes. Three declarations used it wrongly (both GPU culling passes and the
+`RGAccess::StorageBufferClearAndReadWrite` exists because a pass declares a
+resource once while these passes genuinely touch it twice -- a transfer clear and
+then a shader read-write. It names the union of the two scopes. Three
+declarations used the narrower access wrongly (both GPU culling passes and the
 histogram pass); only two produced a hazard, because the third's previous use was
 separated by a frame wait.
 
-None of the four changed a pixel: the frame 30 capture is byte-identical before
+None of the four changed a pixel: the frame 30 capture was byte-identical before
 and after. That is the expected result and the reason the class survived -- this
-hardware was already serializing the work these barriers failed to order.
-
-All 29 configurations the headless job swept at the time ran clean under
-`--sync-validation`, and the sweep has run with it ever since (see
-[headless_ci.md](headless_ci.md)).
+hardware was already serializing the work these barriers failed to order. The
+headless job's configuration sweep has run under `--sync-validation` ever since
+(see [headless_ci.md](headless_ci.md)).
 
 ### Barrier batching
 
@@ -329,18 +699,16 @@ single pass. Two barriers for the same resource in one `VkDependencyInfo` are
 unordered with respect to each other, so the accumulated set is submitted before
 the second transition is recorded (`barrierBatchNeedsFlush`, unit tested).
 Tracked state is still updated at record time, not at flush time, so the second
-transition derives its barrier from what the first one leaves behind exactly as
-it did when every transition submitted on its own.
+transition derives its barrier from what the first one leaves behind.
 
-No declared pass currently declares the same resource twice, so that flush path
-is dormant today. `RenderPassNode::generatedBarrierSubmitCount` above one is the
-signal that a pass has started doing it -- with one standing exception:
-`ImGuiPass` always reports two, because its transition of the swapchain into the
-present layout is recorded after the pass body and cannot join the pass's own
-set.
+`RenderPassNode::generatedBarrierSubmitCount` above one is the signal that a pass
+has started declaring a resource twice -- with two standing exceptions: `ImGuiPass`
+reports two, because its transition of the swapchain into the present layout is
+recorded after the pass body, and `CSMShadowPass` reports up to one per redrawn
+cascade, because each cascade re-emits the pass's barriers.
 
-Measured on the default scene at 1280x720 with default settings, on lavapipe
-under the headless-render job's flags:
+Measured on the default scene at 1280x720 with default settings, on lavapipe under
+the headless-render job's flags, when batching landed:
 
 | | Per frame |
 | --- | --- |
@@ -350,613 +718,167 @@ under the headless-render job's flags:
 | `vkCmdPipelineBarrier2` calls, after | **22** |
 
 The barrier count is identical on both sides, which is the property that matters:
-the batching moved 57 barriers from 57 commands into 22, and added none.
+the batching moved 57 barriers from 57 commands into 22, and added none. This is a
+command-count reduction, **not a measured frame-time win** -- no timing claim is
+attached to it. It is also the prerequisite for tightening the alias-handoff
+source scope, since that only pays off once a pass's barriers share one
+dependency.
 
-This is a command-count reduction, **not a measured frame-time win** -- no
-timing claim is attached to it. It is also the prerequisite for tightening the
-alias-handoff source scope, since that only pays off once a pass's barriers
-share one dependency.
+### What subsystems still write by hand
 
-## Declaration Validation
+A barrier belongs to the graph when it sits between two passes, and to the
+subsystem when it sits between two commands inside one pass, or orders something
+the graph does not track. That line is why the manual count will never reach zero.
 
-The declarations describe what each pass touches. Nothing used to check that the
-description was self-consistent, so a pass could read a transient nothing had
-produced and the only symptom would be wrong pixels -- no validation error, no
-crash, nothing in a log. `validateDeclarations` (GPU-free, unit tested) runs
-every frame after culling and checks the three ways a declaration set can be
-wrong without looking at a device:
-
-| Issue | Meaning |
+| File | What it synchronizes by hand |
 | --- | --- |
-| `ReadsContentNoPassProduced` | A pass reads a graph-managed resource no earlier surviving pass wrote this frame, without saying the read is deliberate. Either the pass is ordered wrongly, or it means to read the previous frame and should declare that. |
-| `HistoryReadOfAliasedResource` | A previous-frame read of a pool-bound resource. Aliasing hands those bytes to another resource and the handoff barrier discards the contents, so there is no previous frame left to read. |
-| `ResourceDeclaredTwice` | One pass declares the same resource more than once. Usually a copy-paste slip, and it costs a barrier submission, since two barriers for one resource cannot share a dependency info. |
-| `HistoryReadAfterProducer` | A previous-frame read placed after a pass that writes the resource this frame. The declaration says "last frame" and the schedule hands it this frame's data. Unlike the two rules above, this one applies to imported resources too: what is wrong is the ordering, not who owns the memory. |
-| `StaleVersionRead` | A read naming an older version than the one current at that point: the handle was taken before an intervening write and never refreshed. Every version is the same image, so the pixels are right; what is wrong is that the declared data flow points at the wrong producer. |
+| `GpuCulling.cpp` | each cull's fill-to-dispatch reset, the phase-2 count reset, and the copies to the readback buffers with their host-visibility barriers |
+| `PunctualShadows.cpp` | the punctual cull's reset and dispatch |
+| `VirtualShadowMapPass.cpp` | the page-marking and page-cull request buffers, which are not graph resources |
+| `PostProcessStack.cpp` | the histogram reset, the in-pass histogram-to-exposure reduce, and exposure host-read visibility |
+| `IrradianceProbeVolume.cpp` | the shading-parameter upload, including the previous frame's read of the one buffer every frame shares, and the atlas update's dispatches |
+| `DepthPyramid.cpp` | the mip chain's write-to-read sequencing inside its own pass |
+| `ClusteredLighting.cpp` | cluster build to light cull, and the lists to their readers' stages |
+| `VolumetricFogPass.cpp` | injection to integration, between its own volumes |
+| `RayTracingScene.cpp`, `RayTracingSkinning.cpp` | the bottom-level builds at load, and the skinned positions to the refit inside the scene build |
+| `RayTracedShadowMask.cpp` | returning an image to the layout the graph tracks |
+| `ScreenshotCapture.cpp` | the frame captures' copies, which move the swapchain image out of its tracked layout and back |
+| `RendererRecord.cpp` | `VsmPagePoolIdle`'s one-time move of the page pool, which is not a graph resource when page rendering is off |
 
-Imported resources are exempt from the first two: their contents persist by
-contract, which is what importing them means.
+Now declared, so the graph emits the handoff between passes:
 
-The check reports, it does not throw. Every rule here has a legitimate-looking
-shape that only the author can adjudicate, and a graph that refuses to render is
-a worse diagnostic than one that renders and says what looks wrong. Findings
-appear in the ImGui Render Graph panel, on the pass that declared them, and are
-queryable through `RenderGraph::declarationIssues()`.
-
-### Declaring a previous-frame read
-
-`RenderGraphBuilder::readHistoryTexture` declares a read of what a resource held
-at the end of the previous frame. It is identical to `readTexture` in barrier
-terms -- the layout and scopes do not care where the pixels came from -- and
-exists so that reading before anything wrote the resource reads as intent rather
-than as an ordering mistake. The frame's history reads are:
-
-- `MainHDRPass` and `MainHDRPhase2` sampling ambient occlusion, which GTAO only
-  writes later in the frame
-- `VsmPageMarkPass` and `MainGpuCullingPass` sampling the Hi-Z depth pyramid
-- `TAAResolvePass` sampling the previous HDR history image
-- `TransparentPass` and `CompositePass` sampling ambient occlusion **when GTAO is
-  off**, because then nothing produces that image at all; with GTAO on the same
-  reads are ordinary same-frame dependencies on the blur, and are declared as such
-
-That last split is the point of the whole exercise: the declaration now states
-which frame the data comes from, and it changes with the setting that actually
-changes the answer.
-
-The default configuration reports zero issues. That was checked both ways --
-injecting an undeclared history read and a duplicate declaration into
-`MainHDRPass` makes the panel report three findings on that pass, and turning
-`CompositePass`'s bloom read into a history read reports the fourth rule.
-Removing the injections returns it to zero.
-
-### What it does not check
-
-Liveness across frames. A history read is only satisfied if *this* frame's
-producer runs, and culling does not know that: a pass whose output is read only
-by the next frame's history read can still be culled. Nothing in the current
-frame graph is in that shape, and fixing it means teaching `cullUnusedPasses`
-about cross-frame edges, which is a larger change than this check.
-
-## The Derived Dependency Graph
-
-`computePassSchedule` (GPU-free, unit tested) derives, from the declarations
-alone, which passes each pass must follow. The edges are the three orderings a
-resource forces: read-after-write, write-after-read, and write-after-write. A
-history read makes no read-after-write edge -- it consumes the previous frame,
-not this frame's producer -- which is the one place that distinction changes the
-graph rather than only the diagnostics.
-
-### Judging an order
-
-Read-after-write edges resolve through the version a handle names, not through
-whichever write happens to be most recent, so the edge set is a property of the
-declarations rather than of where a pass sits. `validatePassOrder` takes a
-proposed execution order and reports the edges it breaks -- and it does reject
-orders, which is the point of the versioning work.
-
-Checked on a real frame at 1280x720:
-
-| Proposed order | Violations |
-| --- | --- |
-| the recorded order | 0 |
-| exposure pair hoisted 13 slots, to just after `TransparentPass` | **0** |
-| the same hoist one step further, above `TransparentPass` | **2** |
-
-So moving `LuminancePass` and `HistogramExposurePass` out from behind the bloom
-chain is provably legal, and moving them one step too far is provably not. The
-recording order itself has not changed; what exists now is the means to check a
-change before making it.
-
-### Slack
-
-How tightly the declared data flow pins the frame down. Measured on the default
-scene at 1280x720:
-
-| | |
-| --- | --- |
-| recorded passes | 25 |
-| longest dependency chain | **17** |
-
-So the frame is recorded 25 steps deep but the declarations only force 17. Where
-that headroom sits:
-
-| Pass | Recorded slot | Earliest legal | Slack |
-| --- | --- | --- | --- |
-| `LuminancePass` | 21 | 8 | **13** |
-| `HistogramExposurePass` | 22 | 9 | **13** |
-| `CompositePass` | 23 | 15 | 8 |
-| `BloomDownsampleMip0`..`BloomUpsampleMip0` | 14-20 | 8-14 | 6 |
-| `DepthPyramidPass` | 10 | 5 | 5 |
-| `MainHDRPass`..`TransparentPass` | 3-9 | 1-7 | 2 |
-
-The auto-exposure pair is the clearest: both depend only on `TransparentPass`,
-and both are recorded after the entire bloom chain they have nothing to do with.
-The bloom chain and the exposure pair are independent branches off the same
-producer, and neither constrains the other.
-
-`DepthPyramidPass` is the same shape at smaller scale -- it needs only the
-phase-2 main pass, but is recorded after the transparent and screen-space work.
-
-### What the analysis surfaced, and what came of it
-
-The schedule made it visible that ten of the twenty-five passes were bloom, split
-across two independent chains, and that `CompositePass` declared a read of both.
-`composite.frag` samples both bindings and then picks one:
-
-```glsl
-vec3 selectedBloom = pc.bloomMethod == 1u ? mipBloom : legacyBloom;
-```
-
-So whichever chain lost the selection was filled every frame and thrown away --
-three full-screen passes with the mip chain selected, which is the default, and
-seven with it off. See "Layout-Only Reads" for what fixed it.
-
-## The Graph Drives The Frame
-
-`computeExecutionOrder` turns the derived dependency graph into an order: Kahn's
-algorithm over the predecessor sets, breaking ties on declaration index. The tie
-break is the point. Every derived edge points backwards by construction, so the
-result is exactly the order the passes were declared in — handing the order to
-the graph changes nothing about what runs or when. What it changes is who
-decides, and a unit test pins that the two still agree.
-
-`Renderer::recordRenderCommands` is now the callbacks it binds and nothing else:
-`beginFrame`, the bindings, `recordPasses`, `endFrame`. Every piece of recorded
-work is a declared pass.
-
-Some of that work has no graph resource of its own: what it writes is a buffer
-the graph does not track, or nothing on the GPU at all. Those are side-effect
-passes with no declared resources, and where their order matters it is stated
-with `builder.orderAfter`, an explicit edge the schedule treats like one a
-resource implies.
-
-| Work pass | Ordered after | Ordered before |
+| Resource | Producer | Consumer |
 | --- | --- | --- |
-| `VsmPageCullPass` | `VsmPageMarkPass` | `VsmPagePass` |
-| `VsmPagePoolIdle`, the pool's one-time layout move when marking runs without page rendering | | `MainHDRPass` |
-| `CSMShadowCache`, the cascade cache bookkeeping | `CSMShadowPass` | |
-| `FogVolumeInit`, the fog volume's first-use clear | | `VolumetricFogPass`, `MainHDRPass` |
-| `ClusterBuild`, light assignment on the graphics queue | `MainGpuCullingPass` | `VolumetricFogPass`, `MainHDRPass` |
-| `ProbeShadingParams` | | `ProbeCapture`, `IrradianceProbeUpdate`, `MainHDRPass` |
-| `FrameCapture`, the portfolio screenshot and the capture taken before the overlay | `CompositePass` | `ImGuiPass` |
-| `FrameCaptureAfterOverlay` | `ImGuiPass` | |
+| The three froxel volumes | `VolumetricFogPass` | `MainHDRPass` samples the integrated one |
+| Shadow cull indirect commands and counts | `ShadowGpuCullingPass` | `CSMShadowPass` draws them indirectly |
+| Punctual cull indirect commands and counts | `PunctualShadowCullPass` | `PunctualShadowAtlasPass` draws them indirectly |
+| Main cull indirect commands and counts | `MainGpuCullingPass` | `MainHDRPass` draws them indirectly |
+| Luminance partials and exposure state | `LuminancePass`, `HistogramExposurePass` | `HistogramExposurePass`, `CompositePass` |
 
-`CSMShadowCache` is declared every frame inside the `CSMShadowPass` scope, so
-that profiler number exists every frame — at its real cost of nothing on a fully
-cached frame, which declares neither shadow pass. `ClusterBuild` is declared only
-when the cluster passes record on this queue; the async path submits them on the
-compute queue, which `docs/async_compute.md` describes and the graph does not
-model.
+The froxel volumes also removed `VolumetricFogPass`'s `sideEffect` exemption: it
+had one because nothing downstream declared a read on its outputs, and liveness
+would have culled it.
 
-Four pieces of CPU state are left to after recording: invalidating the depth
-pyramid on a frame that did not build it, marking the ambient-occlusion target
-written, and the VSM page and punctual atlas counters of a frame that declared
-no such pass. Nothing recorded reads any of them.
+Two more have the shape of a conversion and are blocked by something other than
+the graph:
 
-### Why the units went
+- **The VSM page cull's request buffers.** The cull is a pass, `VsmPageCullPass`,
+  ordered between marking and the page pass, but the buffers it writes are built
+  per frame inside the recorder -- the caster batches and the per-page command
+  stride -- so they are not graph resources and carry their own barriers.
+  Hoisting that batch build into frame prep is the prerequisite for declaring
+  them, and it is a change to where CPU work happens rather than a graph change.
+- **The probe shading parameter buffer.** Its upload is a pass,
+  `ProbeShadingParams`, ordered before every reader. Its cross-frame hazard -- one
+  buffer serving every frame in flight -- is handled by a barrier before the
+  update, and would not be the graph's to emit in any case: buffer state is rebuilt
+  every frame, so the graph has nothing to order a frame's first write against.
 
-Until every pass had a callback, work without a pass of its own was a *unit*: a
-recorder anchored on a pass, running right after it — or, when its anchor was
-not scheduled, with the last anchored unit registered before it. That inherited
-position moved whenever a unit before it went. When fog became a callback the
-fog unit went, and the probe recorder, which inherited from it on frames without
-a capture (the cold-start seed and the debug-pattern path), inherited from the
-cluster build instead and recorded `IrradianceProbeUpdate` ahead of
-`VolumetricFogPass`. Nothing depends on the order of the two, so no barrier,
-backstop result or pixel changed, and the default captures never showed it,
-because their last frame has a capture. The per-frame GPU scope list did.
+## The backstop
 
-A pass cannot drift that way: its position is its declaration, and what it
-depends on is either a resource or an `orderAfter` edge. Every configuration of
-the check below records in the order it did before any pass moved to a callback.
+Declarations and recording used to be two sequences kept in step by hand. Each
+callback now sits beside its declaration, but whether a declared pass records
+anything, and whether its recorder agrees with its declaration about when it
+runs, are still claims the graph checks. `beginDeclaredPass` records the order
+passes were actually begun in, and `endFrame` checks it:
 
-**No reordering happens.** The scheduled order is today's order — verified as
-equal to the recorded order every frame — and the captured frame stayed
-bit-identical through the whole extraction.
-
-### Execute callbacks
-
-A pass carries its own commands: `addPass` takes an execute callback, and
-`recordPasses` records each pass through it — it emits
-the pass's barriers, calls the callback with a `RenderGraphPassContext` (the
-command buffer and handle resolution), and closes the pass. The graph marks
-itself busy for the duration of the call, and the in-callback rendering helpers
-below check it is the right pass's callback that calls them.
-
-The recording order comes from `buildExecutionPlan`, a pure function over the
-execution order and the passes: every scheduled pass with a callback, in order. A
-scheduled pass without one is left out, and the endFrame backstop reports it as
-declared but never recorded.
-
-`addPass` takes the callback in a `RenderGraphPassExecutor`, together with the
-debug label and GPU profiler scope the pass has always been reported under, so a
-pass's declaration and its commands are written in one place. The graph opens the
-label, then the profiler scope, then emits the barriers — the order every
-recorder used, so each pass's timestamp range still covers its barriers. A raster
-pass names its target with `builder.colorAttachment`, and the graph opens and
-closes the rendering scope around the callback; `builder.transitionAfterPass` is
-how `ImGuiPass` gets its present transition behind its body. The profiler belongs
-to the renderer, which hands the graph two hooks for it.
-
-Some profiler scopes cover a run of passes rather than one: the bloom mip chain
-is timed as "Bloom Downsample Chain" and "Bloom Upsample Chain", not per level.
-Those are graph scopes, declared by bracketing `addPass` calls with `pushScope`
-and `popScope`. The graph opens a scope ahead of the first pass in it that
-records and closes it when the frame moves to a step outside it;
-`planScopeTransition`, a pure function, decides which scopes close and open
-between two steps.
-
-A raster pass whose rendering scope is decided while recording opens it from
-its callback, through `beginShadowCascadeRendering`,
-`beginLayeredShadowRendering`, `beginPunctualShadowRendering`,
-`beginVsmPageRendering` and `beginProbeCaptureRendering`. Which cascades are
-redrawn, and whether a cached atlas or page pool loads or clears, is the
-callback's to know. These emit no barriers — the graph already has — except
-that each cascade after the first re-emits `CSMShadowPass`'s, as each cascade's
-own begin always did. The cull and the cascades share a `CSMShadowPass` graph
-scope.
-
-The geometry region's raster passes — `DepthPrepass`, `MainHDRPass`,
-`MainHDRPhase2`, `SSRTracePass`, `GTAOPass`, `GTAOBlurPass` and
-`TransparentPass` — open their fixed-shape scopes the same way, so a callback
-that draws nothing opens nothing. The ray-traced shadow filter's three passes
-share a `RayTracedShadowFilter` graph scope.
-
-Every declared pass is recorded by its callback; no `begin*Pass` / `end*Pass`
-pair is left.
-
-### Passes still share drawing state through the command buffer
-
-The main HDR pass sets up what phase 2 and the transparent pass draw with — the
-viewport, the global descriptor set, the indirect buffers and the base push
-constants — and hands those values to them in a `MainPassFrameState` it fills
-when it records. It is filled at the point the values were always computed,
-because the base push constants include whether the ambient-occlusion history is
-usable, and GTAO changes that later in the frame.
-
-Splitting the old geometry recorder this way keeps every callback binding exactly
-what the old code bound at that point, and the frame trace, the per-frame
-profiler scopes and the captures match the build before the split. The cost
-of keeping the command stream unchanged is that callbacks still rely on Vulkan
-state an earlier pass left bound — phase 2 and the transparent pass rebind their
-own pipeline and sets, but a pass that did not would draw with whatever the pass
-before it bound. Nothing reorders passes today, so nothing exercises that; a
-scheduler that moved a geometry pass would first have to make each callback bind
-everything it uses.
-
-Each run also logs the last frame's recorded pass order with the barrier counts
-the graph emitted for each pass:
-
-```
-Render graph frame trace: ... MainHDRPass[6/0/1] DepthPyramidMidPass[2/0/1] ...
-```
-
-as `Name[image/buffer/submits]`. A `--deterministic` run ends on the same frame
-every time, so a change to who records a pass has to leave this line unchanged
-(an added work pass carries no barriers, `[0/0/0]`). That is a stronger check than the golden image, since a missing
-barrier rarely shows up in pixels.
-
-### What this does not buy
-
-The head of the frame has almost no scheduling freedom: the longest dependency
-chain is 17 of 20 recorded passes, and the slack sits in the tail. Nothing here
-can move anywhere useful, and reordering on a single queue would not be a
-performance win if it could. What it does buy is that the backstop and any future
-policy now cover the whole frame rather than its last third, that a ~980-line
-function became a dozen named recorders, and that async-compute placement — the
-one change that would make scheduling matter, because moving a pass to another
-queue is a real change rather than a reshuffle — now has somewhere to plug in.
-
-### Declaration order has to match recording order
-
-The passes were declared in the graph's own `declareGeometryPasses` and
-recorded by units in `recordRenderCommands`. While nothing acted on the declared order those two could
-disagree for free, and they did: `VolumetricFogPass`, `ProbeCapture` and the
-irradiance probe update were declared before `MainGpuCullingPass` and recorded
-after it.
-
-Handing the order to the graph turned that latent disagreement into a real
-reordering — the fog unit anchored on its own earlier declared position and
-sorted ahead of the synchronous cluster build, whose light lists fog injection
-walks. The graph does not model that dependency, and cannot: the cluster buffers
-are not graph resources and the async path submits them on another queue.
-
-The three declarations moved to where the passes actually run. None of them
-touches a resource `MainGpuCullingPass` touches, so no edge, version chain or
-culling outcome changed with them.
-
-The general rule this leaves: **an ordering constraint the graph does not model
-has to be stated**, which is what `orderAfter` is for. Fog and the main pass name
-`ClusterBuild` that way, and the probe passes name `ProbeShadingParams`.
-
-### The backstop
-
-The declarations, then in `buildFrameGraphDeclarations`, and the recording spread
-across several translation units were two sequences kept in step by hand. Nothing
-compared them. `beginDeclaredPass` now records the order passes were actually begun in,
-and `endFrame` checks it:
-
-- `validatePassOrder` — dependencies the recording order broke;
-- `unrecordedPasses` — scheduled passes never recorded at all. `validatePassOrder`
+- `validatePassOrder` -- dependencies the recording order broke;
+- `unrecordedPasses` -- scheduled passes never recorded at all. `validatePassOrder`
   sees a missing pass only through the edges it breaks, so one with no
   predecessors would otherwise pass unnoticed.
 
 Both are reported in the Render Graph panel, never thrown, for the same reason
-`validateDeclarations` reports.
+`validateDeclarations` reports. Across a run they are rolled up into one greppable
+line printed at shutdown, beside the frame trace:
 
-### The backstop only proves itself on configurations that run
+```
+Render graph backstop: 0 order violations, 0 unrecorded passes, 0 declaration issues over 40 frames
+```
 
-Everything above was checked on the default configuration, and that was not
-enough. A review of this work found two more declaration/recording mismatches
-that only appear elsewhere: the fog and probe ordering above, which needs
-volumetric fog and GI enabled, and `HistogramExposurePass`, which was declared
-unconditionally while its recorder returns early under manual exposure.
+Peaks across the run rather than the last frame's counts, because a violation in
+frame 7 that clears again by frame 30 still has to be reported; the line carries
+the frame count, because zero findings over zero frames is what a run that
+rendered nothing looks like. The headless job renders
+[every swept configuration](../config/ci/README.md) past it.
 
-Both are now checked in the configurations they live in -- fog and GI on, manual
-exposure, log-average exposure -- and all three report no violations, no
-unrecorded passes and no declaration issues.
+### What the backstop found
 
-**Those checks are no longer done by hand.** `endFrame`'s findings are rolled up
-across the run and printed as one greppable line, and the headless job renders
-[every swept configuration](../config/ci/README.md) past it rather than only
-the default one. Peaks across the run rather than the last frame's counts, because a
-violation in frame 7 that clears again by frame 30 still has to be reported; and
-the line carries the frame count, because zero findings over zero frames is what
-a run that rendered nothing looks like.
+Every finding below was a declaration describing work that did not happen -- its
+culling, its barriers, its resource lifetimes modelling a frame other than the one
+submitted -- and none was visible to any other gate, because each Vulkan call was
+still legal.
 
-Running the rest of them found two more mismatches of exactly this kind, neither
-visible to any other gate -- the validation layer raises nothing, because each
-individual Vulkan call is still legal:
+On its first run, on the default configuration:
 
+- **`CSMShadowPass`.** The cascade cache skips the redraw when every cascade is
+  clean, but the declaration was unconditional. On a cached frame the main pass
+  read a shadow map the graph believed had just been written.
+- **`LuminancePass`.** Its recorder returns early in histogram mode, which is the
+  default, so `HistogramExposurePass` declared a read of partials nothing had
+  produced.
+
+Both now follow the pattern the punctual atlas and the VSM page pool already
+used: the pass is declared only when the renderer will record it, while the
+resource stays imported and its readers stay declared, so it keeps the layout its
+sampler claims. The predicates are shared rather than duplicated --
+`Renderer::anyCascadeShadowRedrawRequired` and
+`PostProcessStack::willRecordLuminancePass` are asked by both the declaration and
+the recorder. Collapsing the luminance recorder's three early-outs into that one
+predicate is what closed it; the first attempt covered only the first of them,
+and the backstop said so.
+
+Then on the configurations that had not been looked at, once the sweep ran past
+the backstop:
+
+- **`HistogramExposurePass`** was declared unconditionally while its recorder
+  returns early under manual exposure.
 - **`DepthPyramidPass`** was declared every frame while the recorder skips the
   build whenever nothing consumes the pyramid, so with occlusion culling off the
-  graph modelled a pass that never ran. Its declaration is now gated on the same
+  graph modelled a pass that never ran. Its declaration is gated on the same
   latched decision the recorder reads -- latched, because
   `isDepthPyramidBuildRequired()` reads state the yield controller can move
   between declaring and recording.
 - **`TransparentPass`** was declared whenever anything was blended, but the
   transparent pipeline binds the bindless heap as its second descriptor set, so
-  with bindless off the recorder skipped it. `transparentDrawCount` now reports
-  zero in that case.
+  with bindless off the recorder skipped it.
 
-Both fixes are bookkeeping: the four configurations captured either side of them
-are bit-identical at 0 of 921600 pixels. What changed is that the graph's model
-of the frame now matches the frame that was submitted.
-
-#### And then the configurations that still did not run
-
-"every swept configuration" was doing more work in that sentence than it had
-earned. The leg list had grown one entry at a time as features shipped, and
-nothing had ever counted what it reached: twenty-one legs moving twenty-one of
-137 settings keys, with most of the settings that select a code path rendered
-one way only. A sweep of green legs looks identical whether it covers the space
-or a third of it.
-
-Counting it found a third mismatch, of exactly the same kind and older than
-either of the two above:
+And then on the configurations that still did not run. "Every swept
+configuration" had been doing more work than it had earned: the leg list had
+grown one entry at a time as features shipped, and nothing had counted what it
+reached -- twenty-one legs moving twenty-one of 137 settings keys, with most of
+the settings that select a code path rendered one way only. Counting it found:
 
 - **`MainGpuCullingPass`** was declared unconditionally, while
   `GpuCulling::recordMainCull` returns without recording on the CPU culling
-  fallback (`renderer.useGpuCulling` off) and on an empty draw list. Every frame
-  of that configuration reported one unrecorded pass and one order violation --
-  `MainHDRPass` recorded at or before a pass it depends on. No leg turned GPU
-  culling off, so nothing had ever looked.
+  fallback and on an empty draw list. Every frame of that configuration reported
+  one unrecorded pass and one order violation, and no leg turned GPU culling off.
+  It is declared from `GpuCulling::willRecordMainCull` now, the predicate the
+  recorder itself returns on.
 
-It is declared from `GpuCulling::willRecordMainCull` now, the predicate the
-recorder itself returns on, in the shape `PunctualShadows::willRecordCull`
-already used. The main pass keeps its indirect-command read either way -- the
-CPU path uploads the identical commands from the host, so the read is real and
-only its in-frame producer goes away. Bookkeeping again: the default
-configuration is bit-identical across the fix at 0 of 921600 pixels.
-
-The sweep's coverage is now checked rather than assumed, by
-`tools/check_ci_settings_coverage.py` in a job of its own -- see
+Every one of these fixes was bookkeeping: the configurations captured either side
+of them were bit-identical. What changed is that the graph's model of the frame
+matches the frame that was submitted. The sweep's coverage is now checked rather
+than assumed, by `tools/check_ci_settings_coverage.py` in a job of its own -- see
 [headless_ci.md](headless_ci.md) and [`config/ci/`](../config/ci/README.md).
-
-### What the backstop found on its first run
-
-Two passes were declared and scheduled every frame but never recorded, which
-means the graph's model of the frame — its culling, its barriers, its resource
-lifetimes — described work that did not happen:
-
-- **`CSMShadowPass`.** The cascade cache skips the redraw when every cascade is
-  clean (`if (!cascadeNeedsRedraw(cascadeIndex)) continue;`), but the declaration
-  was unconditional. On a cached frame the main pass read a shadow map the graph
-  believed had just been written.
-- **`LuminancePass`.** `recordLuminanceCommands` returns early in histogram mode,
-  which is the default, so `HistogramExposurePass` declared a read of partials
-  nothing had produced.
-
-Both now follow the pattern the punctual atlas and the VSM page pool already
-used: the pass is declared only when the renderer will record it, while the
-resource stays imported and its readers stay declared, so it keeps the layout its
-sampler claims. The predicates are shared rather than duplicated —
-`Renderer::anyCascadeShadowRedrawRequired` and
-`PostProcessStack::willRecordLuminancePass` are called both by the declaration
-and by the recorder, so the two cannot drift apart again. Collapsing the
-luminance recorder's three early-outs into that one predicate is what closed it;
-the first attempt covered only the first of them, and the backstop said so.
-
-The default frame now reports 23 scheduled passes, 23 recorded, no violations.
-Checked the other way too: recording the tail in reverse reports three broken
-dependencies (`CompositePass` before `BloomBlurVertical`, `BloomUpsampleMip0`,
-and `HistogramExposurePass`).
-
-### Which analyses a reordering would break
-
-An earlier draft of this section said all three per-frame analyses sweep
-declaration order and would all have to move before anything reorders. That was
-too coarse. Taken one at a time:
-
-**`computeTextureLifetimes` had to move, and has.** Its intervals decide which
-resources may share bytes, so an interval describing a timeline other than the
-one the passes run on lets two simultaneously live resources overlap in memory --
-and nothing catches that: not the validation layer, not a barrier, not a test
-that does not happen to read the clobbered pixels. It now takes the execution
-order and numbers its slots by position in it.
-
-**`cullUnusedPasses` did not need to move.** Its answer is invariant under any
-legal reordering. The derived edges -- read-after-write, write-after-read,
-write-after-write -- fix the relative order of every pair of passes that touch a
-common resource, and two passes touching no common resource cannot affect each
-other's liveness. So the backward sweep sees the same per-resource sequence of
-reads and writes whatever legal order it is given.
-
-**`validateDeclarations` splits.** Its content rules -- `ResourceDeclaredTwice`,
-`ReadsContentNoPassProduced`, `HistoryReadOfAliasedResource` -- are invariant for
-the same reason. Its two ordering rules, `StaleVersionRead` and
-`HistoryReadAfterProducer`, are not, and must not be: they exist to report that
-the declared order and the declared data flow disagree, which is a statement
-about the declarations. A read holding a stale handle is precisely a read whose
-edges would let it move before the write it failed to name.
-
-Barriers have none of this problem: they are derived from live tracked state as
-each pass is recorded, so they follow whatever order the recording takes.
-
-Moving the lifetimes changed no packing today. The three culled legacy bloom
-passes were contiguous, so closing the gaps they left shifts every later slot
-uniformly without changing which intervals overlap: at 1280x720 the plan is
-26.62 MiB unaliased into a 20.21 MiB pool either way. The change buys
-correctness under a reordering, not memory.
-
-## Layout-Only Reads
-
-A pass sometimes has to sample a resource it does not want. `composite.frag`
-binds both bloom chains and selects one in the shader, so the losing binding must
-still point at an image in a readable layout -- sampling one in
-`VK_IMAGE_LAYOUT_UNDEFINED` is not allowed -- while its contents are discarded.
-
-`RenderGraphBuilder::readTextureForLayout` declares exactly that. It is the third
-`RGReadKind`, alongside the ordinary read and the previous-frame read:
-
-| Kind | Consumes | Depends on the producer | Keeps the producer alive |
-| --- | --- | --- | --- |
-| `Produced` | what this frame's graph produced | yes | yes |
-| `History` | what the previous frame left | no | yes |
-| `LayoutOnly` | nothing | no | **no** |
-
-Barriers do not distinguish them -- a layout is a layout. The last column is what
-matters: a producer whose only reader is layout-only is dead, so culling removes
-it. The content rules in `validateDeclarations` skip layout-only reads entirely,
-since "nothing produced it" and "it names an old version" cannot be complaints
-about a read that consumes nothing.
-
-### What it bought
-
-`CompositePass` now declares the selected chain with `readTexture` and the loser
-with `readTextureForLayout`, and both recorders return early on the same
-predicate, `PostProcessStack::willRecordMipChainBloom` -- which the composite's
-`bloomMethod` push constant also reads, so the shader cannot select a chain that
-was never filled.
-
-Measured on the default scene at 1280x720, passes actually recorded per frame:
-
-| Configuration | Before | After | Culled |
-| --- | --- | --- | --- |
-| mip chain (default) | 23 | **20** | the three legacy passes |
-| `useMipChain` off | 23 | **16** | the seven mip-chain passes |
-
-Both configurations were run: no declaration issues, no order violations, no
-unrecorded passes, and the validation layer clean in each. The captured frame is
-bit-identical to the pre-change capture -- 0 differing pixels, max channel delta
-0 -- which is the point: the passes that went away were producing something
-nothing read.
-
-#### What the removed passes cost, on lavapipe
-
-Not a frame-time claim for real hardware, and not quotable as one. What it
-establishes is that the removed work was not a rounding error. Measured with two
-Release builds, the change reverted and restored, four interleaved 60-second
-runs:
-
-| Removed pass | Median, before |
-| --- | --- |
-| `BloomBlurVertical` | 4.215 ms |
-| `BloomBlurHorizontal` | 4.153 ms |
-| `BloomExtractPass` | 1.620 ms |
-
-These are top-level scopes, not nested inside another, and after the change they
-do not appear in the log at all -- 46 occurrences of `BloomExtractPass` in a
-before run, zero in an after run. The mip chain is unchanged across the two
-builds (6.835 -> 7.215 and 5.602 -> 5.709), which is what confirms the builds
-differ only in the legacy chain.
-
-The frame-total comparison from the same series is **void** and is deliberately
-not quoted: the repeated controls drifted 1.3% and 2.3% against a 1% limit, which
-is the same order as the effect. The pass rows above stand on their own because
-they are not a difference between two numbers -- the scopes simply stop existing.
-
-A software rasterizer pays for a fullscreen pass in CPU fill, where a GPU pays in
-bandwidth, so neither the absolute milliseconds nor their share of the frame
-transfers. Three fullscreen passes at bloom resolution, removed, is the part that
-does.
-
-This is also the first thing culling has actually removed. Until now every
-declared pass was live, and the sweep functioned as a check that the declarations
-and the recording agreed rather than as an optimization.
-
-## Side Effects And Culling
-
-Passes can be marked as side-effecting. Side-effect passes are never culled. Current side-effect passes include:
-
-- `MainGpuCullingPass`
-- `DepthPyramidPass`
-- `LuminancePass`
-- `HistogramExposurePass`
-- `CompositePass`
-- `ImGuiPass`
-
-The graph computes basic pass liveness from declared reads/writes. A pass with no side effects and unused outputs is marked culled, and a layout-only read does not count as a use (see "Layout-Only Reads"), which is what removes the bloom chain the composite does not sample. `TAAResolvePass` is not side-effecting, but it stays live when enabled because bloom, exposure, and composite read the resolved history image as the active HDR source.
-
-### Passes the next frame needs
-
-A pass can produce something only the *next* frame reads. Nothing in this frame's
-declarations consumes it, so the backward sweep drops it, and the frame after
-samples whatever was left behind.
-
-`DepthPyramidPass` is exactly that shape: the phase-2 re-test reads the mid-frame
-build, so nothing reads the end-of-frame one, and the next frame's page marking
-and main cull declare history reads on it. It survived on a hand-set side-effect
-flag — a fine outcome and a bad mechanism, because a pass added in that shape
-without the flag was culled silently.
-
-The declarations already say this. `cullUnusedPasses` seeds its needed set from
-every history read before sweeping, which is a reader at the end of the frame:
-the sweep already knows how to keep the last writer of a needed resource and drop
-the ones before it, so nothing else had to change. A history read no longer marks
-the resource needed at its own position, because what it consumes is the previous
-frame.
-
-`DepthPyramidPass` is declared without the side-effect flag now, which is the
-proof the rule is load-bearing rather than decorative: remove the seeding and the
-pass is culled, the renderer records it anyway, and `beginDeclaredPass` throws.
-That was checked, not assumed.
-
-The other side-effect flags were not audited and stay as they are. Some are
-genuine — `MainGpuCullingPass` writes a readback buffer the CPU reads, `ImGuiPass`
-writes the image that gets presented — and some may now be derivable. Removing
-one is a per-pass argument, not a sweep.
-
-A culled pass must not be recorded: `beginDeclaredPass` throws if the renderer tries. The reverse -- declared, not culled, never recorded -- is caught by the endFrame backstop instead.
 
 ## Debug UI
 
 The ImGui Render Graph panel shows:
 
-- declared pass order
-- execution status
-- culled status/reason
-- side-effect flag
-- read and write resources with declared access
-- generated image and buffer barrier count/summary, and the number of
+- declared pass order, execution status, and culled status with its reason
+- the side-effect flag
+- read and write resources with their declared access
+- generated image and buffer barrier counts, and the number of
   `vkCmdPipelineBarrier2` submissions they were batched into
-- declaration issues found for the pass, and a frame-level count above the table
-- each pass's derived predecessor count, earliest legal slot, and slack, with the
+- declaration issues found for each pass, and a frame-level count above the table
+- each pass's derived predecessor count, earliest legal slot and slack, with the
   predecessor names in a tooltip, plus the frame's longest dependency chain
-- resource versions are not shown; they are visible through the pass declarations
 - whether the recorded order matched the schedule, and any pass that was declared
   and scheduled but never recorded
-- resource name, kind, lifetime, extent/size, format, mip/layer count, initial layout, and final layout
+- each resource's name, kind, lifetime, extent or size, format, mip and layer
+  count, initial layout and final layout
+
+Resource versions are not shown; they are visible through the pass declarations.
 
 ## Transient Memory Aliasing
 
@@ -971,7 +893,7 @@ Measured at 2560x1440: the whole transient set is 123.74 MiB and would pack into
 82.62 MiB. At the time only the bloom chain was wired -- 41.12 MiB of images into
 a 23.64 MiB pool, **17.48 MiB saved**; the G-buffer pair joined it later, below.
 
-### It regressed to never activating at all, and that is now fixed
+### It once regressed to never activating at all
 
 The measurement below was taken while the feature worked. It stopped working
 afterwards, silently, and stayed broken because it is off by default.
@@ -1180,98 +1102,40 @@ the default.
 
 ## Known Limitations
 
-- The graph does not schedule across queues. Async compute exists in the engine --
-  `ClusterBuild` and `LightCull` run on a dedicated compute queue so they can
-  overlap the shadow passes (see [async_compute.md](async_compute.md)) -- but the
-  renderer owns that submission and its semaphores, not the graph. On the
-  graphics-queue fallback they record in the `ClusterBuild` work pass and carry
-  their own barrier to their readers; on the async path the graph has no pass for
-  them at all.
-- Memory aliasing covers the bloom chain and the velocity/thin-G-buffer pair, and
-  is **off by default** (`enableTransientAliasing`). See "Transient memory
-  aliasing" below.
-- No resource pooling overhaul.
-- Transient scene/bloom resources and persistent TAA history resources are graph-described but still physically allocated by `Renderer`.
-- Intra-pass sequencing remains manual, and always will: the graph emits at pass
-  boundaries, so a buffer filled, dispatched against, copied and made
-  host-visible inside one pass carries its own barriers between those steps. The
-  same is true of the depth pyramid's per-mip chain. What is no longer manual is
-  the boundary work -- see "What subsystems still write by hand".
-- The VSM page cull and the probe shading parameter buffer still write their own
-  consumer edges. Neither is blocked by the graph; see "What subsystems still
-  write by hand" for what each needs first.
-- Portfolio screenshot copy remains manual because it temporarily transitions the swapchain between `CompositePass` and `ImGuiPass`.
-- Barriers are conservative and not heavily optimized. They are batched per
-  pass (see "Barrier batching"), but their stage/access scopes are unchanged.
-  They are now checked, however: see "Checking the inferred barriers against
-  something".
-- Not all descriptor-driven sampled resources are graph-owned yet, including material textures, IBL cubemaps, BRDF LUT, and render-target preview descriptors.
-- There is no node-editor view yet.
-- Declaration validation does not model cross-frame liveness; see "What it does
-  not check".
-- No reordering is performed. The scheduled order equals the declaration order by
-  construction; see "Which analyses a reordering would break".
-- The geometry region's callbacks still rely on Vulkan state an earlier pass left
-  bound; see "Passes still share drawing state through the command buffer".
-- Versions, layouts and barriers are per resource, not per subresource. See
-  "Per-subresource tracking has no consumer here" for the survey that says this
-  costs nothing today and for what would change that.
-
-### What subsystems still write by hand
-
-A barrier belongs to the graph when it sits between two passes, and to the
-subsystem when it sits between two commands inside one. That line is what the
-conversions follow, and it is why the manual count will never reach zero.
-
-Now declared, so the graph emits the handoff:
-
-| Resource | Producer | Consumer |
-| --- | --- | --- |
-| The three froxel volumes | `VolumetricFogPass` | `MainHDRPass` samples the integrated one |
-| Shadow cull indirect commands and counts | `ShadowGpuCullingPass` | `CSMShadowPass` draws them indirectly |
-| Punctual cull indirect commands and counts | `PunctualShadowCullPass` | `PunctualShadowAtlasPass` draws them indirectly |
-
-The froxel volumes also removed `VolumetricFogPass`'s `sideEffect` exemption.
-It had one because nothing downstream declared a read on its outputs and
-liveness would have culled it; the main pass declares one now, so the pass is
-kept for the reason it actually runs.
-
-Still manual, and correctly so:
-
-- `DepthPyramid`'s per-mip chain. Consecutive dispatches inside one pass.
-- The fog's injection-to-integration edge, for the same reason.
-- Each cull's fill-to-dispatch reset, its copy to the readback buffer and the
-  host-visibility barrier after it. All inside the pass that owns them.
-- `ensureVolumeInitialized`, the fog's one-time clear. Frame setup with no graph
-  resource, recorded by the `FogVolumeInit` work pass.
-- The portfolio screenshot copy, which transitions the swapchain image between
-  `CompositePass` and `ImGuiPass` and back.
-
-The punctual cull needed one thing the others did not: a predicate the
-declaration and the recorder could share. `recordCull` returns early on half a
-dozen conditions, and a declaration that reproduced them by hand would be a
-second copy to keep in step. `PunctualShadows::willRecordCull` is that predicate,
-asked by both.
-
-Two more have the shape of a conversion and are blocked by something other than
-the graph. Both are worth stating precisely, because "not done yet" and "needs
-this first" are different entries:
-
-- **The VSM page cull.** Its predicate is not knowable when declarations are
-  built. `recordVsmPageCull` builds the caster batches and the per-page command
-  stride inside the recorder, and `recordPageCull` returns early when either
-  comes out empty -- so a declaration made in `beginFrame` would be guessing, and
-  a pass declared and never recorded is exactly what the backstop reports.
-  Hoisting that batch build into frame prep is the prerequisite, and it is a
-  change to where CPU work happens rather than a graph change.
-- **The probe shading parameter buffer.** Its `vkCmdUpdateBuffer` is recorded
-  outside every declared pass and on every frame, including ones where neither
-  the capture nor the convolution runs. Declaring it means giving a single buffer
-  update a pass of its own, which is more model than the thing deserves. Its
-  cross-frame hazard -- one buffer serving every frame in flight -- is handled by
-  a barrier before the update, and would not be the graph's to emit in any case:
-  buffer state is rebuilt every frame, so the graph has nothing to order a
-  frame's first write against.
+- **One queue.** Async compute exists in the engine -- the cluster build and light
+  cull run on a dedicated compute queue so they can overlap the shadow passes (see
+  [async_compute.md](async_compute.md)) -- but the renderer owns that submission
+  and its semaphores, not the graph. On the graphics-queue fallback they record in
+  the `ClusterBuild` work pass and carry their own barriers to their readers; on
+  the async path the graph has no pass for them at all.
+- **No reordering.** The execution order equals the declaration order by
+  construction. The schedule could move passes legally; what would have to change
+  first is in "Which analyses a reordering would break".
+- **Geometry callbacks share bound state.** See "Passes share drawing state through
+  the command buffer".
+- **Conservative barriers.** They are batched per pass (see "Barrier batching"),
+  but their stage and access scopes are unoptimized. They are checked, however:
+  see "Checking the inferred barriers against something".
+- **Whole-resource tracking.** Versions, layouts and barriers are per resource,
+  not per subresource. See "Per-subresource tracking has no consumer here" for the
+  survey that says this costs nothing today and for what would change that.
+- **Memory aliasing is off by default** (`enableTransientAliasing`), and covers the
+  bloom chain and the velocity/thin-G-buffer pair. See "Transient Memory
+  Aliasing".
+- **Physical allocation stays with the subsystems.** Transient targets and the TAA
+  history are graph-described but allocated and recreated by the code that owns
+  them.
+- **Intra-pass sequencing is manual, and always will be.** The graph emits at pass
+  boundaries, so a buffer filled, dispatched against, copied and made host-visible
+  inside one pass carries its own barriers between those steps; see "What
+  subsystems still write by hand".
+- **Not every sampled resource is a graph resource**, including material textures,
+  IBL cubemaps, the BRDF LUT and render-target preview descriptors.
+- **Declaration validation does not model cross-frame liveness** beyond history
+  reads keeping their producer alive. A history read is only satisfied if *this*
+  frame's producer runs; seeding culling from history reads covers that, but
+  validation itself judges one frame at a time.
+- **No node-editor view.**
 
 ### Per-subresource tracking has no consumer here, surveyed
 
@@ -1322,8 +1186,8 @@ configuration in the sweep runs under it.
 The declaration path allocates once per frame for every piece of debug text it
 carries: `addPass` takes `std::string name` by value, every usage stores a
 `std::string description`, and `textureResourceHandle` copies the resource name
-into `RenderResourceHandle`. Across ~23 live passes and 99 usage declarations
-that is upwards of 220 heap allocations a frame, none of which the GPU ever sees.
+into `RenderResourceHandle`. When it was measured, across ~23 live passes and 99
+usage declarations, that was upwards of 220 heap allocations a frame, none of which the GPU ever sees.
 
 Rewriting them as `std::string_view` onto static storage -- plus a static table
 for the two mip names that are built with `std::to_string`, and resolving the
@@ -1342,11 +1206,62 @@ punctual cache-key build took frame prep down about 19% on the same scene, which
 raises the recovery to roughly 0.75% of it. That is still under the drift gate,
 so the conclusion is unchanged -- but the figure above is the one from the day
 it was taken, not a current reading. Against that, the change touches `RGResourceUsage`, `RenderResourceHandle`,
-the debug UI that reads them, and the 1555 lines of tests over the analysis
-functions, and it introduces a lifetime rule (views into `textures_[i].desc.name`
+the debug UI that reads them, and the tests over the analysis functions, and it introduces a lifetime rule (views into `textures_[i].desc.name`
 would dangle when the vector reallocates a short, SSO-stored name) that the
 current owning strings do not have.
 
 Worth revisiting only if the declaration set grows by an order of magnitude, or
-if a pass-registration API (see the pass-list limitation above) moves declaration
-off the recording thread and makes the allocator contended.
+if declaration moves off the recording thread and makes the allocator contended.
+
+## How it got here
+
+The graph started as a description beside a hand-sequenced frame: the renderer's
+recorders ran in a fixed order, each calling a `begin*Pass` / `end*Pass` pair that
+emitted the pass's inferred barriers. Declarations lived in the graph, recording
+in the renderer, and the backstop existed to notice the two drifting apart.
+
+It became the thing that records the frame in steps, each of which had to leave
+the recorded frame unchanged -- the frame trace identical, the per-frame GPU scope
+lists identical, the captures matching -- checked on the RTX 3080 Ti across the
+CI configurations and more (VSM stages, every ray-traced shadow variant, the
+frame captures):
+
+1. the graph took over the order, sequencing named recorders ("units") by the
+   position of a pass each was anchored on;
+2. passes moved from units to execute callbacks the graph calls, single passes
+   first, then the multi-pass and multi-instance ones, then the geometry region;
+3. the remaining units became work passes with explicit `orderAfter` edges;
+4. the declarations moved out of the graph to sit beside their callbacks.
+
+Two lessons from the way, both of which the structure now enforces.
+
+### Declaration order has to match recording order
+
+While nothing acted on the declared order, the declarations and the recording
+could disagree for free, and they did: `VolumetricFogPass`, `ProbeCapture` and the
+irradiance probe update were declared before `MainGpuCullingPass` and recorded
+after it. Handing the order to the graph turned that latent disagreement into a
+real reordering -- fog sorted ahead of the synchronous cluster build, whose light
+lists fog injection walks. The graph did not model that dependency, and could
+not: the cluster buffers are not graph resources and the async path submits them
+on another queue. The declarations moved to where the passes actually run.
+
+The rule this leaves: **an ordering constraint the graph does not model has to be
+stated**, which is what `orderAfter` is for. Fog and the main pass name
+`ClusterBuild` that way, and the probe passes name `ProbeShadingParams`.
+
+### Why units went
+
+Work without a pass of its own was a unit: a recorder anchored on a pass, running
+right after it -- or, when its anchor was not scheduled, with the last anchored
+unit registered before it. That inherited position moved whenever a unit before
+it went. When fog became a callback the fog unit went, and the probe recorder,
+which inherited from it on frames without a capture (the cold-start seed and the
+debug-pattern path), inherited from the cluster build instead and recorded
+`IrradianceProbeUpdate` ahead of `VolumetricFogPass`. Nothing depends on the order
+of the two, so no barrier, backstop result or pixel changed, and the default
+captures never showed it, because their last frame has a capture. The per-frame
+GPU scope list did.
+
+A pass cannot drift that way: its position is its declaration, and what it
+depends on is either a resource or an `orderAfter` edge.
