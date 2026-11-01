@@ -173,13 +173,26 @@ run_sync() {
     # MoltenVK exposes no compute-only or transfer-only queue family unless
     # asked to, which would leave a Mac running exactly the inline fallbacks
     # this mode exists to get past. A value already set, 0 included, is kept.
+    # Only MoltenVK reads it: a Mac may run a native driver such as KosmicKrisp
+    # instead, so whether the queues exist is read back from the run below
+    # rather than assumed from the platform.
     if [[ "$VERIFY_PLATFORM" == Darwin && -z "${MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES+set}" ]]; then
         export MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1
-        printf '%s\n' '[verify] sync: MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1, so MoltenVK exposes its dedicated queues'
+        printf '%s\n' '[verify] sync: MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 (read by MoltenVK only)'
     fi
 
     printf '%s\n' '[verify] renderer under synchronization validation: default scene'
-    "$binary" --deterministic --exit-after-frames 40 --sync-validation --fail-on-validation-error
+    local log
+    log="$(mktemp)"
+    "$binary" --deterministic --exit-after-frames 40 --sync-validation --fail-on-validation-error 2>&1 | tee "$log"
+    local queue
+    for queue in 'async compute queue' 'transfer queue'; do
+        if grep -qE "^  $queue +: off" "$log"; then
+            printf '[verify] sync: WARNING: no %s on %s; its queue-family ownership transfers were not checked\n' \
+                "$queue" "$(sed -n 's/.*Selected Vulkan physical device: //p' "$log")"
+        fi
+    done
+    rm -f "$log"
 
     # The asset is fetched once into a directory every preset shares, but only a
     # build configured with the flag compiles the scene in; any other exits 4 on

@@ -50,6 +50,7 @@ add_executable(VulkanEngineTests
     test_device_extension_selection.cpp
     test_transfer_queue_selection.cpp
     test_portability_fallbacks.cpp
+    test_physical_device_selection.cpp
     test_material_asset.cpp
     test_material_alpha.cpp
     test_mesh_cache.cpp

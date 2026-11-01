@@ -446,6 +446,9 @@ void Renderer::drawRenderScaleDebugUi()
     ImGui::SetItemTooltip("Drives the scale above from measured GPU frame time.\n"
                           "Off by default: a resolution that moves under you invalidates\n"
                           "any measurement you are trying to take.");
+    if (!gpuProfiler_.available()) {
+        ImGui::TextDisabled("No GPU timestamps on this device: the controller has nothing to measure.");
+    }
 
     // Presented as an FPS target because that is how anyone thinks about it,
     // while the stored value is the millisecond budget the controller compares
@@ -1419,7 +1422,9 @@ void Renderer::drawLightsDebugUi()
     ImGui::EndDisabled();
     if (!asyncCompute_.available()) {
         ImGui::TextDisabled("Async compute queue unavailable; cluster passes run on the graphics queue.");
-        ImGui::TextDisabled("(MoltenVK: set MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 to expose one.)");
+        if (context_.device().specializedQueueHintApplies()) {
+            ImGui::TextDisabled("(MoltenVK: set MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 to expose one.)");
+        }
     } else {
         ImGui::Text("Async compute: %s", frameAsyncComputeActive_ ? "active" : "inactive");
         if (frameAsyncComputeActive_) {

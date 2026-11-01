@@ -2,6 +2,7 @@
 
 #include "rhi/AsyncComputeQueueSelection.h"
 #include "rhi/DeviceExtensionSelection.h"
+#include "rhi/PhysicalDeviceSelection.h"
 #include "rhi/PortabilityFallbacks.h"
 #include "rhi/TransferQueueSelection.h"
 
@@ -50,6 +51,29 @@ void appendUniqueExtension(std::vector<const char*>& extensions, const char* ext
     if (!containsExtension(extensions, extensionName)) {
         extensions.push_back(extensionName);
     }
+}
+
+// "Apple M3 (KosmicKrisp, Mesa 26.2.0-devel)". The device name alone cannot
+// tell two drivers for the same GPU apart, and a log that cannot say which
+// driver it ran on cannot be compared against another one.
+std::string describePhysicalDevice(VkPhysicalDevice candidate)
+{
+    VkPhysicalDeviceDriverProperties driverProperties{};
+    driverProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+    VkPhysicalDeviceProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &driverProperties;
+    vkGetPhysicalDeviceProperties2(candidate, &properties);
+
+    std::string description = properties.properties.deviceName;
+    description += " (";
+    description += driverProperties.driverName;
+    if (driverProperties.driverInfo[0] != '\0') {
+        description += ", ";
+        description += driverProperties.driverInfo;
+    }
+    description += ")";
+    return description;
 }
 
 std::vector<VkExtensionProperties> enumerateDeviceExtensions(VkPhysicalDevice candidate)
@@ -263,6 +287,7 @@ void VulkanDevice::cleanup()
     independentBlendEnabled_ = false;
     samplerAnisotropyEnabled_ = false;
     pipelineStatisticsQueryEnabled_ = false;
+    portabilitySubsetEnabled_ = false;
     maxSamplerAnisotropy_ = 1.0f;
     drawIndexedIndirectCountAvailable_ = false;
     maxDrawIndirectCount_ = 0;
@@ -283,30 +308,30 @@ void VulkanDevice::pickPhysicalDevice()
     std::vector<VkPhysicalDevice> devices(deviceCount);
     VK_CHECK(vkEnumeratePhysicalDevices(instance_, &deviceCount, devices.data()));
 
-    int bestScore = -1;
-    VkPhysicalDevice bestDevice = VK_NULL_HANDLE;
+    std::vector<int> scores;
+    scores.reserve(devices.size());
     for (VkPhysicalDevice candidate : devices) {
-        if (!isDeviceSuitable(candidate)) {
-            continue;
-        }
-
-        const int score = scoreDevice(candidate);
-        if (score > bestScore) {
-            bestScore = score;
-            bestDevice = candidate;
-        }
+        scores.push_back(isDeviceSuitable(candidate) ? scoreDevice(candidate) : kUnsuitableDeviceScore);
     }
 
-    if (bestDevice == VK_NULL_HANDLE) {
+    const PhysicalDeviceChoice choice = selectPhysicalDevice(scores);
+    if (!choice.available()) {
         throw std::runtime_error("No suitable Vulkan 1.3 GPU was found.");
     }
 
-    physicalDevice_ = bestDevice;
+    physicalDevice_ = devices[choice.index];
     queueFamilies_ = findQueueFamilies(physicalDevice_);
 
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-    Logger::info(std::string("Selected Vulkan physical device: ") + properties.deviceName);
+    Logger::info("Selected Vulkan physical device: " + describePhysicalDevice(physicalDevice_));
+    if (!choice.tiedWith.empty()) {
+        std::string others;
+        for (const size_t index : choice.tiedWith) {
+            others += others.empty() ? "" : "; ";
+            others += describePhysicalDevice(devices[index]);
+        }
+        Logger::info("Equally ranked and not selected: " + others +
+                     ". The loader's enumeration order decided; set VK_DRIVER_FILES to choose the driver.");
+    }
 }
 
 bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice candidate) const
@@ -599,6 +624,13 @@ void VulkanDevice::createLogicalDevice()
         maxAccelerationStructureInstanceCount_ = accelerationStructureProperties.maxInstanceCount;
     }
 
+    portabilitySubsetEnabled_ =
+        std::any_of(extensionPlan.optionalOutcomes.begin(),
+                    extensionPlan.optionalOutcomes.end(),
+                    [](const ExtensionOutcome& outcome) {
+                        return outcome.enabled() && outcome.name == std::string_view(kPortabilitySubsetExtensionName);
+                    });
+
     logCapabilityReport(extensionPlan.optionalOutcomes);
 }
 
@@ -726,12 +758,8 @@ void VulkanDevice::logCapabilityReport(std::span<const ExtensionOutcome> optiona
         // --portability-fallbacks took it away, which no variable can undo.
         // Anywhere else it was advice about a driver that is not running, or
         // about queues that are already there.
-        const bool portabilityDriver =
-            std::any_of(optionalExtensions.begin(), optionalExtensions.end(), [](const ExtensionOutcome& outcome) {
-                return outcome.enabled() && outcome.name == std::string_view(kPortabilitySubsetExtensionName);
-            });
         const bool queueMissing = !asyncComputeAvailable_ || !transferQueueAvailable_;
-        const bool suggestSpecializedQueues = portabilityDriver && queueMissing && !portabilityFallbacks_;
+        const bool suggestSpecializedQueues = specializedQueueHintApplies() && queueMissing;
         Logger::warn("Running on fallback paths for: " + degraded +
                      ". The capability report above says what each one does instead." +
                      (suggestSpecializedQueues
