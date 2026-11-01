@@ -403,8 +403,7 @@ void Renderer::finishPunctualShadowFrame()
 {
     // The counters a frame that records no atlas pass still has to report. Only
     // for that frame: when the pass is declared its callback sets them.
-    if (renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::PunctualShadow) !=
-        renderer::kInvalidRenderGraphHandle) {
+    if (frameGraphPasses_.punctualShadow != renderer::kInvalidRenderGraphHandle) {
         return;
     }
     // Cleared rather than left over: a stale count would report tiles drawn
@@ -1585,8 +1584,7 @@ void Renderer::finishVsmPageFrame()
 {
     // A frame that declares no page pass still reports zero pages. The pool's
     // idle transition is its own pass, VsmPagePoolIdle.
-    if (renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::VsmPage) !=
-        renderer::kInvalidRenderGraphHandle) {
+    if (frameGraphPasses_.vsmPage != renderer::kInvalidRenderGraphHandle) {
         return;
     }
     vsmPageDrawsRecorded_ = 0;
@@ -3101,8 +3099,8 @@ void Renderer::recordRayTracedShadowResolve(VkCommandBuffer commandBuffer)
 
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
-    // Recording boundary: beginFrame imports resources and compiles the logical
-    // pass graph; scheduled callbacks below emit the actual feature commands.
+    // Recording boundary: beginFrame imports resources, the passes are declared
+    // with their recorders, and compile culls and schedules them.
     // endFrame validates/closes the graph and command buffer, but submission is
     // intentionally left to Renderer::drawFrame().
     // Only what this function still needs: every recorder it hands the graph
@@ -3131,248 +3129,18 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const float probeDebugGain =
         (giSettings_.enabled && giSettings_.debugIrradianceOnly) ? std::max(giSettings_.previewGain, 0.01f) : 0.0f;
 
-    // The whole frame, handed to the graph. Each entry names the pass whose
-    // scheduled position decides when it runs; the two without one -- the
-    // synchronous cluster build and the fog volume's first-use clear -- run with
-    // the anchored unit registered before them.
-    //
-    // The order the graph returns is today's order: every derived edge points
-    // backwards, so a stable topological sort reproduces the declarations. What
-    // changed is who decides it, and that the endFrame backstop now checks a
-    // frame the graph itself sequenced.
-    using Builtin = renderer::RenderGraphBuiltinPass;
-    using renderer::RenderGraphPassContext;
-
-    // Passes the graph records itself: it emits each one's barriers, opens its
-    // label, profiler scope and rendering scope, and calls the callback. A pass
-    // this frame does not declare binds nothing, which is the frame its unit
-    // used to return early on.
+    // Every pass is declared with its recorder, then the graph culls, validates
+    // and schedules them and records each through its callback. The order is
+    // the declaration order: every derived edge points backwards, so the stable
+    // topological sort reproduces it, and the endFrame backstop checks it.
     renderGraph_.setProfilerHooks(
         {[this](VkCommandBuffer cb, const char* name) { return gpuProfiler_.beginScope(currentFrame_, cb, name); },
          [this](VkCommandBuffer cb) { gpuProfiler_.endScope(currentFrame_, cb); }});
-    renderGraph_.bindExecutor(Builtin::RayTracingSceneBuild,
-                              {"RayTracingSceneBuild", "RayTracingSceneBuild", [this](RenderGraphPassContext& context) {
-                                   rayTracingScene_.recordTopLevelBuild(context.commandBuffer(), currentFrame_);
-                               }});
-    renderGraph_.bindExecutor(Builtin::VolumetricFog, {"", "VolumetricFog", [this](RenderGraphPassContext& context) {
-                                                           recordVolumetricFogPass(context.commandBuffer());
-                                                       }});
-    renderGraph_.bindExecutor(Builtin::VsmPageMark, {"", nullptr, [this](RenderGraphPassContext& context) {
-                                                         recordVsmPageMarkPass(context.commandBuffer());
-                                                     }});
-    renderGraph_.bindExecutor(Builtin::VsmPage, {"VsmPagePass", "VsmPagePass", [this](RenderGraphPassContext& context) {
-                                                     recordVsmPagePass(context.commandBuffer());
-                                                 }});
-    // One cull for every cascade, ahead of them: the dispatch produces the union
-    // of the cascade frusta, so each cascade replays the same list. A cascade
-    // that is partially cached still replays the full union list -- the union is
-    // a superset that each cascade's own projection clips, so a dirty cascade
-    // drawing it produces exactly what it would have drawn alone. The graph's
-    // CSMShadowPass scope covers both passes.
-    renderGraph_.bindExecutor(Builtin::ShadowGpuCulling,
-                              {"", "ShadowGpuCulling", [this](RenderGraphPassContext& context) {
-                                   recordGpuShadowCullingCommands(context.commandBuffer());
-                               }});
-    renderGraph_.bindExecutor(Builtin::Shadow, {"", nullptr, [this](RenderGraphPassContext& context) {
-                                                    recordCascadeShadowCascades(context.commandBuffer());
-                                                }});
-    renderGraph_.bindExecutor(Builtin::PunctualShadowCull,
-                              {"", "PunctualShadowGpuCull", [this](RenderGraphPassContext& context) {
-                                   recordPunctualShadowCull(context.commandBuffer());
-                               }});
-    // Punctual casters go into the atlas right after the directional cascades,
-    // so both shadow sources are resident before the main HDR pass samples them.
-    renderGraph_.bindExecutor(Builtin::PunctualShadow,
-                              {"PunctualShadowAtlas", "PunctualShadowAtlas", [this](RenderGraphPassContext& context) {
-                                   recordPunctualShadowPass(context.commandBuffer(), willRecordPunctualShadowCull());
-                               }});
-    // Probe capture, then the convolution that turns it into probe tiles. Both
-    // sit after the shadow passes -- the capture samples the cascades so the
-    // radiance it records is shadowed -- and before the main pass, which
-    // declares a read on the probe atlases.
-    renderGraph_.bindExecutor(Builtin::ProbeCapture,
-                              {"ProbeCapture", "ProbeCapture", [this](RenderGraphPassContext& context) {
-                                   recordProbeCapturePass(context.commandBuffer());
-                               }});
-    renderGraph_.bindExecutor(Builtin::IrradianceProbes,
-                              {"", "IrradianceProbeUpdate", [this](RenderGraphPassContext& context) {
-                                   irradianceProbes_.recordUpdate(context.commandBuffer(), giSettings_.debugPattern);
-                               }});
-    // The geometry region, in recording order. The prepass's depth is what the
-    // main pass loads instead of clearing; the ray-traced shadow mask traces
-    // from it and the main pass reads what the mask wrote.
+    // The drawing state the main pass hands phase 2 and the transparent pass;
+    // it lives until the passes are recorded.
     MainPassFrameState mainPassState{};
-    renderGraph_.bindExecutor(Builtin::DepthPrepass,
-                              {"DepthPrepass", "DepthPrepass", [this](RenderGraphPassContext& context) {
-                                   recordDepthPrepass(context.commandBuffer());
-                               }});
-    renderGraph_.bindExecutor(Builtin::RayTracedShadowTrace,
-                              {"RayTracedShadowTrace", "RayTracedShadowTrace", [this](RenderGraphPassContext& context) {
-                                   recordRayTracedShadowTrace(context.commandBuffer());
-                               }});
-    renderGraph_.bindExecutor(
-        Builtin::RayTracedShadowTemporal,
-        {"RayTracedShadowTemporal", "RayTracedShadowTemporal", [this](RenderGraphPassContext& context) {
-             recordRayTracedShadowTemporal(context.commandBuffer());
-         }});
-    // The three filter stages share the graph's RayTracedShadowFilter scope.
-    for (const renderer::RayTracedShadowFilterStage stage : {renderer::RayTracedShadowFilterStage::Radius,
-                                                             renderer::RayTracedShadowFilterStage::BlurHorizontal,
-                                                             renderer::RayTracedShadowFilterStage::BlurVertical}) {
-        renderGraph_.bindExecutor(Builtin::RayTracedShadowFilter,
-                                  static_cast<uint32_t>(stage),
-                                  {"", nullptr, [this, stage](RenderGraphPassContext& context) {
-                                       recordRayTracedShadowFilter(context.commandBuffer(), stage);
-                                   }});
-    }
-    renderGraph_.bindExecutor(
-        Builtin::RayTracedShadowResolve,
-        {"RayTracedShadowResolve", "RayTracedShadowResolve", [this](RenderGraphPassContext& context) {
-             recordRayTracedShadowResolve(context.commandBuffer());
-         }});
-    renderGraph_.bindExecutor(Builtin::MainHdr,
-                              {"MainHDRPass", "MainHDRPass", [this, &mainPassState](RenderGraphPassContext& context) {
-                                   recordMainHdrPass(context.commandBuffer(), mainPassState);
-                               }});
-    // Two-phase Hi-Z occlusion: rebuild the pyramid from phase-1 depth, re-test
-    // the phase-1 occlusion candidates against it, then draw the rescued objects.
-    renderGraph_.bindExecutor(Builtin::DepthPyramidMid,
-                              {"", "DepthPyramidMid", [this](RenderGraphPassContext& context) {
-                                   rhi::debug::beginLabel(context.commandBuffer(), "DepthPyramid");
-                                   depthPyramid_.recordBuild(
-                                       context.commandBuffer(), frameViewProjection_, frameCameraPosition_);
-                                   rhi::debug::endLabel(context.commandBuffer());
-                               }});
-    renderGraph_.bindExecutor(Builtin::MainGpuCullingPhase2,
-                              {"", "MainGpuCullingPhase2", [this](RenderGraphPassContext& context) {
-                                   gpuCulling_.recordMainCullPhase2(context.commandBuffer(),
-                                                                    currentFrame_,
-                                                                    isGpuCullingActive(),
-                                                                    static_cast<uint32_t>(allDrawItems_.size()),
-                                                                    frameFrustumPlanes_,
-                                                                    isMainPassMultiDrawIndirectActive());
-                               }});
-    renderGraph_.bindExecutor(
-        Builtin::MainHdrPhase2,
-        {"MainHDRPhase2", "MainHDRPhase2", [this, &mainPassState](RenderGraphPassContext& context) {
-             recordMainHdrPhase2Pass(context.commandBuffer(), mainPassState);
-         }});
-    renderGraph_.bindExecutor(Builtin::SsrCopy, {"SSRCopyPass", "SSRCopy", [this](RenderGraphPassContext& context) {
-                                                     ssr_.recordCopy(context.commandBuffer(),
-                                                                     currentFrame_,
-                                                                     postProcess_.sceneColor().image(),
-                                                                     renderResolution_.extent());
-                                                 }});
-    renderGraph_.bindExecutor(Builtin::SsrTrace,
-                              {"SSRTracePass", "SSRTrace", [this](RenderGraphPassContext& context) {
-                                   ssr_.recordTrace(context.commandBuffer(), currentFrame_, renderResolution_.extent());
-                               }});
-    renderGraph_.bindExecutor(
-        Builtin::Gtao, {"GTAOPass", "GTAO", [this](RenderGraphPassContext& context) {
-                            gtao_.recordTrace(context.commandBuffer(), currentFrame_, renderResolution_.extent());
-                        }});
-    renderGraph_.bindExecutor(Builtin::GtaoBlur,
-                              {"GTAOBlurPass", "GTAOBlur", [this](RenderGraphPassContext& context) {
-                                   gtao_.recordBlur(context.commandBuffer(), currentFrame_, renderResolution_.extent());
-                               }});
-    const uint32_t transparentDraws = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count();
-    renderGraph_.bindExecutor(Builtin::Transparent,
-                              {"Transparent " + std::to_string(transparentDraws) + " draws",
-                               "Transparent",
-                               [this, &mainPassState](RenderGraphPassContext& context) {
-                                   recordTransparentPass(context.commandBuffer(), mainPassState);
-                               }});
-    renderGraph_.bindExecutor(Builtin::MainGpuCulling,
-                              {"", "MainGpuCullingPass", [this](RenderGraphPassContext& context) {
-                                   recordGpuCullingCommands(context.commandBuffer());
-                               }});
-    renderGraph_.bindExecutor(Builtin::DepthPyramid,
-                              {"DepthPyramid", "DepthPyramid", [this](RenderGraphPassContext& context) {
-                                   depthPyramid_.recordBuild(
-                                       context.commandBuffer(), frameViewProjection_, frameCameraPosition_);
-                               }});
-    renderGraph_.bindExecutor(Builtin::ImGui, {"ImGuiPass", "ImGuiPass", [this](RenderGraphPassContext& context) {
-                                                   imguiLayer_.render(context.commandBuffer());
-                                               }});
-    postProcess_.bindGraphExecutors(frameJitteredProjection_,
-                                    probeDebugGain,
-                                    renderScaleSettings_.sharpness,
-                                    showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
-
-    // Page marking reads the depth pyramid the previous frame left, so it runs
-    // before anything this frame writes. The page cull sits between marking and
-    // the page pass, which is separate because compute cannot be recorded inside
-    // a dynamic-rendering scope, and that scope has to stay single so pages this
-    // frame does not touch keep their cached depth.
-    renderGraph_.bindExecutor(Builtin::VsmPageCull, {"", nullptr, [this](RenderGraphPassContext& context) {
-                                                         recordVsmPageCull(context.commandBuffer());
-                                                     }});
-    renderGraph_.bindExecutor(Builtin::VsmPagePoolIdle, {"", nullptr, [this](RenderGraphPassContext& context) {
-                                                             recordVsmPagePoolIdleTransition(context.commandBuffer());
-                                                         }});
-    renderGraph_.bindExecutor(Builtin::CascadeShadowCache,
-                              {"", nullptr, [this](RenderGraphPassContext&) { finishCascadeShadowFrame(); }});
-    renderGraph_.bindExecutor(Builtin::FogVolumeInit,
-                              {"", nullptr, [this](RenderGraphPassContext& context) {
-                                   // Runs whether or not fog is on: binding 8 claims a
-                                   // sampled layout unconditionally, so the volume has to
-                                   // reach it even on a cold start with fog disabled. Fog
-                                   // switching off has to leave a neutral volume behind,
-                                   // because the skybox samples it unconditionally, and
-                                   // detecting that here covers every path that can
-                                   // disable fog -- settings load, preset, toggle.
-                                   const bool fogActiveThisFrame = isVolumetricFogActive();
-                                   if (fogWasActive_ && !fogActiveThisFrame) {
-                                       volumetricFog_.markVolumeNeedsClear();
-                                   }
-                                   fogWasActive_ = fogActiveThisFrame;
-                                   volumetricFog_.ensureVolumeInitialized(context.commandBuffer());
-                               }});
-    // Clustered (Forward+) light assignment on this queue: rebuild the froxel
-    // AABBs, then cull every light into its froxels. Both write buffers the main
-    // HDR fragment shader reads, and fog injection too when fog is on --
-    // frameClusterConsumerStages_ names both. The async path submits the same
-    // work on the compute queue instead, and the pass is not declared.
-    renderGraph_.bindExecutor(
-        Builtin::ClusterBuild,
-        {"", nullptr, [this](RenderGraphPassContext& context) {
-             const VkCommandBuffer cb = context.commandBuffer();
-             {
-                 const renderer::GpuProfileScope buildScope(gpuProfiler_, currentFrame_, cb, "ClusterBuild");
-                 rhi::debug::beginLabel(cb, "ClusterBuild");
-                 clusteredLighting_.recordClusterBuild(cb, currentFrame_);
-                 rhi::debug::endLabel(cb);
-             }
-             {
-                 const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, cb, "LightCull");
-                 rhi::debug::beginLabel(cb, "LightCull");
-                 clusteredLighting_.recordLightCull(cb, currentFrame_, frameClusterConsumerStages_);
-                 rhi::debug::endLabel(cb);
-             }
-         }});
-    renderGraph_.bindExecutor(Builtin::ProbeShadingParams, {"", nullptr, [this](RenderGraphPassContext& context) {
-                                                                recordProbeShadingParams(context.commandBuffer());
-                                                            }});
-    // The portfolio screenshot is always taken before the overlay: a portfolio
-    // shot with a debug panel across it is not a portfolio shot. The regression
-    // capture can be asked for the other side of the overlay instead, which is
-    // the only way anything the debug UI reports and the log does not can be
-    // seen from a scripted run.
-    renderGraph_.bindExecutor(Builtin::FrameCapture,
-                              {"", nullptr, [this, imageIndex](RenderGraphPassContext& context) {
-                                   recordPortfolioScreenshotCopy(context.commandBuffer(), imageIndex);
-                                   if (!frameCaptureIncludesUi_) {
-                                       recordFrameCaptureCopy(context.commandBuffer(), imageIndex);
-                                   }
-                               }});
-    renderGraph_.bindExecutor(Builtin::FrameCaptureAfterOverlay,
-                              {"", nullptr, [this, imageIndex](RenderGraphPassContext& context) {
-                                   if (frameCaptureIncludesUi_) {
-                                       recordFrameCaptureCopy(context.commandBuffer(), imageIndex);
-                                   }
-                               }});
-
-    // Records every pass through its callback, in the graph's execution order.
+    declareFrameGraph(mainPassState, imageIndex, probeDebugGain);
+    renderGraph_.compile();
     renderGraph_.recordPasses();
 
     // CPU state the recorded frame leaves behind. Here, after recording: nothing

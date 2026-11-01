@@ -452,66 +452,279 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 }
 
-void PostProcessStack::bindGraphExecutors(const glm::mat4& jitteredProjection,
-                                          float debugRawGain,
-                                          float sharpness,
-                                          float sharpenDebugGain)
+uint32_t PostProcessStack::declareGraphPasses(const glm::mat4& jitteredProjection,
+                                              float debugRawGain,
+                                              float sharpness,
+                                              float sharpenDebugGain)
 {
     // The label and profiler names are the ones these passes have always been
     // reported under, so profiler history and captures stay comparable.
-    using renderer::RenderGraphBuiltinPass;
-    using renderer::RenderGraphPassContext;
-    renderGraph_.bindExecutor(RenderGraphBuiltinPass::TaaResolve,
-                              {"TAAResolvePass", "TAAResolvePass", [this](RenderGraphPassContext& context) {
-                                   recordTaaResolveCommands(context.commandBuffer());
-                               }});
-    renderGraph_.bindExecutor(RenderGraphBuiltinPass::BloomExtract,
-                              {"BloomExtractPass", "BloomExtractPass", [this](RenderGraphPassContext& context) {
-                                   recordBloomExtractCommands(context.commandBuffer());
-                               }});
-    renderGraph_.bindExecutor(RenderGraphBuiltinPass::BloomBlurHorizontal,
-                              {"BloomBlurHorizontal", "BloomBlurHorizontal", [this](RenderGraphPassContext& context) {
-                                   recordBloomBlurCommands(context.commandBuffer(), true);
-                               }});
-    renderGraph_.bindExecutor(RenderGraphBuiltinPass::BloomBlurVertical,
-                              {"BloomBlurVertical", "BloomBlurVertical", [this](RenderGraphPassContext& context) {
-                                   recordBloomBlurCommands(context.commandBuffer(), false);
-                               }});
-    // The mip chain, one pass per level. Only the selected chain survives
-    // culling, so the other's bindings are never called. The graph's scopes
-    // time the levels as one downsample and one upsample number.
-    for (uint32_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
-        renderGraph_.bindExecutor(
-            RenderGraphBuiltinPass::BloomDownsample,
-            level,
-            {"BloomDownsampleMip" + std::to_string(level), nullptr, [this, level](RenderGraphPassContext& context) {
-                 recordBloomDownsampleCommands(context.commandBuffer(), level);
+    RenderGraphBlackboard& board = renderGraph_.blackboard();
+    const RenderGraphFrameResources& resources = renderGraph_.frameResources();
+    // The stack's passes this frame, for the declarations that order against or
+    // count them.
+    struct {
+        uint32_t taaResolve = kInvalidRenderGraphHandle;
+        uint32_t bloomExtract = kInvalidRenderGraphHandle;
+        uint32_t bloomBlurHorizontal = kInvalidRenderGraphHandle;
+        uint32_t bloomBlurVertical = kInvalidRenderGraphHandle;
+        std::vector<uint32_t> bloomDownsampleChain;
+        std::vector<uint32_t> bloomUpsampleChain;
+        uint32_t luminance = kInvalidRenderGraphHandle;
+        uint32_t histogramExposure = kInvalidRenderGraphHandle;
+        uint32_t composite = kInvalidRenderGraphHandle;
+    } passes;
+
+    if (board.taaHistoryRead.valid() && board.taaHistoryWrite.valid()) {
+        passes.taaResolve = renderGraph_.addPass(
+            "TAAResolvePass",
+            RenderPassType::TaaResolve,
+            RenderPassExecutionType::Graphics,
+            false,
+            [&](RenderGraphBuilder& builder) {
+                builder.readTexture(
+                    board.sceneColor, RGAccess::ShaderRead, "Samples the current jittered HDR scene color.");
+                builder.readHistoryTexture(
+                    board.taaHistoryRead, RGAccess::ShaderRead, "Samples the previous HDR TAA history image.");
+                builder.readTexture(
+                    board.velocity, RGAccess::ShaderRead, "Samples motion vectors to reproject the history UV.");
+                if (swapchain_.depthSupportsSampling()) {
+                    builder.readTexture(board.mainDepth,
+                                        RGAccess::ShaderRead,
+                                        "Samples main depth for closest-depth velocity dilation.");
+                }
+                board.taaHistoryWrite = builder.writeTexture(board.taaHistoryWrite,
+                                                             RGAccess::ColorAttachmentWrite,
+                                                             "Writes the resolved HDR TAA history image.");
+                // The whole history, not the render sub-rect: this is the pass
+                // that turns a low-resolution frame into an output-resolution one.
+                builder.colorAttachment(board.taaHistoryWrite, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
+            },
+            {"TAAResolvePass", "TAAResolvePass", [this](RenderGraphPassContext& context) {
+                 recordTaaResolveCommands(context.commandBuffer());
              }});
     }
-    for (uint32_t level = 0; level < bloomMipUpsampleImages_.size(); ++level) {
-        renderGraph_.bindExecutor(
-            RenderGraphBuiltinPass::BloomUpsample,
-            level,
+
+    passes.bloomExtract = renderGraph_.addPass(
+        "BloomExtractPass",
+        RenderPassType::BloomExtract,
+        RenderPassExecutionType::Graphics,
+        false,
+        [&](RenderGraphBuilder& builder) {
+            builder.readTexture(
+                board.postProcessSource(), RGAccess::ShaderRead, "Samples the active HDR scene color target.");
+            board.bloomExtract = builder.writeTexture(
+                board.bloomExtract, RGAccess::ColorAttachmentWrite, "Writes bright pixels above the bloom threshold.");
+            builder.colorAttachment(board.bloomExtract, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
+        },
+        {"BloomExtractPass", "BloomExtractPass", [this](RenderGraphPassContext& context) {
+             recordBloomExtractCommands(context.commandBuffer());
+         }});
+
+    passes.bloomBlurHorizontal = renderGraph_.addPass(
+        "BloomBlurHorizontal",
+        RenderPassType::BloomBlur,
+        RenderPassExecutionType::Graphics,
+        false,
+        [&](RenderGraphBuilder& builder) {
+            builder.readTexture(board.bloomExtract, RGAccess::ShaderRead, "Samples extracted bloom highlights.");
+            board.bloomPing = builder.writeTexture(
+                board.bloomPing, RGAccess::ColorAttachmentWrite, "Writes the horizontal blur result.");
+            builder.colorAttachment(board.bloomPing, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
+        },
+        {"BloomBlurHorizontal", "BloomBlurHorizontal", [this](RenderGraphPassContext& context) {
+             recordBloomBlurCommands(context.commandBuffer(), true);
+         }});
+
+    passes.bloomBlurVertical = renderGraph_.addPass(
+        "BloomBlurVertical",
+        RenderPassType::BloomBlur,
+        RenderPassExecutionType::Graphics,
+        false,
+        [&](RenderGraphBuilder& builder) {
+            builder.readTexture(board.bloomPing, RGAccess::ShaderRead, "Samples the horizontal blur result.");
+            board.bloomPong = builder.writeTexture(
+                board.bloomPong, RGAccess::ColorAttachmentWrite, "Writes the final vertical blur result.");
+            builder.colorAttachment(board.bloomPong, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
+        },
+        {"BloomBlurVertical", "BloomBlurVertical", [this](RenderGraphPassContext& context) {
+             recordBloomBlurCommands(context.commandBuffer(), false);
+         }});
+
+    // The chain is timed as two numbers, downsample and upsample, not one per
+    // level; the scopes are what the recorder used to open around its loops.
+    renderGraph_.pushScope("BloomMipChain", nullptr);
+    renderGraph_.pushScope("Bloom Downsample Chain", "Bloom Downsample Chain");
+    passes.bloomDownsampleChain.reserve(board.bloomDownsampleChain.size());
+    for (uint32_t level = 0; level < board.bloomDownsampleChain.size(); ++level) {
+        const RGTextureHandle source = level == 0 ? board.postProcessSource() : board.bloomDownsampleChain[level - 1];
+        passes.bloomDownsampleChain.push_back(renderGraph_.addPass(
+            "BloomDownsampleMip" + std::to_string(level),
+            RenderPassType::BloomDownsample,
+            RenderPassExecutionType::Graphics,
+            false,
+            // Captures this and the level rather than the output handle: the
+            // write produces a new version, and the next level reads the chain
+            // entry, so the new handle has to land back in the vector.
+            [&, source, level](RenderGraphBuilder& builder) {
+                builder.readTexture(source,
+                                    RGAccess::ShaderRead,
+                                    level == 0 ? "Samples HDR scene color and extracts conservative bright bloom."
+                                               : "Samples the previous bloom mip.");
+                board.bloomDownsampleChain[level] = builder.writeTexture(board.bloomDownsampleChain[level],
+                                                                         RGAccess::ColorAttachmentWrite,
+                                                                         "Writes a downsampled bloom mip-chain level.");
+                builder.colorAttachment(board.bloomDownsampleChain[level], VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
+            },
+            {"BloomDownsampleMip" + std::to_string(level), nullptr, [this, level](RenderGraphPassContext& context) {
+                 recordBloomDownsampleCommands(context.commandBuffer(), level);
+             }}));
+    }
+    renderGraph_.popScope();
+
+    renderGraph_.pushScope("Bloom Upsample Chain", "Bloom Upsample Chain");
+    passes.bloomUpsampleChain.assign(board.bloomUpsampleChain.size(), kInvalidRenderGraphHandle);
+    for (uint32_t reverseIndex = 0; reverseIndex < board.bloomUpsampleChain.size(); ++reverseIndex) {
+        const uint32_t level = static_cast<uint32_t>(board.bloomUpsampleChain.size() - 1u - reverseIndex);
+        const RGTextureHandle currentMip = board.bloomDownsampleChain[level];
+        const RGTextureHandle lowerMip = level + 1u == board.bloomDownsampleChain.size() - 1u
+                                             ? board.bloomDownsampleChain[level + 1u]
+                                             : board.bloomUpsampleChain[level + 1u];
+        passes.bloomUpsampleChain[level] = renderGraph_.addPass(
+            "BloomUpsampleMip" + std::to_string(level),
+            RenderPassType::BloomUpsample,
+            RenderPassExecutionType::Graphics,
+            false,
+            [&, currentMip, lowerMip, level](RenderGraphBuilder& builder) {
+                builder.readTexture(currentMip, RGAccess::ShaderRead, "Samples this bloom mip's local highlights.");
+                builder.readTexture(lowerMip, RGAccess::ShaderRead, "Samples the accumulated lower-resolution bloom.");
+                board.bloomUpsampleChain[level] =
+                    builder.writeTexture(board.bloomUpsampleChain[level],
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Writes the progressively upsampled bloom chain.");
+                builder.colorAttachment(board.bloomUpsampleChain[level], VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
+            },
             {"BloomUpsampleMip" + std::to_string(level), nullptr, [this, level](RenderGraphPassContext& context) {
                  recordBloomUpsampleCommands(context.commandBuffer(), level);
              }});
     }
-    renderGraph_.bindExecutor(RenderGraphBuiltinPass::Luminance,
-                              {"LuminancePass", "LuminancePass", [this](RenderGraphPassContext& context) {
-                                   recordLuminanceCommands(context.commandBuffer());
-                               }});
-    renderGraph_.bindExecutor(RenderGraphBuiltinPass::HistogramExposure,
-                              {"HistogramExposurePass", "Histogram Exposure", [this](RenderGraphPassContext& context) {
-                                   recordHistogramCommands(context.commandBuffer());
-                               }});
-    renderGraph_.bindExecutor(
-        RenderGraphBuiltinPass::Composite,
+    renderGraph_.popScope();
+    renderGraph_.popScope();
+
+    // Histogram exposure does not read the log-average reduction, so on that
+    // path the renderer records nothing here and the pass is not declared.
+    if (resources.luminancePassEnabled) {
+        passes.luminance = renderGraph_.addPass(
+            "LuminancePass",
+            RenderPassType::Luminance,
+            RenderPassExecutionType::Compute,
+            true,
+            [&](RenderGraphBuilder& builder) {
+                builder.readTexture(board.postProcessSource(),
+                                    RGAccess::ShaderRead,
+                                    "Samples active scene color for log-average luminance reduction.");
+                board.luminancePartials = builder.writeBuffer(
+                    board.luminancePartials, RGAccess::StorageBufferWrite, "Writes per-workgroup luminance partials.");
+            },
+            {"LuminancePass", "LuminancePass", [this](RenderGraphPassContext& context) {
+                 recordLuminanceCommands(context.commandBuffer());
+             }});
+    }
+
+    // Declared only when the recorder will record it: manual and log-average
+    // exposure both return before the pass begins.
+    if (resources.histogramPassEnabled) {
+        passes.histogramExposure = renderGraph_.addPass(
+            "HistogramExposurePass",
+            RenderPassType::HistogramExposure,
+            RenderPassExecutionType::Compute,
+            true,
+            [&](RenderGraphBuilder& builder) {
+                builder.readTexture(board.postProcessSource(),
+                                    RGAccess::ShaderRead,
+                                    "Samples active scene color for log2 luminance histogram binning.");
+                board.luminanceHistogram = builder.writeBuffer(board.luminanceHistogram,
+                                                               RGAccess::StorageBufferClearAndReadWrite,
+                                                               "Clears and writes 256 luminance histogram bins.");
+                builder.readBuffer(board.luminancePartials,
+                                   RGAccess::StorageBufferRead,
+                                   "Reads log-average luminance partials for GPU exposure fallback.");
+                board.exposureState =
+                    builder.readWriteBuffer(board.exposureState,
+                                            RGAccess::StorageBufferReadWrite,
+                                            "Reads previous exposure and writes GPU exposure/luminance state.");
+            },
+            {"HistogramExposurePass", "Histogram Exposure", [this](RenderGraphPassContext& context) {
+                 recordHistogramCommands(context.commandBuffer());
+             }});
+    }
+
+    passes.composite = renderGraph_.addPass(
+        "CompositePass",
+        RenderPassType::Composite,
+        RenderPassExecutionType::Graphics,
+        true,
+        [&](RenderGraphBuilder& builder) {
+            builder.readTexture(
+                board.postProcessSource(), RGAccess::ShaderRead, "Samples the active HDR scene color target.");
+            // The shader samples both bloom bindings and selects one, so only the
+            // selected chain is really read. The other is declared for its layout
+            // alone -- the descriptor binds it either way and sampling an image
+            // in an undefined layout is not allowed -- and a layout-only read
+            // keeps no producer alive, so culling drops the whole chain that
+            // would have filled it.
+            const bool mipBloomSelected = resources.mipChainBloomSelected;
+            if (mipBloomSelected) {
+                builder.readTextureForLayout(board.bloomPong,
+                                             RGAccess::ShaderRead,
+                                             "Bound as the legacy bloom binding, but the mip chain is selected, so "
+                                             "the sample is discarded.");
+            } else {
+                builder.readTexture(board.bloomPong, RGAccess::ShaderRead, "Samples the legacy blurred bloom texture.");
+            }
+
+            RGTextureHandle mipBloom{};
+            const char* mipBloomDescription = "Samples the final mip-chain bloom texture.";
+            if (!board.bloomUpsampleChain.empty()) {
+                mipBloom = board.bloomUpsampleChain.front();
+            } else if (!board.bloomDownsampleChain.empty()) {
+                mipBloom = board.bloomDownsampleChain.front();
+                mipBloomDescription = "Samples the single-level mip-chain bloom texture.";
+            }
+            if (mipBloom.valid()) {
+                if (mipBloomSelected) {
+                    builder.readTexture(mipBloom, RGAccess::ShaderRead, mipBloomDescription);
+                } else {
+                    builder.readTextureForLayout(mipBloom,
+                                                 RGAccess::ShaderRead,
+                                                 "Bound as the mip-chain bloom binding, but the legacy chain is "
+                                                 "selected, so the sample is discarded.");
+                }
+            }
+            builder.readBuffer(
+                board.exposureState, RGAccess::StorageBufferRead, "Reads GPU exposure state for auto exposure modes.");
+            // Same split as the transparent pass: produced this frame when GTAO
+            // is on, carried over from the previous one when it is off.
+            const char* compositeAoDescription =
+                "Samples the ground-truth ambient-occlusion term applied to scene color.";
+            if (resources.gtaoEnabled) {
+                builder.readTexture(board.ambientOcclusion, RGAccess::ShaderRead, compositeAoDescription);
+            } else {
+                builder.readHistoryTexture(board.ambientOcclusion, RGAccess::ShaderRead, compositeAoDescription);
+            }
+            board.swapchainColor = builder.writeTexture(board.swapchainColor,
+                                                        RGAccess::ColorAttachmentWrite,
+                                                        "Writes the exposed and tone-mapped final color.");
+            builder.colorAttachment(board.swapchainColor, VK_ATTACHMENT_LOAD_OP_CLEAR, kOpaqueBlack);
+        },
         {"CompositePass",
          "CompositePass",
          [this, jitteredProjection, debugRawGain, sharpness, sharpenDebugGain](RenderGraphPassContext& context) {
              recordCompositeCommands(
                  context.commandBuffer(), jitteredProjection, debugRawGain, sharpness, sharpenDebugGain);
          }});
+
+    return passes.composite;
 }
 
 void PostProcessStack::createPostProcessDescriptorSetLayouts()

@@ -98,14 +98,14 @@ public:
     // Advances TAA jitter bookkeeping and returns the NDC jitter offset to add to
     // the main projection (zero when TAA jitter is inactive).
     [[nodiscard]] glm::vec2 advanceJitter(VkExtent2D extent);
-    // Binds the stack's recorders -- TAA resolve, both bloom chains, luminance,
-    // histogram exposure and the composite -- to their graph
-    // passes for this frame, so the graph records them. Call after the graph's
-    // beginFrame. The parameters are the composite's; see recordCompositeCommands.
-    void bindGraphExecutors(const glm::mat4& jitteredProjection,
-                            float debugRawGain,
-                            float sharpness,
-                            float sharpenDebugGain);
+    // Declares the stack's passes -- TAA resolve, both bloom chains, luminance,
+    // histogram exposure and the composite -- with their recorders, between the
+    // graph's beginFrame and compile. The parameters are the composite's; see
+    // recordCompositeCommands. Returns the composite's pass index.
+    uint32_t declareGraphPasses(const glm::mat4& jitteredProjection,
+                                float debugRawGain,
+                                float sharpness,
+                                float sharpenDebugGain);
     // The bodies of those passes. The graph emits the barriers, opens the
     // rendering scope, label and profiler scope around each; these record only
     // the pass's own commands.

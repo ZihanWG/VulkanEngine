@@ -14,7 +14,7 @@ Phase 4 upgraded the earlier manual pass list into a small engine-style render g
 - pass execution, side-effect, and culling metadata
 - ImGui debug data for pass/resource visualization
 
-Passes are moving from the original `begin*Pass` / `end*Pass` entry points, called from each recorder, to execute callbacks the graph calls itself; see "Execute callbacks" for which passes have moved.
+Every pass is declared with its execute callback, beside the code that records it: the renderer's passes in `RendererGraph.cpp`, the post-process stack's in `PostProcessStack::declareGraphPasses`. A frame is `beginFrame` (resource imports), the declarations, `compile` (culling, validation, scheduling), `recordPasses` and `endFrame`; see "Execute callbacks".
 
 ## Resource Versions
 
@@ -64,7 +64,7 @@ Textures and buffers are referenced by frame-local handles:
 - `RGTextureHandle`
 - `RGBufferHandle`
 
-Handles are lightweight indices that are stable for one `beginFrame` / `endFrame` build. Pass declarations use handles instead of exposing `VkImage` or `VkBuffer` directly. `RenderGraphContext` can resolve handles to Vulkan handles for future graph-executed pass callbacks, but the current renderer still records most commands directly.
+Handles are lightweight indices that are stable for one `beginFrame` / `endFrame` build. Pass declarations use handles instead of exposing `VkImage` or `VkBuffer` directly. The frame's handles live on `RenderGraph::blackboard()`, which declarations read and write back — a write returns the next version, and storing it there is what makes a later reader name it. `RenderGraphPassContext` resolves handles to Vulkan objects inside a pass's callback.
 
 ## Imported And Transient Resources
 
@@ -568,9 +568,9 @@ execution order and the passes: every scheduled pass with a callback, in order. 
 scheduled pass without one is left out, and the endFrame backstop reports it as
 declared but never recorded.
 
-`RenderGraph::bindExecutor` hands a declared pass its callback for the frame,
-together with the debug label and GPU profiler scope it has always been reported
-under; a pass the frame does not declare binds nothing. The graph opens the
+`addPass` takes the callback in a `RenderGraphPassExecutor`, together with the
+debug label and GPU profiler scope the pass has always been reported under, so a
+pass's declaration and its commands are written in one place. The graph opens the
 label, then the profiler scope, then emits the barriers — the order every
 recorder used, so each pass's timestamp range still covers its barriers. A raster
 pass names its target with `builder.colorAttachment`, and the graph opens and
@@ -584,8 +584,7 @@ Those are graph scopes, declared by bracketing `addPass` calls with `pushScope`
 and `popScope`. The graph opens a scope ahead of the first pass in it that
 records and closes it when the frame moves to a step outside it;
 `planScopeTransition`, a pure function, decides which scopes close and open
-between two steps. A pass declared once per level is bound with the instanced
-`bindExecutor` overload.
+between two steps.
 
 A raster pass whose rendering scope is decided while recording opens it from
 its callback, through `beginShadowCascadeRendering`,
@@ -650,8 +649,8 @@ queue is a real change rather than a reshuffle — now has somewhere to plug in.
 
 ### Declaration order has to match recording order
 
-The passes are declared in `declareGeometryPasses` and were then recorded by
-units in `recordRenderCommands`. While nothing acted on the declared order those two could
+The passes were declared in the graph's own `declareGeometryPasses` and
+recorded by units in `recordRenderCommands`. While nothing acted on the declared order those two could
 disagree for free, and they did: `VolumetricFogPass`, `ProbeCapture` and the
 irradiance probe update were declared before `MainGpuCullingPass` and recorded
 after it.
@@ -672,9 +671,9 @@ has to be stated**, which is what `orderAfter` is for. Fog and the main pass nam
 
 ### The backstop
 
-The declarations in `buildFrameGraphDeclarations` and the recording spread across
-several translation units are two sequences kept in step by hand. Nothing compared
-them. `beginDeclaredPass` now records the order passes were actually begun in,
+The declarations, then in `buildFrameGraphDeclarations`, and the recording spread
+across several translation units were two sequences kept in step by hand. Nothing
+compared them. `beginDeclaredPass` now records the order passes were actually begun in,
 and `endFrame` checks it:
 
 - `validatePassOrder` — dependencies the recording order broke;
