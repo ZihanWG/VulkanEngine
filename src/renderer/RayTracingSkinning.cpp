@@ -153,13 +153,17 @@ void RayTracingSkinnedCaster::record(VkCommandBuffer commandBuffer,
     vkCmdDispatch(commandBuffer, rayTracingPreSkinGroupCount(source_.vertexCount), 1, 1);
 
     // The dispatch writes the positions the build reads, through the build's
-    // shader-read input access.
+    // shader-read input access -- and the probe gather reads, by device address,
+    // to shade the rays that hit the caster (probe_trace.comp). Nothing else in
+    // the frame writes them, so the next frame's pre-skin is ordered against
+    // those reads by the entry barrier, whose first scope includes compute.
     VkMemoryBarrier2 positionsBarrier{};
     positionsBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     positionsBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     positionsBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    positionsBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-    positionsBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    positionsBarrier.dstStageMask =
+        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    positionsBarrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
     VkDependencyInfo dependency{};
     dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     dependency.memoryBarrierCount = 1;

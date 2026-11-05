@@ -15,6 +15,7 @@ namespace ve::renderer {
 // moves the UVs it samples without a single validation message.
 static_assert(sizeof(Vertex) == kRtVertexStrideFloats * sizeof(float));
 static_assert(offsetof(Vertex, uv) == kRtVertexUvOffsetFloats * sizeof(float));
+static_assert(offsetof(Vertex, normal) == kRtVertexNormalOffsetFloats * sizeof(float));
 
 RayTracedCasterKind rayTracedCasterKind(RenderBucket bucket)
 {

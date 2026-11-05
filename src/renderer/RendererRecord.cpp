@@ -243,9 +243,71 @@ bool Renderer::isGpuPunctualShadowCullingActive() const
 
 bool Renderer::isProbeCaptureActive() const
 {
+    // Either gather will do: a device whose raster capture pipeline failed can
+    // still trace, and the other way round.
+    const bool gatherAvailable = probeCapturePipeline_.pipeline() != VK_NULL_HANDLE || isProbeTraceSelected();
     return giSettings_.enabled && !giSettings_.debugPattern && irradianceProbes_.available() &&
-           irradianceProbes_.convolveAvailable() && probeCapturePipeline_.pipeline() != VK_NULL_HANDLE &&
-           giSettings_.probesPerFrame > 0 && !allDrawItems_.empty();
+           irradianceProbes_.convolveAvailable() && gatherAvailable && giSettings_.probesPerFrame > 0 &&
+           !allDrawItems_.empty();
+}
+
+bool Renderer::isProbeTraceSelected() const
+{
+    return giSettings_.rayTracedGather && probeTracePipeline_.pipeline() != VK_NULL_HANDLE &&
+           rayQueryShadingAvailable() && rayTracingScene_.ready() &&
+           irradianceProbes_.descriptorSet() != VK_NULL_HANDLE;
+}
+
+void Renderer::recordProbeTracePass(VkCommandBuffer commandBuffer)
+{
+    const std::vector<uint32_t>& batch = irradianceProbes_.captureBatch();
+    const VkDescriptorSet globalDescriptorSet = globalMaterialDescriptorSet();
+    if (batch.empty() || globalDescriptorSet == VK_NULL_HANDLE) {
+        return;
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, probeTracePipeline_.pipeline());
+    const std::array<VkDescriptorSet, 3> descriptorSets{
+        globalDescriptorSet, bindlessTextureHeap_.descriptorSet(), irradianceProbes_.descriptorSet()};
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            probeTracePipeline_.layout(),
+                            0,
+                            static_cast<uint32_t>(descriptorSets.size()),
+                            descriptorSets.data(),
+                            0,
+                            nullptr);
+
+    // The raster capture's inputs, one push for the whole batch: the lights
+    // flat, the bounce weight held at zero until the grid has been gathered
+    // once, the jitter the convolution will subtract.
+    renderer::ProbeTracePushConstants push{};
+    push.frameConstantsAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
+    push.objectFrameDataAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    push.geometryTableAddress = rayTracingScene_.geometryTableAddress(currentFrame_);
+    push.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+    push.punctualShadowSlotAddress =
+        punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
+    push.lightCount = push.lightBufferAddress != 0 ? clusteredLighting_.lightCount() : 0;
+    push.bounceWeight = irradianceProbes_.gridConverged() ? std::clamp(giSettings_.bounceWeight, 0.0f, 1.0f) : 0.0f;
+    push.jitter = irradianceProbes_.captureJitter();
+    push.sunRayLength = frameRayTracedShadowRayLength_;
+    push.probeCount = static_cast<uint32_t>(std::min<size_t>(batch.size(), renderer::kMaxProbesPerFrame));
+    for (uint32_t slot = 0; slot < push.probeCount; ++slot) {
+        push.probeIndices[slot / 4][slot % 4] = static_cast<int32_t>(batch[slot]);
+    }
+    vkCmdPushConstants(commandBuffer,
+                       probeTracePipeline_.layout(),
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(push)),
+                       &push);
+    vkCmdDispatch(commandBuffer, renderer::kProbeCaptureFaceCount, push.probeCount, 1);
+
+    // Nothing is culled or recorded per probe here, so the raster capture's CPU
+    // counters read zero rather than a stale count from the last raster frame.
+    probeCaptureCpuMicroseconds_ = 0.0f;
+    probeCaptureDrawsRecorded_ = 0;
 }
 
 void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
@@ -1280,15 +1342,19 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .vsmDirtyPageCount =
             isVsmPageRenderingActive() ? static_cast<uint32_t>(virtualShadowMap_.dirtyPages().size()) : 0u,
         .volumetricFogEnabled = isVolumetricFogActive(),
+        .rayTracingSceneEnabled = frameRayTracingSceneActive_,
         .rayTracedShadowsEnabled = isRayTracedShadowActive(),
-        .rayTracingSceneBuildEnabled = isRayTracedShadowActive() && frameRayTracingSceneBuildRequired_,
+        .rayTracingSceneBuildEnabled = frameRayTracingSceneActive_ && frameRayTracingSceneBuildRequired_,
         // The ray-traced shadow mask's passes, each under the flag its pass
         // exists on.
         .rayTracedShadowMaskEnabled = frameRayTracedShadowMaskActive_,
         .rayTracedShadowFilterEnabled = frameRayTracedShadowFilterActive_,
         .rayTracedShadowTemporalEnabled = frameRayTracedShadowTemporalActive_,
         .irradianceProbeUpdateEnabled = isIrradianceProbeUpdateActive(),
-        .probeCaptureEnabled = frameProbeCaptureActive_,
+        // One gather or the other, never both: the same batch and the same
+        // capture atlas either way.
+        .probeCaptureEnabled = frameProbeCaptureActive_ && !frameProbeTraceActive_,
+        .probeTraceEnabled = frameProbeTraceActive_,
         // GpuCulling's own answer to "will recordMainCull record anything", not a
         // restatement of it. False on the CPU culling fallback, where the pass
         // used to be declared and then skipped on every frame.

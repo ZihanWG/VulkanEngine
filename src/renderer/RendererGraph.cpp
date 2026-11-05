@@ -16,10 +16,14 @@ namespace {
 
 // Every pass that runs the main fragment shader declares this, because that
 // shader is what traces: the main pass, the phase-2 re-draw and the transparent
-// pass. Declares nothing on a frame that does not trace.
-void declareRayTracedShadowRead(renderer::RenderGraphBuilder& builder, const renderer::RenderGraphBlackboard& board)
+// pass. Declares nothing on a frame that does not trace sun shadows -- including
+// one on which only the probe gather traces, where the structure is imported
+// but the main shader stays on the shadow-map path.
+void declareRayTracedShadowRead(renderer::RenderGraphBuilder& builder,
+                                const renderer::RenderGraphBlackboard& board,
+                                const renderer::RenderGraphFrameResources& resources)
 {
-    if (board.rayTracingTopLevel.valid()) {
+    if (board.rayTracingTopLevel.valid() && resources.rayTracedShadowsEnabled) {
         builder.readBuffer(board.rayTracingTopLevel,
                            renderer::RGAccess::AccelerationStructureRead,
                            "Traces sun shadow rays against the top-level acceleration structure.");
@@ -394,6 +398,30 @@ void Renderer::declareFrameGraph(MainPassFrameState& mainPassState, uint32_t ima
              }});
     }
 
+    // Ahead of the first pass that traces: the probe gather, then the passes
+    // that run the main fragment shader, whose reads are what keep it alive; the
+    // previous frame's reads of the same structure are ordered by the barrier
+    // RayTracingScene records at the top of the build, because buffer state
+    // here is rebuilt every frame and has nothing to order them against. Absent
+    // on a frame that keeps the structure an earlier frame built: the reads are
+    // still declared, and with no write before them they emit nothing.
+    if (board.rayTracingTopLevel.valid() && resources.rayTracingSceneBuildEnabled) {
+        passes.rayTracingSceneBuild =
+            graph.addPass("RayTracingSceneBuild",
+                          RenderPassType::RayTracingSceneBuild,
+                          RenderPassExecutionType::Compute,
+                          false,
+                          [&](RenderGraphBuilder& builder) {
+                              board.rayTracingTopLevel = builder.writeBuffer(
+                                  board.rayTracingTopLevel,
+                                  RGAccess::AccelerationStructureBuild,
+                                  "Rebuilds the top-level acceleration structure from this frame's draw items.");
+                          },
+                          {"RayTracingSceneBuild", "RayTracingSceneBuild", [this](RenderGraphPassContext& context) {
+                               rayTracingScene_.recordTopLevelBuild(context.commandBuffer(), currentFrame_);
+                           }});
+    }
+
     // The probe shading parameters, refreshed in this frame's own command buffer
     // so one buffer serves every frame in flight. The capture reads them for the
     // multi-bounce lookup and the main pass for shading; neither through a graph
@@ -450,6 +478,47 @@ void Renderer::declareFrameGraph(MainPassFrameState& mainPassState, uint32_t ima
              }});
     }
 
+    // The ray-traced gather, on the frames that trace the batch instead of
+    // rasterising it: the same capture atlas, filled by one ray per texel, for
+    // the same update pass to convolve. It needs no cascades -- its sun shadow is
+    // a ray -- which is what lets the cascades go entirely on a frame that also
+    // traces the camera's shadows.
+    if (resources.probeTraceEnabled && board.probeCaptureAtlas.valid() && board.rayTracingTopLevel.valid()) {
+        passes.probeTrace = graph.addPass(
+            "ProbeTrace",
+            RenderPassType::ProbeTrace,
+            RenderPassExecutionType::Compute,
+            false,
+            [&](RenderGraphBuilder& builder) {
+                builder.orderAfter(passes.probeShadingParams);
+                builder.readBuffer(board.rayTracingTopLevel,
+                                   RGAccess::AccelerationStructureComputeRead,
+                                   "Traces each capture texel's ray, and its hit's sun ray, against the scene.");
+                if (board.punctualShadowAtlasImported) {
+                    builder.readTexture(board.punctualShadowAtlasDepth,
+                                        RGAccess::ShaderRead,
+                                        "Samples the punctual shadow atlas so traced radiance is shadowed.");
+                }
+                if (board.probeIrradianceAtlas.valid() && board.probeDepthAtlas.valid()) {
+                    // Multi-bounce, as for the raster capture: last frame's grid,
+                    // read before the update pass below writes it.
+                    builder.readTexture(board.probeIrradianceAtlas,
+                                        RGAccess::ShaderRead,
+                                        "Reads the previous bounce's irradiance so light can bounce again.");
+                    builder.readTexture(board.probeDepthAtlas,
+                                        RGAccess::ShaderRead,
+                                        "Reads probe visibility to weight the previous bounce.");
+                }
+                board.probeCaptureAtlas =
+                    builder.writeTexture(board.probeCaptureAtlas,
+                                         RGAccess::StorageImageWrite,
+                                         "Writes radiance and distance for every face of this frame's probes.");
+            },
+            {"ProbeTrace", "ProbeTrace", [this](RenderGraphPassContext& context) {
+                 recordProbeTracePass(context.commandBuffer());
+             }});
+    }
+
     if (resources.irradianceProbeUpdateEnabled && board.probeIrradianceAtlas.valid() && board.probeDepthAtlas.valid()) {
         passes.irradianceProbes = graph.addPass(
             "IrradianceProbeUpdate",
@@ -477,10 +546,10 @@ void Renderer::declareFrameGraph(MainPassFrameState& mainPassState, uint32_t ima
                     builder.readWriteTexture(board.probeDepthAtlas,
                                              RGAccess::StorageImageReadWrite,
                                              "Writes probe visibility tiles and wraps their octahedral border.");
-                if (resources.probeCaptureEnabled && board.probeCaptureAtlas.valid()) {
-                    // Moves the capture atlas out of the colour-attachment
-                    // layout the pass above left it in and into the one the
-                    // convolution reads it as.
+                if ((resources.probeCaptureEnabled || resources.probeTraceEnabled) && board.probeCaptureAtlas.valid()) {
+                    // Moves the capture atlas out of the layout whichever gather
+                    // above left it in -- colour attachment or storage write --
+                    // and into the one the convolution reads it as.
                     builder.readTexture(board.probeCaptureAtlas,
                                         RGAccess::StorageImageRead,
                                         "Reads this frame's captured cube faces to convolve into probe tiles.");
@@ -490,30 +559,6 @@ void Renderer::declareFrameGraph(MainPassFrameState& mainPassState, uint32_t ima
                  irradianceProbes_.recordUpdate(context.commandBuffer(), giSettings_.debugPattern);
              }});
     }
-    // Ahead of the first pass that traces. Its only consumers are the passes
-    // that run the main fragment shader, which is what keeps it alive; the
-    // previous frame's reads of the same structure are ordered by the barrier
-    // RayTracingScene records at the top of the build, because buffer state
-    // here is rebuilt every frame and has nothing to order them against. Absent
-    // on a frame that keeps the structure an earlier frame built: the reads are
-    // still declared, and with no write before them they emit nothing.
-    if (board.rayTracingTopLevel.valid() && resources.rayTracingSceneBuildEnabled) {
-        passes.rayTracingSceneBuild =
-            graph.addPass("RayTracingSceneBuild",
-                          RenderPassType::RayTracingSceneBuild,
-                          RenderPassExecutionType::Compute,
-                          false,
-                          [&](RenderGraphBuilder& builder) {
-                              board.rayTracingTopLevel = builder.writeBuffer(
-                                  board.rayTracingTopLevel,
-                                  RGAccess::AccelerationStructureBuild,
-                                  "Rebuilds the top-level acceleration structure from this frame's draw items.");
-                          },
-                          {"RayTracingSceneBuild", "RayTracingSceneBuild", [this](RenderGraphPassContext& context) {
-                               rayTracingScene_.recordTopLevelBuild(context.commandBuffer(), currentFrame_);
-                           }});
-    }
-
     if (resources.depthPrepassEnabled) {
         passes.depthPrepass = graph.addPass(
             "DepthPrepass",
@@ -702,7 +747,7 @@ void Renderer::declareFrameGraph(MainPassFrameState& mainPassState, uint32_t ima
             builder.orderAfter(passes.vsmPagePoolIdle);
             builder.readTexture(
                 board.shadowMapDepth, RGAccess::ShaderRead, "Samples the cascaded shadow-map array for lighting.");
-            declareRayTracedShadowRead(builder, board);
+            declareRayTracedShadowRead(builder, board, resources);
             declareRayTracedShadowMaskRead(builder, board);
             if (board.punctualShadowAtlasImported) {
                 // Declared unconditionally (not just when slots exist) so the
@@ -850,7 +895,7 @@ void Renderer::declareFrameGraph(MainPassFrameState& mainPassState, uint32_t ima
             [&](RenderGraphBuilder& builder) {
                 builder.readTexture(
                     board.shadowMapDepth, RGAccess::ShaderRead, "Samples the cascaded shadow-map array for lighting.");
-                declareRayTracedShadowRead(builder, board);
+                declareRayTracedShadowRead(builder, board, resources);
                 declareRayTracedShadowMaskRead(builder, board);
                 if (board.ambientOcclusion.valid()) {
                     // A history read for the same reason phase 1's is: GTAO has
@@ -993,7 +1038,7 @@ void Renderer::declareFrameGraph(MainPassFrameState& mainPassState, uint32_t ima
                                     "Depth-tests blended geometry against the opaque depth buffer (no writes).");
                 // The shared fragment shader traces for blended surfaces too:
                 // glass receives the sun shadow, it just does not cast one.
-                declareRayTracedShadowRead(builder, board);
+                declareRayTracedShadowRead(builder, board, resources);
                 declareRayTracedShadowMaskRead(builder, board);
                 if (board.ambientOcclusion.valid()) {
                     // Same shared-shader reason as normalRoughness below: this

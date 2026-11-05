@@ -376,6 +376,7 @@ TEST_CASE("The example settings file documents the current defaults", "[settings
     CHECK(loaded.gi.surfaceBias == Catch::Approx(defaults.gi.surfaceBias));
     CHECK(loaded.gi.hysteresis == Catch::Approx(defaults.gi.hysteresis));
     CHECK(loaded.gi.bounceWeight == Catch::Approx(defaults.gi.bounceWeight));
+    CHECK(loaded.gi.rayTracedGather == defaults.gi.rayTracedGather);
     for (std::size_t axis = 0; axis < 3; ++axis) {
         CHECK(loaded.gi.gridOrigin[axis] == Catch::Approx(defaults.gi.gridOrigin[axis]));
         CHECK(loaded.gi.gridSpacing[axis] == Catch::Approx(defaults.gi.gridSpacing[axis]));

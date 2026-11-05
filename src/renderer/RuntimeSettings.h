@@ -420,6 +420,11 @@ struct GiSettings {
     float bounceWeight = 0.5f;
     // Outputs probe irradiance alone instead of shaded colour.
     bool debugIrradianceOnly = false;
+    // Fill each probe capture with one ray per texel against the scene's
+    // acceleration structure instead of rasterising six cube faces. Needs ray
+    // query and the bindless path; without them captures stay rasterised, so
+    // the setting is a request rather than a guarantee.
+    bool rayTracedGather = false;
 };
 
 // Internal render resolution as a fraction of the presentation resolution. The

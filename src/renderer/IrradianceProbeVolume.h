@@ -268,6 +268,18 @@ public:
         return sampler_;
     }
 
+    // The volume's compute set: the two atlases as storage images and the
+    // capture atlas at binding 2, which the ray-traced gather
+    // writes through. Null when the compute half failed.
+    [[nodiscard]] VkDescriptorSetLayout descriptorSetLayout() const
+    {
+        return setLayout_.handle();
+    }
+    [[nodiscard]] VkDescriptorSet descriptorSet() const
+    {
+        return descriptorSet_;
+    }
+
     // Buffer the material descriptor sets bind at the shading-params binding.
     // One buffer rather than one per frame: it is refreshed with a 48-byte
     // vkCmdUpdateBuffer inside the frame's own command buffer, so there is no
@@ -278,7 +290,9 @@ public:
     }
 
     // Records this frame's parameters and the barrier making them visible to the
-    // fragment stage. Must be called outside a rendering scope.
+    // fragment and compute stages -- the shading lookup, both gathers'
+    // multi-bounce, and the traced gather's probe positions. Must be called
+    // outside a rendering scope.
     void updateShadingParams(VkCommandBuffer commandBuffer, const ProbeShadingParams& params);
 
     // Where the grid sits in the world. Held here rather than in the math header

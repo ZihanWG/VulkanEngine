@@ -350,6 +350,9 @@ jobs:
           all-effects|--settings config/ci/all-effects.json
           volumetric-fog|--settings config/ci/volumetric-fog.json
           irradiance-probes|--settings config/ci/irradiance-probes.json
+          irradiance-probes-ray-traced|--settings config/ci/irradiance-probes-ray-traced.json
+          irradiance-probes-ray-traced-shadows|--settings config/ci/irradiance-probes-ray-traced-shadows.json
+          irradiance-probes-ray-traced-declined|--settings config/ci/irradiance-probes-ray-traced.json --disable-ray-query
           gtao|--settings config/ci/gtao.json
           ssr-off|--settings config/ci/ssr-off.json
           exposure-manual|--settings config/ci/exposure-manual.json
@@ -404,6 +407,7 @@ jobs:
           scene-occlusion|--scene occlusion
           lod-crossfade-orbit|--scene stress --camera-orbit 0.05
           cornell-with-gi|--scene cornell --settings config/ci/irradiance-probes.json
+          cornell-with-traced-gi|--scene cornell --settings config/ci/irradiance-probes-ray-traced.json
           portability-fallbacks|--portability-fallbacks
           portability-occlusion|--scene occlusion --portability-fallbacks
           portability-lod-crossfade|--scene stress --camera-orbit 0.05 --portability-fallbacks

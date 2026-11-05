@@ -41,6 +41,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 namespace ve::renderer {
 
@@ -180,6 +181,78 @@ inline constexpr float kProbeDefaultBounceWeight = 0.5f;
 inline constexpr float kProbeMaxDistance = 64.0f;
 static_assert(kProbeMaxDistance * kProbeMaxDistance < 65504.0f,
               "Squared probe distance must stay representable in a 16-bit float.");
+
+// --- The ray-traced gather ----------------------------------------------------
+//
+// With VK_KHR_ray_query the capture atlas can be filled by rays instead of by
+// rasterising six faces: probe_trace.comp fires one ray per capture texel, along
+// the direction the convolution will read that texel back as, and shades the
+// closest hit with the raster capture's own shading. Everything downstream of
+// the capture atlas is unchanged. See docs/irradiance_probes.md.
+
+// Threads per side of a trace workgroup. One workgroup is one cube face of one
+// probe, so this is the face resolution by construction.
+inline constexpr uint32_t kProbeTraceLocalSize = 16;
+static_assert(kProbeTraceLocalSize == kProbeCaptureFaceResolution);
+
+// How far a hit's sun shadow ray starts off the surface, along the normal that
+// faces the probe. Hit points come from the ray's own t, within
+// kProbeMaxDistance of the probe, so the error this covers is float precision
+// at that range rather than the LOD mismatch the camera's shadow rays offset
+// for: a probe's rays and its shadow rays see the same level-0 geometry.
+inline constexpr float kProbeTraceSurfaceOffset = 0.02f;
+
+// Angle one capture texel spans at the centre of a face: the face covers
+// [-1, 1] in tangent space over kProbeCaptureFaceResolution texels. The cone a
+// traced texel stands for, and so how blurry a texture its hit should read.
+inline constexpr float kProbeTraceConeSpread = 0.125f;
+static_assert(kProbeTraceConeSpread * static_cast<float>(kProbeCaptureFaceResolution) == 2.0f);
+
+// Floor under |cos| between the ray and the surface it hits, which widens the
+// cone's footprint at grazing angles. Bounds the stretch at ten times.
+inline constexpr float kProbeTraceMinCosine = 0.1f;
+
+// The mip a traced capture texel samples its hit's textures at (Akenine-Moller
+// et al., "Texture Level of Detail Strategies for Real-Time Ray Tracing"): the
+// level whose texels are as wide as the cone is where it lands. The raster
+// capture gets this from derivatives at 16x16; a ray has none, and level 0 would
+// alias a whole texture down to the one texel the ray happens to hit -- a probe
+// that sees a checkered floor would record a random square of it.
+//
+// worldArea and uvArea are the hit triangle's areas in world space and in UV
+// space (twice either is fine, as long as both are), textureSize the texture's
+// level-0 extent. Zero for a degenerate triangle or texture, and never negative:
+// a cone narrower than a texel reads level 0.
+[[nodiscard]] float probeRayConeTextureLod(float hitDistance,
+                                           float cosIncidence,
+                                           float worldArea,
+                                           float uvArea,
+                                           uint32_t textureWidth,
+                                           uint32_t textureHeight);
+
+// Mirrors the push block in probe_trace.comp. Device addresses as uint64_t so
+// this header stays free of Vulkan.
+struct ProbeTracePushConstants {
+    uint64_t frameConstantsAddress = 0;
+    uint64_t objectFrameDataAddress = 0;
+    // RayTracingScene::geometryTableAddress for this frame's slot.
+    uint64_t geometryTableAddress = 0;
+    uint64_t lightBufferAddress = 0;
+    // Zero when nothing has a shadow tile, which every light's negative slot
+    // sentinel already implies.
+    uint64_t punctualShadowSlotAddress = 0;
+    uint32_t lightCount = 0;
+    float bounceWeight = 0.0f;
+    // The same sub-texel offset the convolution subtracts.
+    glm::vec2 jitter{0.0f};
+    // How far a hit's sun shadow ray may go: the scene's extent, as for the
+    // camera's shadow rays (rayTracedShadowRayLength).
+    float sunRayLength = 0.0f;
+    uint32_t probeCount = 0;
+    // Grid index per capture slot, four to an ivec4, as in the convolution.
+    glm::ivec4 probeIndices[kMaxProbesPerFrame / 4]{};
+};
+static_assert(sizeof(ProbeTracePushConstants) == 128, "probe trace push block exceeds the guaranteed minimum");
 
 // Where the grid sits in the world. Kept as data rather than constants so the
 // grid can be fitted to a scene later without touching the mapping code.

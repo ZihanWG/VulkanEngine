@@ -28,6 +28,12 @@ only option. Note `rayTracingInvocationReorderReorderingHint` is `NONE` on
 Ampere -- shader execution reordering is Ada hardware, so a DDGI gather here has
 to tolerate divergence rather than assume it is reordered away.
 
+Where ray query is present, the capture can now be traced instead of rasterised
+(`gi.rayTracedGather`, off by default): see [The ray-traced
+gather](#the-ray-traced-gather). It replaces only the capture, exactly as the
+paragraph below predicted. It is not yet DDGI, because its rays still follow the
+fixed capture directions rather than a per-update random rotation.
+
 What would carry over unchanged is most of this document: the octahedral tile
 layout, the border texel that fixes the seam, and the Chebyshev visibility
 weight that stops light leaking through walls are properties of how probe
@@ -159,6 +165,142 @@ Found by reading the atlas back, not by looking at it:
 | --- | --- | --- | --- |
 | Black | 0.000 | 0.020 | 66570 / 76800 |
 | Ambient | 0.047 | 0.143 | 76800 / 76800 |
+
+## The ray-traced gather
+
+`gi.rayTracedGather` fills the same capture atlas with rays. `ProbeTrace` is one
+compute dispatch, a workgroup per (cube face, capture slot) and an invocation per
+texel, and each invocation fires one ray from the probe along **exactly the
+direction the convolution will read that texel back as** -- the jittered
+`probeCubeTexelDirection`, now shared by both shaders through
+`probe_cube.glsl`. Everything after the capture atlas is unchanged: convolution,
+border, hysteresis, multi-bounce, the shading lookup. Without ray query or the
+bindless path the setting stays a request and captures stay rasterised; the log
+says which gather ran (`Irradiance probe gather: ...`).
+
+Making the trace land in the raster capture's texels, rather than in a ray
+layout of its own, is what made it checkable. The two gathers can be compared
+image to image under one convolution, so a difference is a difference in what
+was gathered and nothing else.
+
+### What a hit shades
+
+The surface shading is one function, `probeCaptureRadiance` in
+`probe_capture_shading.glsl`, called by the raster capture per fragment and by
+the trace per hit, along with the punctual-light loop, its shadow-atlas tap and
+the multi-bounce lookup. Before this they lived in `probe_capture.frag` alone; a
+second copy is how the two gathers would have drifted apart. What is per-gather:
+
+| | raster capture | ray-traced gather |
+| --- | --- | --- |
+| Surface | rasterised, closest by depth | closest hit; cutouts confirmed where their alpha test passes, using the shadow rays' own test |
+| Normal | vertex normal, flipped to face the probe | the same, interpolated from the vertex buffer by device address |
+| Sun visibility | the cascades, sampled by camera view depth | **a shadow ray** from the hit |
+| Texture level | derivatives at 16x16 | a ray cone (`probeRayConeTextureLod`) |
+| Nothing hit | the clear: ambient, far distance | the same values, written by the miss |
+
+The shadow ray is the one deliberate change in the result. The cascades are
+fitted to the camera, so the raster capture shadows a surface only if the camera
+happens to have it inside its cascade range; a probe behind the camera, or past
+the last split, gathers unshadowed sunlight. A ray answers anywhere.
+
+The texture level matters more than it looks. A ray has no derivatives, and
+level 0 would alias a whole texture down to the one texel each ray happens to
+land on. The cone is the angle one capture texel spans at a face's centre (2 / 16
+of a radian), widened by the hit's incidence; the level is the one whose texels
+are as wide as the cone where it lands, from the hit triangle's world and UV
+areas. The C++ mirror is unit-tested for the doubling rule, texture size, tiling,
+the grazing clamp and degenerate input, and for the spread being the angle
+between adjacent capture texels.
+
+The skinned caster is the one instance whose geometry record names bare
+pre-skinned positions rather than `renderer::Vertex`, because the shadow rays
+never looked at an opaque hit's attributes. Its TLAS instance now carries
+`kRtSkinnedInstanceTag` in its shader-binding-table offset, a field ray queries
+never consume, and a hit on it shades with the face normal and an untextured
+lookup. The pre-skin's barrier now also makes its positions visible to compute
+shader reads.
+
+### What it changes about the frame
+
+- **No per-probe CPU work.** The raster capture frustum-culls and records every
+  draw item for six faces per probe; the trace is one push and one dispatch
+  whatever the scene holds.
+- **The cascades can go.** The trace reads no cascaded shadow map, so on a frame
+  that also traces the camera's shadows (`rayTracedShadows.enabled`) nothing
+  reads the cascades any more and no cascade is redrawn -- the raster capture was
+  one of the readers that kept them alive. `CSMShadowPass` is still declared and
+  records nothing, the same as a frame whose cascade cache hit.
+- **The TLAS is built for either consumer.** The scene is traced when the sun's
+  shadow rays or the probe gather need it; the main passes still declare their
+  TLAS read only on frames that trace the sun, so a frame on which only probes
+  trace leaves the main shader on its shadow-map path. `RayTracingSceneBuild` is
+  declared ahead of the probe passes now, since `ProbeTrace` is its first reader.
+- **The probe parameter buffer is visible to compute.** Its update barrier used
+  to name the fragment stage only, which would have let the trace read last
+  frame's grid position.
+
+### Checked against the raster capture
+
+The probe-only view (`gi.debugIrradianceOnly`, debug gain 0.5, 16 probes a frame,
+`--deterministic`, frame 130, RTX 3080 Ti):
+
+| scene | mean, raster | mean, traced | MAE | pixels off by more than 2/255 |
+| --- | --- | --- | --- | --- |
+| Cornell box | 0.5357, 0.5428, 0.5135 | 0.5357, 0.5427, 0.5134 | 0.0006 | 1.4% |
+| Default | 0.2769, 0.2787, 0.2838 | 0.2841, 0.2784, 0.2828 | 0.0034 | 13.9% |
+
+The Cornell box has the sun off and is untextured, so the two gathers ought to
+agree there, and they do, red/green split included (1.037 left and 0.941 right in
+both gathers). That is the test that directions, texel placement, normals and
+shading match. The default scene has a sun and differs by more, with no pixel off
+by more than 16/255. That is where the shadow ray and the cascades disagree,
+though the attribution is by elimination rather than measured term by term.
+
+The match proves nothing if the traced result is not what is displayed, so it has
+a negative control. Tinting the trace's output red turned the Cornell probe view
+from (0.536, 0.543, 0.513) to (0.536, 0.189, 0.223).
+
+### Cost
+
+Sponza, Release, RTX 3080 Ti Laptop with clocks pinned at 800 / 7001 MHz,
+`--every-frame --freeze-animation`, interleaved A/B/A/B, p10 in ms. A is the
+raster capture and B the traced gather, every other setting identical:
+
+| configuration | frame, raster | frame, traced | change | ProbeCapture | ProbeTrace | control drift |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4 probes / frame (default) | 6.102 | 5.107 | **-16.3%** | 0.510 | 0.041 | 0.95% |
+| 16 probes / frame | 7.003 | 5.024 | **-28.3%** | 1.920 | 0.036 | 0.10% |
+| 4, ray-traced sun shadows on | 5.045 | 4.557 | **-9.7%** | 0.509 | 0.041 | 0.44% |
+| 4, ray-traced sun shadows on, cascade cache off | 6.492 | 4.613 | **-28.9%** | 0.513 | 0.041 | 0.48% |
+| Cornell box, 16 probes / frame | 1.799 | 1.757 | -2.3% | 0.069 | 0.033 | 0.17% |
+
+Four things the table says:
+
+- **The raster capture's cost is the scene's, the trace's is not.** On Sponza the
+  raster capture scales with what it draws -- 0.51 ms at 4 probes, 1.92 ms at 16
+  -- because every probe rasterises six faces of 103 primitives. The trace stays
+  near 0.04 ms at either count. On the Cornell box, a handful of boxes, the two
+  are close, which is the same statement from the other end.
+- **The frame saves more than the two passes differ by**, about twice as much at
+  4 probes (0.995 ms against 0.469). The pass timestamps do not cover whatever
+  the raster capture costs between passes, so the frame total is the number to
+  quote; where the rest goes is not measured.
+- **The cascade case is where tracing the sun pays twice.** With the cascade
+  cache off -- standing in for a camera that moves, which invalidates it -- the
+  raster capture keeps all four cascades redrawn (`CSMShadowPass` 0.785 ms,
+  `ShadowGpuCulling` 0.027), and the traced gather removes the last reason to.
+  With the cache on and the camera frozen neither side redraws, so that row shows
+  the gather alone.
+- **The convolution got slightly dearer**: `IrradianceProbeUpdate` +0.031 to
+  +0.043 ms (+4-7%) in every series, attributable each time. It runs the same
+  shader over the same atlas either way; the cause is not isolated.
+
+Validation layers are compiled out of Release, so these runs say nothing about
+validation. The traced legs are clean under validation and synchronization
+validation in Debug -- with the standing caveat that synchronization validation
+sees neither acceleration-structure accesses nor device-address reads, both of
+which this pass makes.
 
 ## Convolution
 
@@ -395,6 +537,8 @@ PunctualShadowAtlasPass  spot/point tiles
 ClusterBuild / LightCull
 ProbeCapture             graphics: 6 faces x N probes into the capture atlas,
                          reading last frame's probe atlas for the extra bounce
+  or ProbeTrace          compute: one ray per capture texel into the same atlas
+                         (gi.rayTracedGather), after RayTracingSceneBuild
 IrradianceProbeUpdate    compute: convolve, then wrap the octahedral border
 MainHDRPass              samples both probe atlases
 ```
@@ -621,8 +765,16 @@ brightness knob.
 - **Capture shading is not the main pass's shading.** No normal maps, no
   specular, and the lambert is unnormalised, so probe irradiance is
   self-consistent rather than physically matched to the direct term.
-- **Cascaded shadows in the capture only work inside the CSM's range.** A probe
-  beyond the cascade distance gathers unshadowed sunlight.
+- **Cascaded shadows in the raster capture only work inside the CSM's range.** A
+  probe beyond the cascade distance gathers unshadowed sunlight. The ray-traced
+  gather shadows its hits with rays and does not have this limit.
+- **The ray-traced gather still fires the fixed capture directions.** It is
+  jittered sub-texel per update like the raster capture, not randomly rotated
+  the way DDGI's rays are, so it does not earn a sharper depth lobe either. It
+  also fires 1536 rays a probe, against DDGI's 256, because it feeds the existing
+  convolution unchanged.
+- **The skinned caster shades flat in the ray-traced gather**: face normal, no
+  texture. Its geometry record holds bare positions.
 - **The update is not budgeted in time**, only in probe count. The debug panel
   reports the capture's CPU cost, so the feedback exists, but nothing adapts the
   batch size to it — a heavier scene makes each capture more expensive and the

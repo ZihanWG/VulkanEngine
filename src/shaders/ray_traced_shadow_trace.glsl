@@ -44,19 +44,21 @@ vec2 rtVertexUv(RtVertexFloats vertices, uint vertexIndex)
     return vec2(vertices.values[base], vertices.values[base + 1u]);
 }
 
-// Whether a candidate triangle of a cutout caster blocks the sun at the point the
-// ray crossed it. The cascades' masked shadow pass, answered for one hit: the
-// same three ObjectFrameData fields and the same comparison as
-// shadow_masked.frag, so a cutout throws the same shape either way. Level 0 of
-// the base colour where the raster pass takes its derivative-selected mip, since
-// a ray has no footprint to select one with.
-bool rtCandidateBlocksLight(FrameConstantsBuffer frame,
-                            ObjectFrameDataBuffer objects,
-                            uint frameDataIndex,
-                            uint primitive,
-                            vec2 barycentrics)
+// Whether a candidate triangle of a cutout surface is solid where the ray
+// crossed it. The cascades' masked shadow pass, answered for one hit: the same
+// three ObjectFrameData fields and the same comparison as shadow_masked.frag, so
+// a cutout throws the same shape either way. Level 0 of the base colour where
+// the raster pass takes its derivative-selected mip, since a ray has no
+// footprint to select one with. The probe gather's primary rays ask the same
+// question of the surfaces they hit, which is why the geometry table is a
+// parameter rather than read from FrameConstants.
+bool rtCandidateIsSolid(RtGeometryRecordBuffer geometry,
+                        ObjectFrameDataBuffer objects,
+                        uint frameDataIndex,
+                        uint primitive,
+                        vec2 barycentrics)
 {
-    RtGeometryRecord record = RtGeometryRecordBuffer(frame.values.rayTracedShadow.xy).records[frameDataIndex];
+    RtGeometryRecord record = geometry.records[frameDataIndex];
     RtIndices indices = RtIndices(record.indexAddress);
     RtVertexFloats vertices = RtVertexFloats(record.vertexAddress);
     uint first = primitive * 3u;
@@ -68,6 +70,39 @@ bool rtCandidateBlocksLight(FrameConstantsBuffer frame,
     float alpha = textureLod(uBaseColorTextures[nonuniformEXT(textureIndex)], uv, 0.0).a *
                   objects.objects[frameDataIndex].baseColorFactor.a;
     return alpha >= objects.objects[frameDataIndex].materialParams.w;
+}
+
+// Whether anything solid lies along the ray, and how far along it the first
+// thing found is (negative when nothing). Any hit, not the closest: the
+// traversal stops at the first opaque one. Opaque instances never stop the loop
+// -- they are FORCE_OPAQUE and commit on their own. Only cutout instances present
+// candidates.
+bool rtOccluded(RtGeometryRecordBuffer geometry,
+                ObjectFrameDataBuffer objects,
+                vec3 origin,
+                vec3 direction,
+                float maxDistance,
+                out float hitDistance)
+{
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, uSceneTopLevel, gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, origin, 0.0, direction,
+                          maxDistance);
+    while (rayQueryProceedEXT(query)) {
+        if (rayQueryGetIntersectionTypeEXT(query, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {
+            uint frameDataIndex = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(query, false));
+            uint primitive = uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, false));
+            vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, false);
+            if (rtCandidateIsSolid(geometry, objects, frameDataIndex, primitive, barycentrics)) {
+                rayQueryConfirmIntersectionEXT(query);
+            }
+        }
+    }
+    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        hitDistance = -1.0;
+        return false;
+    }
+    hitDistance = rayQueryGetIntersectionTEXT(query, true);
+    return true;
 }
 
 // 1.0 when nothing in the scene lies between this surface and the sun along
@@ -96,27 +131,8 @@ float rayTracedSunVisibilityAlong(FrameConstantsBuffer frame,
     vec3 normal = dot(surfaceNormal, towardLight) >= 0.0 ? surfaceNormal : -surfaceNormal;
     vec3 origin = worldPosition + normal * offset;
 
-    rayQueryEXT query;
-    rayQueryInitializeEXT(query, uSceneTopLevel, gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, origin, 0.0,
-                          rayDirection, params.z);
-    // Opaque instances never stop here -- they are FORCE_OPAQUE and commit on
-    // their own. Only cutout instances present candidates.
-    while (rayQueryProceedEXT(query)) {
-        if (rayQueryGetIntersectionTypeEXT(query, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {
-            uint frameDataIndex = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(query, false));
-            uint primitive = uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, false));
-            vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, false);
-            if (rtCandidateBlocksLight(frame, objects, frameDataIndex, primitive, barycentrics)) {
-                rayQueryConfirmIntersectionEXT(query);
-            }
-        }
-    }
-    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
-        hitDistance = -1.0;
-        return 1.0;
-    }
-    hitDistance = rayQueryGetIntersectionTEXT(query, true);
-    return 0.0;
+    RtGeometryRecordBuffer geometry = RtGeometryRecordBuffer(frame.values.rayTracedShadow.xy);
+    return rtOccluded(geometry, objects, origin, rayDirection, params.z, hitDistance) ? 0.0 : 1.0;
 }
 
 // --- Sampling the sun's disc --------------------------------------------------

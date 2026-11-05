@@ -1922,8 +1922,14 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     } else {
         rayTracedShadowLastHistoryKey_ = {};
     }
+    // The probe gather traces the same scene the shadow rays do, so either one
+    // puts the instances and the TLAS in play. Asked here, ahead of the batch
+    // the probes choose further down, because the instances have to be written
+    // before the object data upload below; isProbeCaptureActive answers the same
+    // question the batch will, minus the cursor.
+    frameRayTracingSceneActive_ = frameRayTracedShadowsActive_ || (isProbeTraceSelected() && isProbeCaptureActive());
     frameRayTracingSceneBuildRequired_ = false;
-    if (frameRayTracedShadowsActive_) {
+    if (frameRayTracingSceneActive_) {
         const ScopedCpuTimer timer = cpuScope(CpuScope::RayTracingInstances);
         writeRayTracingInstances(frameIndex);
     }
@@ -1985,6 +1991,16 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         // it fall back to the fill.
         irradianceProbes_.clearCaptureBatch();
     }
+    frameProbeTraceActive_ = frameProbeCaptureActive_ && frameRayTracingSceneActive_ && isProbeTraceSelected();
+    // Once per change of gather, so a headless run says which one it measured.
+    if (frameProbeCaptureActive_) {
+        const int gather = frameProbeTraceActive_ ? 1 : 0;
+        if (gather != probeGatherLogged_) {
+            probeGatherLogged_ = gather;
+            Logger::info(frameProbeTraceActive_ ? "Irradiance probe gather: ray-traced (one ray per capture texel)."
+                                                : "Irradiance probe gather: rasterised (six cube faces per probe).");
+        }
+    }
 
     // After the probe batch above, which is one of the readers this asks about.
     frameCascadesReplacedByRayTracing_ = frameRayTracedShadowsActive_ && !cascadeShadowMapReadBeyondMainPass();
@@ -2032,6 +2048,8 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameSsrActive_ = false;
     frameGtaoActive_ = false;
     frameRayTracedShadowsActive_ = false;
+    frameRayTracingSceneActive_ = false;
+    frameProbeTraceActive_ = false;
     frameRayTracedShadowMaskActive_ = false;
     frameRayTracedShadowFilterActive_ = false;
     frameRayTracedShadowTemporalActive_ = false;
@@ -2654,8 +2672,11 @@ bool Renderer::cascadeShadowMapReadBeyondMainPass() const
     // shader, which traces instead on a frame that traces. The transparent pass
     // and the skinned draw run that same shader, and the non-bindless one never
     // traces, so none of them appear here.
-    return rayTracedShadowSettings_.renderCascades || isVolumetricFogActive() || frameProbeCaptureActive_ ||
-           rayTracedShadowSettings_.debugCompareCascades || vsmSettings_.debugCascadeDepthDelta;
+    // The traced probe gather shadows its hits with rays, so only the raster
+    // capture reads the cascades.
+    return rayTracedShadowSettings_.renderCascades || isVolumetricFogActive() ||
+           (frameProbeCaptureActive_ && !frameProbeTraceActive_) || rayTracedShadowSettings_.debugCompareCascades ||
+           vsmSettings_.debugCascadeDepthDelta;
 }
 
 // One instance per draw item that casts, in draw-item order. The cascades'

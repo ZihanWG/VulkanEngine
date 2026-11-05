@@ -590,6 +590,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*gi, "hysteresis", settings.gi.hysteresis);
         readFloat(*gi, "bounceWeight", settings.gi.bounceWeight);
         readBool(*gi, "debugIrradianceOnly", settings.gi.debugIrradianceOnly);
+        readBool(*gi, "rayTracedGather", settings.gi.rayTracedGather);
         readFloat(*gi, "gridOriginX", settings.gi.gridOrigin[0]);
         readFloat(*gi, "gridOriginY", settings.gi.gridOrigin[1]);
         readFloat(*gi, "gridOriginZ", settings.gi.gridOrigin[2]);
@@ -779,6 +780,7 @@ Json toJson(const RuntimeSettings& settings)
               {"hysteresis", settings.gi.hysteresis},
               {"bounceWeight", settings.gi.bounceWeight},
               {"debugIrradianceOnly", settings.gi.debugIrradianceOnly},
+              {"rayTracedGather", settings.gi.rayTracedGather},
               {"gridOriginX", settings.gi.gridOrigin[0]},
               {"gridOriginY", settings.gi.gridOrigin[1]},
               {"gridOriginZ", settings.gi.gridOrigin[2]},

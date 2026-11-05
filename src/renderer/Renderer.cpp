@@ -266,6 +266,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     // After createScene: the capture pipeline needs the bindless heap populated
     // with the scene's textures, and it shares the material set layout.
     createProbeCapturePipeline();
+    createProbeTracePipeline();
     updateDemoLights(0.0f);
     // Prefer a rigged glTF if one is present; otherwise fall back to the
     // self-contained procedural bone chain.

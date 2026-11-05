@@ -261,7 +261,7 @@ side-effect pass with no resources, and where its order matters it says so with
 | `CSMShadowCache`, the cascade cache bookkeeping | `CSMShadowPass` | |
 | `FogVolumeInit`, the fog volume's first-use clear | | `VolumetricFogPass`, `MainHDRPass` |
 | `ClusterBuild`, light assignment on the graphics queue | `MainGpuCullingPass` | `VolumetricFogPass`, `MainHDRPass` |
-| `ProbeShadingParams` | | `ProbeCapture`, `IrradianceProbeUpdate`, `MainHDRPass` |
+| `ProbeShadingParams` | | `ProbeCapture`, `ProbeTrace`, `IrradianceProbeUpdate`, `MainHDRPass` |
 | `FrameCapture`, the portfolio screenshot and the capture taken before the overlay | `CompositePass` | `ImGuiPass` |
 | `FrameCaptureAfterOverlay` | `ImGuiPass` | |
 
@@ -300,8 +300,8 @@ declared only on the frames its condition names.
 | Cascaded shadows | (`ShadowGpuCullingPass`), (`CSMShadowPass`), `CSMShadowCache` | |
 | Punctual shadows | (`PunctualShadowCullPass`), (`PunctualShadowAtlasPass`) | |
 | Culling and lighting | `FogVolumeInit`, (`MainGpuCullingPass`), (`ClusterBuild`), (`VolumetricFogPass`) | |
-| Probes | `ProbeShadingParams`, (`ProbeCapture`), (`IrradianceProbeUpdate`) | |
-| Ray-traced shadows | (`RayTracingSceneBuild`) | |
+| Ray-traced scene | (`RayTracingSceneBuild`), on frames that trace sun shadows or the probe gather | |
+| Probes | `ProbeShadingParams`, (`ProbeCapture` or `ProbeTrace`), (`IrradianceProbeUpdate`) | |
 | Geometry | (`DepthPrepass`), (`RayTracedShadowTrace`, `RayTracedShadowTemporal`, the filter's `RayTracedShadowRadius`, `RayTracedShadowBlurH` and `RayTracedShadowBlurV`, `RayTracedShadowResolve`), `MainHDRPass`, (`DepthPyramidMidPass`, `MainGpuCullingPhase2`, `MainHDRPhase2`), (`SSRCopyPass`, `SSRTracePass`), (`GTAOPass`, `GTAOBlurPass`), (`TransparentPass`), (`DepthPyramidPass`) | |
 | Post-process | (`TAAResolvePass`), `BloomExtractPass`, `BloomBlurHorizontal`, `BloomBlurVertical`, `BloomDownsampleMipN`, `BloomUpsampleMipN`, (`LuminancePass`), (`HistogramExposurePass`), `CompositePass` | `PostProcessStack::declareGraphPasses` |
 | Output | `FrameCapture`, `ImGuiPass`, `FrameCaptureAfterOverlay` | `Renderer::declareFrameGraph` |
