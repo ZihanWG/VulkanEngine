@@ -80,6 +80,6 @@ const float kProbeDepthLobeExponent = 50.0;
 // Floors that keep a probe from going fully black: the smallest visibility
 // weight a probe may contribute, and the weight a back-facing probe keeps.
 const float kProbeMinVisibility = 0.02;
-const float kProbeBackfaceFloor = 0.2;
+const float kProbeBackfaceFloor = 0.0;
 
 #endif // VE_IRRADIANCE_PROBES_GLSL

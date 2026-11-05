@@ -413,9 +413,12 @@ Each probe's weight is the product of three things:
 The eight weights are renormalised afterwards, so a point beside a wall takes its
 light from the probes it can still see rather than simply going dark.
 
-Both the visibility and backface terms carry a floor. A weight that reaches
-exactly zero puts a hard edge in the shading where it crosses, and that edge
-corresponds to nothing in the scene.
+The visibility term carries a floor (0.02), so a weight never steps to zero
+where a probe's visibility crosses its bound. The backface term does not: the
+wrapped cosine squared reaches zero only for a probe directly behind the surface,
+and with zero slope, so it has no edge to hide -- and the floor it used to carry
+was where light came through thin geometry (see [What makes the
+pattern](#what-makes-the-pattern)).
 
 ### Visibility is the whole reason the depth atlas exists
 
@@ -609,7 +612,57 @@ truth to call an improvement. The exponent is a setting (`gi.depthLobeExponent`)
 for scenes that want the trade the other way.
 
 What the sharper lobe did not change is the pattern: the interior's spatial
-variation stayed at 0.136 of the mean at every exponent. See Limitations.
+variation stayed at 0.136 of the mean at every exponent.
+
+### What makes the pattern
+
+Every interior probe sees the same uniform room, so any blend of interior probes
+alone is uniform: the blotches had to come either from outside probes still
+getting weight, or from interior probes not holding the same value. One
+experiment separates the two -- fit the grid inside the room -- and the rest
+take the weighting apart. Each was a temporary source change, 8 frozen frames
+averaged; leak is measured against the interior-only level, 26.8/255:
+
+| experiment | leak | spatial variation | p95 |
+| --- | --- | --- | --- |
+| baseline (backface floor 0.2, surface bias 0.3) | 4.25 | 0.137 | 41.7 |
+| grid entirely inside the room | 0.02 | 0.006 | 27.0 |
+| visibility floor 0.02 -> 0 | 4.19 | 0.138 | 41.7 |
+| **backface floor 0.2 -> 0** | **1.69** | **0.096** | 34.0 |
+| Chebyshev replaced by a hard test on the mean | 2.25 | 0.139 | 39.3 |
+| surface bias 0.6 | 1.55 | 0.084 | 34.0 |
+| surface bias 1.0 | 0.30 | 0.021 | 27.7 |
+| backface floor 0 and surface bias 1.0 | 0.24 | 0.014 | 27.0 |
+
+The interior-only grid is uniform, so the gather is right and every blotch is an
+outside probe's light. The visibility floor plays no part. The backface floor
+does most of it: a probe behind the surface kept a fifth of its weight however
+firmly its visibility rejected it. What is left after that is the visibility
+test itself -- even a hard test on the mean distance lets the wall junctions
+through, because a probe a metre from a wall cannot resolve where the wall ends
+at 16x16 directions under a 50 lobe, and its mean distance there is pulled out to
+the open sky past the edge. The surface bias works on that remainder by moving
+the lookup point away from the outside probes.
+
+The backface floor is now zero. The same change on the other scenes, probe-only
+view, against the floor at 0.2:
+
+| scene | mean | pixels moved by more than 8/255 |
+| --- | --- | --- |
+| Cornell box | 137.47 -> 137.36 | 1.2% |
+| default | 74.01 -> 74.44 | 0.7% |
+| Sponza | 70.91 -> 64.41 | 25.6% |
+
+Sponza's change is not spread over the frame: 75% of the right-hand curtains'
+pixels lose more than 8/255, by 21/255 on average, against 0.7 in the central
+arch and nothing on the left-hand curtains. Thin cloth with lit space behind it
+is the leak room's failure in real content, and the leaked glow is what went.
+
+The surface bias stays where it was. It is the larger lever in the leak room,
+but it is a trade against light through thin geometry that each scene makes
+differently: 1.0 moves 17% of the Cornell box's pixels and 12% of the default
+scene's by more than 8/255, and a fixed distance cannot suit every probe
+spacing. Scaling it with the spacing, as DDGI does, is the open question.
 
 ## The Cornell box scene
 
@@ -884,11 +937,11 @@ brightness knob.
 - **Visibility is a statistical bound, not an occlusion test.** Thin geometry,
   and surfaces close to a probe relative to the 16x16 visibility resolution, can
   still leak.
-- **The interior of the leak room is still not uniform.** A sharper lobe cut the
-  leaked light by a third but left the spatial variation where it was (0.136 of
-  the mean at every exponent): the blotch pattern is not mostly leak. The
-  visibility and backface floors (0.02, 0.2), which let a rejected probe keep a
-  sliver of weight, are the next suspects; not yet measured.
+- **Probes still leak at wall junctions.** With the backface floor at zero the
+  leak room's leaked light is 1.69/255 and its spatial variation 0.096 of the
+  mean, from outside probes whose depth map cannot resolve where a nearby wall
+  ends. A larger surface bias removes most of it in that room, but is a per-scene
+  trade at a fixed distance; scaling it with the probe spacing is not done.
 - **Capture shading is not the main pass's shading.** No normal maps, no
   specular, and the lambert is unnormalised, so probe irradiance is
   self-consistent rather than physically matched to the direct term.
