@@ -36,6 +36,10 @@ enum class ScenePreset {
     // shadows are legible rather than a faint tint, which is what makes shadow
     // work judgeable from a picture instead of from patch means.
     SunlitYard,
+    // A sealed white room under the sun with a probe grid straddling its walls:
+    // the measurement scene for probe light leaking. See
+    // docs/irradiance_probes.md#measuring-leaks.
+    ProbeLeak,
     // fragment-stress turned up until the GPU frame is large enough to measure
     // against. See kGpuStressLayerCount.
     GpuStress,

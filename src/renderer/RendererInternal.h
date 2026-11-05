@@ -839,6 +839,8 @@ const char* renderObjectSourceTypeName(renderer::RenderObjectSourceType sourceTy
         return "fragment stress";
     case renderer::RenderObjectSourceType::SunlitYard:
         return "sunlit yard";
+    case renderer::RenderObjectSourceType::ProbeLeak:
+        return "probe leak room";
     }
 
     return "unknown";

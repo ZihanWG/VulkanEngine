@@ -72,9 +72,10 @@ const float kProbeTraceMinCosine = 0.1;
 const uint kProbeMaxRaysPerProbe = 1536u;
 const uint kProbeRayAtlasRowTexels = 96u;
 
-// Sharpness of the depth lobe in the Chebyshev visibility test. Blunter than
-// DDGI's 50 on purpose; see docs/irradiance_probes.md.
-const float kProbeDepthLobeExponent = 20.0;
+// Sharpness of the depth lobe in the Chebyshev visibility test: DDGI's 50, as
+// measured in docs/irradiance_probes.md#measuring-leaks. The convolution takes
+// the runtime value (gi.depthLobeExponent) from its push block.
+const float kProbeDepthLobeExponent = 50.0;
 
 // Floors that keep a probe from going fully black: the smallest visibility
 // weight a probe may contribute, and the weight a back-facing probe keeps.

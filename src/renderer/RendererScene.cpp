@@ -493,6 +493,7 @@ void Renderer::loadFragmentStressScene(int layerCount, int lightCount)
     }
     occlusionTestSceneActive_ = false;
     cornellBoxSceneActive_ = false;
+    probeLeakSceneActive_ = false;
     sunlitYardSceneActive_ = false;
     removeSunlitYardObjects();
     stressSceneActive_ = false;
@@ -1490,6 +1491,7 @@ void Renderer::loadOcclusionTestScene()
         setPortfolioCaptureMode(false);
     }
 
+    probeLeakSceneActive_ = false;
     resetOcclusionTestSceneToPreset();
     if (!renderer::SceneBuilder::hasOcclusionTest(renderObjects_)) {
         occlusionTestSceneActive_ = false;
@@ -1531,6 +1533,9 @@ bool Renderer::loadScenePreset(ScenePreset preset, std::string& status)
     case ScenePreset::SunlitYard:
         loadSunlitYardScene();
         return true;
+    case ScenePreset::ProbeLeak:
+        loadProbeLeakScene();
+        return true;
     case ScenePreset::GpuStress:
         // Same scene, same camera, same loader -- only the two knobs differ.
         loadFragmentStressScene(renderer::kGpuStressLayerCount, renderer::kGpuStressLightCount);
@@ -1562,6 +1567,7 @@ void Renderer::loadStressScene()
     }
     occlusionTestSceneActive_ = false;
     cornellBoxSceneActive_ = false;
+    probeLeakSceneActive_ = false;
     sunlitYardSceneActive_ = false;
     removeSunlitYardObjects();
     fragmentStressSceneActive_ = false;
@@ -1596,6 +1602,7 @@ void Renderer::loadCornellBoxScene()
         setPortfolioCaptureMode(false);
     }
     occlusionTestSceneActive_ = false;
+    probeLeakSceneActive_ = false;
     sunlitYardSceneActive_ = false;
     removeSunlitYardObjects();
 
@@ -1647,6 +1654,65 @@ void Renderer::loadCornellBoxScene()
     Logger::info(cornellBoxSceneStatus_);
 }
 
+void Renderer::loadProbeLeakScene()
+{
+    if (portfolioCaptureMode_) {
+        setPortfolioCaptureMode(false);
+    }
+    occlusionTestSceneActive_ = false;
+    cornellBoxSceneActive_ = false;
+    sunlitYardSceneActive_ = false;
+    removeSunlitYardObjects();
+
+    // Rebuilt rather than appended again, so re-selecting the preset is
+    // idempotent.
+    const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
+        return object.sourceType == renderer::RenderObjectSourceType::ProbeLeak;
+    });
+    if (firstRemoved != renderObjects_.end()) {
+        selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+        renderObjects_.erase(firstRemoved, renderObjects_.end());
+    }
+    makeSceneBuilder().appendProbeLeakRoom(renderObjects_, probeLeakSceneStatus_);
+    invalidateDepthPyramid();
+    invalidateTaaHistory();
+    if (!renderer::SceneBuilder::hasProbeLeakRoom(renderObjects_)) {
+        probeLeakSceneActive_ = false;
+        probeLeakSceneStatus_ = "Probe leak room objects are unavailable; see the startup log.";
+        Logger::warn(probeLeakSceneStatus_);
+        return;
+    }
+    probeLeakSceneActive_ = true;
+
+    // Inside, looking into the corner of the two walls the sun lights from
+    // outside (the light travels towards +X and -Z, so the -X and +Z walls'
+    // outer faces are lit), with the floor in frame.
+    camera_.position = {2.5f, 3.2f, -2.5f};
+    camera_.target = {-3.5f, 1.8f, 3.5f};
+    camera_.up = {0.0f, 1.0f, 0.0f};
+    editorCamera_.syncFromCamera(camera_);
+
+    // The default sun: the whole point is light on the far side of the walls.
+    resetDirectionalLightToDefault();
+    // The skinned demo rig stands at the origin, which is inside this room. It is
+    // a surface the uniform-interior argument does not account for, so it goes,
+    // as it does for Sponza; the debug UI checkbox still brings it back.
+    showSkinnedMesh_ = false;
+
+    giSettings_.gridOrigin[0] = renderer::kProbeLeakGridOriginXZ;
+    giSettings_.gridOrigin[1] = renderer::kProbeLeakGridOriginY;
+    giSettings_.gridOrigin[2] = renderer::kProbeLeakGridOriginXZ;
+    for (float& spacing : giSettings_.gridSpacing) {
+        spacing = renderer::kProbeLeakGridSpacing;
+    }
+    giSettings_.enabled = true;
+    giSettings_.debugPattern = false;
+    openInspector(InspectorTab::Probes);
+    clampRuntimeSettings();
+
+    Logger::info(probeLeakSceneStatus_);
+}
+
 void Renderer::loadSunlitYardScene()
 {
     if (portfolioCaptureMode_) {
@@ -1654,6 +1720,7 @@ void Renderer::loadSunlitYardScene()
     }
     occlusionTestSceneActive_ = false;
     cornellBoxSceneActive_ = false;
+    probeLeakSceneActive_ = false;
     fragmentStressSceneActive_ = false;
     stressSceneActive_ = false;
     removeFragmentStressSceneObjects();

@@ -1146,6 +1146,8 @@ private:
     void loadOcclusionTestScene();
     // A closed, coloured room -- the one scene here that can show indirect light.
     void loadCornellBoxScene();
+    // The probe leak measurement scene; see SceneBuilder::appendProbeLeakRoom.
+    void loadProbeLeakScene();
     // The one scene whose directional shadows are legible; see RenderObject.h.
     void loadSunlitYardScene();
     void resetCornellBoxSceneToPreset();
@@ -2083,6 +2085,8 @@ private:
     bool sunlitYardSceneActive_ = false;
     std::string sunlitYardSceneStatus_;
     std::string cornellBoxSceneStatus_ = "Cornell box inactive.";
+    bool probeLeakSceneActive_ = false;
+    std::string probeLeakSceneStatus_ = "Probe leak room inactive.";
     bool stressSceneActive_ = false;
     std::string stressSceneStatus_{"Stress scene inactive."};
     bool fragmentStressSceneActive_ = false;

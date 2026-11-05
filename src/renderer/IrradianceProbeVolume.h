@@ -163,6 +163,11 @@ public:
     // probe has been captured at least once: a probe blending against its
     // neutral seed would stay permanently too dark, and with a round-robin
     // cursor that is most of the grid for the first full cycle.
+    // Sharpness of the depth convolution's lobe for every later update.
+    void setDepthLobeExponent(float exponent)
+    {
+        depthLobeExponent_ = exponent;
+    }
     void setHysteresis(float hysteresis)
     {
         hysteresis_ = hysteresis;
@@ -369,6 +374,7 @@ private:
     uint32_t captureRayCount_ = 0;
     glm::vec4 captureRayRotation_{0.0f, 0.0f, 0.0f, 1.0f};
     float hysteresis_ = 0.0f;
+    float depthLobeExponent_ = kProbeDepthLobeExponent;
     std::vector<uint32_t> captureBatch_;
     uint64_t capturedProbeCount_ = 0;
     // Owned by this class but driven by the render graph, which transitions both

@@ -23,6 +23,7 @@ constexpr ScenePresetName kScenePresetNames[] = {
     {"occlusion", ScenePreset::Occlusion},
     {"cornell", ScenePreset::CornellBox},
     {"sunlit", ScenePreset::SunlitYard},
+    {"probe-leak", ScenePreset::ProbeLeak},
     {"gpu-stress", ScenePreset::GpuStress},
     {"sponza", ScenePreset::Sponza},
 };

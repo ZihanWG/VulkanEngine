@@ -433,6 +433,13 @@ struct GiSettings {
     // 768 measured better than the 1536 fixed rays on both error and flicker at
     // half the rays; see docs/irradiance_probes.md.
     int raysPerProbe = 768;
+    // Sharpness of the lobe the depth convolution integrates over: the
+    // visibility a probe stores for a direction is the mean distance within a
+    // cos^n cone around it. Higher sees walls more sharply and leaks less, but
+    // averages fewer samples, so it is noisier. 50 leaks 36% less than 20 at no
+    // measurable noise cost; see docs/irradiance_probes.md#measuring-leaks.
+    // Mirrors renderer::kProbeDepthLobeExponent.
+    float depthLobeExponent = 50.0f;
 };
 
 // Internal render resolution as a fraction of the presentation resolution. The

@@ -82,6 +82,12 @@ void Renderer::updateDemoLights(float elapsedSeconds)
 
     clusteredLighting_.clear();
 
+    // No punctual light at all: the room's interior must be lit by the ambient
+    // term alone, or its true indirect light stops being uniform.
+    if (probeLeakSceneActive_) {
+        return;
+    }
+
     if (fragmentStressSceneActive_) {
         // Densely packed in the volume the slabs occupy, with a range far larger
         // than their spacing, so froxels see many lights at once. That is the
@@ -883,7 +889,10 @@ bool Renderer::isRenderObjectActive(const renderer::RenderObject& object) const
     if (object.sourceType == renderer::RenderObjectSourceType::CornellBox) {
         return cornellBoxSceneActive_ && !portfolioCaptureMode_;
     }
-    if ((occlusionTestSceneActive_ || cornellBoxSceneActive_) && !portfolioCaptureMode_) {
+    if (object.sourceType == renderer::RenderObjectSourceType::ProbeLeak) {
+        return probeLeakSceneActive_ && !portfolioCaptureMode_;
+    }
+    if ((occlusionTestSceneActive_ || cornellBoxSceneActive_ || probeLeakSceneActive_) && !portfolioCaptureMode_) {
         return false;
     }
     if (portfolioCaptureMode_ && object.hideInPortfolio) {
