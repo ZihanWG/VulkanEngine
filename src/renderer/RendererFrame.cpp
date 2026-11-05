@@ -1996,13 +1996,21 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // and the convolution reads it back, and the two must agree. Rotated rays
     // exist only where rays are traced; the raster capture is always cube texels.
     irradianceProbes_.setCaptureRays(frameProbeTraceActive_ ? static_cast<uint32_t>(giSettings_.raysPerProbe) : 0u);
-    // Once per change of gather, so a headless run says which one it measured.
+    // Once per change of gather or ray layout, so a headless run says which one
+    // it measured: -1 rasterised, 0 traced cube texels, n traced rotated rays.
     if (frameProbeCaptureActive_) {
-        const int gather = frameProbeTraceActive_ ? 1 : 0;
+        const int64_t gather =
+            frameProbeTraceActive_ ? static_cast<int64_t>(irradianceProbes_.captureRayCount()) : int64_t{-1};
         if (gather != probeGatherLogged_) {
             probeGatherLogged_ = gather;
-            Logger::info(frameProbeTraceActive_ ? "Irradiance probe gather: ray-traced (one ray per capture texel)."
-                                                : "Irradiance probe gather: rasterised (six cube faces per probe).");
+            if (!frameProbeTraceActive_) {
+                Logger::info("Irradiance probe gather: rasterised (six cube faces per probe).");
+            } else if (gather == 0) {
+                Logger::info("Irradiance probe gather: ray-traced (one ray per capture texel).");
+            } else {
+                Logger::info("Irradiance probe gather: ray-traced (" + std::to_string(gather) +
+                             " rotated rays per probe).");
+            }
         }
     }
 
