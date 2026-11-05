@@ -662,7 +662,32 @@ The surface bias stays where it was. It is the larger lever in the leak room,
 but it is a trade against light through thin geometry that each scene makes
 differently: 1.0 moves 17% of the Cornell box's pixels and 12% of the default
 scene's by more than 8/255, and a fixed distance cannot suit every probe
-spacing. Scaling it with the spacing, as DDGI does, is the open question.
+spacing.
+
+### Scaling the bias with the spacing: measured, deferred
+
+The obvious fix is DDGI's: make the bias a fraction of the grid's smallest
+spacing, so one value means the same offset relative to the probes on any grid.
+It was built -- the distance computed on the CPU from the fraction, so the
+shaders were untouched -- and measured, probe-only view, against the fixed 0.3:
+
+| fraction | leak room (2 m spacing), leak | Cornell (1.2 m), px moved > 8/255 | default (3 m) | Sponza (3 m) |
+| --- | --- | --- | --- | --- |
+| 0.15 | 1.69 | 1.6% | 0.1% | 24% |
+| 0.225 (DDGI's effective value) | 1.08 | 0.1% | 1.4% | 34% |
+| 0.25 | 0.93 | 0% | 2.3% | 36%, mean -15% |
+| 0.5 | 0.24 | 4.0% | 60% | 72% |
+
+The leak room improves steadily and 0.25 reproduces the Cornell box, but no
+fraction leaves both kinds of grid where they were: the fixed 0.3 had been
+tuned, in effect, on the Cornell box's 1.2 m spacing, and every fraction that
+keeps it moves the 3 m grids a lot. In Sponza the move is not the localised
+removal of leaked light the backface floor gave -- it darkens curtains, floor
+and walls alike. Sponza's grid is the default one, not fitted to the building,
+so probes sit inside its columns and walls, and a longer offset plausibly pulls
+the lookup towards them; that is the reading, not a measurement. Choosing the
+fraction needs either a ground truth for Sponza or a grid without probes buried
+in geometry, so it waits for probe classification.
 
 ## The Cornell box scene
 
