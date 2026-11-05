@@ -656,6 +656,13 @@ void Renderer::drawIrradianceProbesDebugUi()
                           "convolution, hysteresis and bounce are unchanged. A hit's sun shadow\n"
                           "is a ray, so probes beyond the cascades' range are shadowed too.\n"
                           "Needs ray query and the bindless path.");
+    ImGui::BeginDisabled(!traceAvailable || !giSettings_.rayTracedGather);
+    ImGui::SliderInt("Rays per probe", &giSettings_.raysPerProbe, 0, static_cast<int>(renderer::kProbeMaxRaysPerProbe));
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Zero: one ray per capture texel along the cube's fixed directions.\n"
+                          "Above zero: this many rays spread evenly over the sphere and turned\n"
+                          "by a new random rotation every update, so updates sample new\n"
+                          "directions instead of the same ones again.");
     if (!traceAvailable) {
         ImGui::TextDisabled("  Unavailable: %s.",
                             rayQueryShadingAvailable() ? "the trace pipeline failed (see the log)"

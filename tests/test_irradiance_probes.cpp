@@ -1174,6 +1174,104 @@ TEST_CASE("The probe trace push block matches the shader's std430 offsets", "[pr
     CHECK(offsetof(ProbeTracePushConstants, jitter) == 48);
     CHECK(offsetof(ProbeTracePushConstants, sunRayLength) == 56);
     CHECK(offsetof(ProbeTracePushConstants, probeCount) == 60);
-    CHECK(offsetof(ProbeTracePushConstants, probeIndices) == 64);
-    CHECK(sizeof(ProbeTracePushConstants) == 128);
+    CHECK(offsetof(ProbeTracePushConstants, packedProbeIndices) == 64);
+    CHECK(offsetof(ProbeTracePushConstants, rayRotation) == 80);
+    CHECK(offsetof(ProbeTracePushConstants, rayCount) == 96);
+    CHECK(sizeof(ProbeTracePushConstants) == 112);
+}
+
+TEST_CASE("Probe indices pack four to a word and unpack the way the trace does", "[probes]")
+{
+    std::vector<uint32_t> batch;
+    for (uint32_t slot = 0; slot < kMaxProbesPerFrame; ++slot) {
+        batch.push_back((slot * 37u + 5u) % ve::renderer::kProbeCount);
+    }
+    const glm::uvec4 packed = ve::renderer::packProbeIndices(batch);
+    for (uint32_t slot = 0; slot < kMaxProbesPerFrame; ++slot) {
+        // probe_trace.comp's unpack, transcribed.
+        const uint32_t unpacked = (packed[static_cast<glm::length_t>(slot >> 2u)] >> (8u * (slot & 3u))) & 0xFFu;
+        CHECK(unpacked == batch[slot]);
+    }
+    // The last probe of the grid is the largest index the packing must carry.
+    CHECK(ve::renderer::packProbeIndices({ve::renderer::kProbeCount - 1}).x == ve::renderer::kProbeCount - 1);
+}
+
+TEST_CASE("Rotated probe rays are unit length and cover the sphere evenly", "[probes]")
+{
+    using ve::renderer::probeRayDirection;
+    const glm::vec4 identity{0.0f, 0.0f, 0.0f, 1.0f};
+    for (const uint32_t count : {64u, 256u, 1536u}) {
+        glm::vec3 mean{0.0f};
+        for (uint32_t ray = 0; ray < count; ++ray) {
+            const glm::vec3 direction = probeRayDirection(ray, count, identity);
+            CHECK(glm::length(direction) == Approx(1.0f).margin(1.0e-5));
+            mean += direction;
+        }
+        mean /= static_cast<float>(count);
+        INFO(count << " rays, mean direction length " << glm::length(mean));
+        CHECK(glm::length(mean) < 0.02f);
+    }
+
+    // Coverage, measured rather than assumed: from a dense set of test
+    // directions, the farthest any one is from its nearest ray. A lattice that
+    // clumped would leave a gap wider than the spacing its count implies.
+    const uint32_t count = 256;
+    const float expectedSpacing = std::sqrt(4.0f * 3.14159265f / static_cast<float>(count));
+    float worstGap = 0.0f;
+    for (uint32_t test = 0; test < 2000; ++test) {
+        const glm::vec3 probe = probeRayDirection(test, 2000, ve::renderer::probeRayRotation(12345u));
+        float nearest = 3.2f;
+        for (uint32_t ray = 0; ray < count; ++ray) {
+            const float angle =
+                std::acos(std::clamp(glm::dot(probe, probeRayDirection(ray, count, identity)), -1.0f, 1.0f));
+            nearest = std::min(nearest, angle);
+        }
+        worstGap = std::max(worstGap, nearest);
+    }
+    INFO("worst gap " << worstGap << " rad against a spacing of " << expectedSpacing);
+    CHECK(worstGap < expectedSpacing);
+}
+
+TEST_CASE("A ray rotation turns the set rigidly and changes every update", "[probes]")
+{
+    using ve::renderer::probeRayDirection;
+    using ve::renderer::probeRayRotation;
+    const glm::vec4 identity{0.0f, 0.0f, 0.0f, 1.0f};
+    for (uint32_t update = 0; update < 64; ++update) {
+        const glm::vec4 rotation = probeRayRotation(update);
+        CHECK(glm::length(rotation) == Approx(1.0f).margin(1.0e-5));
+        // Rigid: angles between rays survive the rotation.
+        const float before = glm::dot(probeRayDirection(3, 256, identity), probeRayDirection(200, 256, identity));
+        const float after = glm::dot(probeRayDirection(3, 256, rotation), probeRayDirection(200, 256, rotation));
+        CHECK(after == Approx(before).margin(1.0e-5));
+        // And it moves: consecutive updates never fire the same directions.
+        const glm::vec3 now = probeRayDirection(0, 256, rotation);
+        const glm::vec3 next = probeRayDirection(0, 256, probeRayRotation(update + 1));
+        CHECK(glm::dot(now, next) < 0.9999f);
+    }
+
+    // Uniform over rotations: one fixed ray, turned by many updates, should land
+    // all over the sphere with no preferred side.
+    glm::vec3 mean{0.0f};
+    const uint32_t updates = 4096;
+    for (uint32_t update = 0; update < updates; ++update) {
+        mean += probeRayDirection(0, 256, probeRayRotation(update));
+    }
+    mean /= static_cast<float>(updates);
+    INFO("mean of a rotated ray over " << updates << " updates: " << glm::length(mean));
+    CHECK(glm::length(mean) < 0.05f);
+}
+
+TEST_CASE("Probe rays land inside their own slot's rows, each in its own texel", "[probes]")
+{
+    using ve::renderer::kProbeMaxRaysPerProbe;
+    std::set<std::pair<uint32_t, uint32_t>> seen;
+    for (uint32_t slot = 0; slot < kMaxProbesPerFrame; ++slot) {
+        for (uint32_t ray = 0; ray < kProbeMaxRaysPerProbe; ++ray) {
+            const glm::uvec2 texel = ve::renderer::probeRayTexel(slot, ray);
+            CHECK(texel.x < ve::renderer::kProbeRayAtlasRowTexels);
+            CHECK(texel.y / kProbeCaptureFaceResolution == slot);
+            CHECK(seen.insert({texel.x, texel.y}).second);
+        }
+    }
 }

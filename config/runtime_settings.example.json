@@ -159,6 +159,7 @@
         "bounceWeight": 0.5,
         "debugIrradianceOnly": false,
         "rayTracedGather": false,
+        "raysPerProbe": 768,
         "gridOriginX": -14.0,
         "gridOriginY": 0.5,
         "gridOriginZ": -14.0,

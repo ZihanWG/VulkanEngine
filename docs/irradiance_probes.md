@@ -31,8 +31,9 @@ to tolerate divergence rather than assume it is reordered away.
 Where ray query is present, the capture can now be traced instead of rasterised
 (`gi.rayTracedGather`, off by default): see [The ray-traced
 gather](#the-ray-traced-gather). It replaces only the capture, exactly as the
-paragraph below predicted. It is not yet DDGI, because its rays still follow the
-fixed capture directions rather than a per-update random rotation.
+paragraph above predicted, and by default it samples the way DDGI does: a fixed
+budget of rays per probe, evenly spread and randomly rotated on every update
+([Rotated rays](#rotated-rays)).
 
 What would carry over unchanged is most of this document: the octahedral tile
 layout, the border texel that fixes the seam, and the Chebyshev visibility
@@ -220,6 +221,74 @@ never looked at an opaque hit's attributes. Its TLAS instance now carries
 never consume, and a hit on it shades with the face normal and an untextured
 lookup. The pre-skin's barrier now also makes its positions visible to compute
 shader reads.
+
+### Rotated rays
+
+The first version of the trace fired one ray per capture texel, along the cube
+directions the raster capture sees: 1536 rays a probe, the same 1536 every update
+apart from the sub-texel jitter. `gi.raysPerProbe` (default 768) replaces that
+with DDGI's sampling. Each probe fires that many rays along a spherical Fibonacci
+set -- equal-area bands, golden-ratio azimuth steps, so any count covers the
+sphere evenly -- and the whole set is turned by a fresh, uniformly random
+rotation on every update (Shoemake's method, seeded from the update index so a
+run is reproducible). Zero keeps the per-texel cube rays.
+
+Two things make this cheap to carry:
+
+- **The rays live in the capture atlas.** A capture slot holds 1536 texels, so
+  up to 1536 rays per probe wrap through the slot's own rows. No new image, no new
+  graph resource, nothing for the update pass to declare differently.
+- **The convolution only changes its sample list.** Each sample is a direction, a
+  share of the sphere and a recorded radiance and distance; for rotated rays the
+  share is a constant the normalisation divides out, where cube texels need their
+  solid angle. The cube path is the original nested loop and renders the probe
+  view bit-identically to before.
+
+The trace's push block had no room for a rotation, so the batch's probe indices
+went from four `ivec4`s to one `uvec4` of 8-bit indices (the grid has 256 probes),
+which the unit tests pin, along with even coverage of the sphere, rigid and
+uniformly distributed rotations, and one texel per ray inside its slot.
+
+#### Measured: fewer rays, better result
+
+Against a converged reference -- 1536 rotated rays at hysteresis 0.97, 2000
+frames -- each layout at the default hysteresis 0.7, 16 probes a frame, scene
+frozen, over 32 consecutive frames of the probe-only view (debug gain 0.5).
+Error is the mean absolute difference from the reference; flicker is the
+per-pixel standard deviation over the 32 frames, in 8-bit steps:
+
+| rays per probe | Cornell error | Cornell flicker, mean / p99 | default error | default flicker, mean / p99 |
+| --- | --- | --- | --- | --- |
+| 1536, fixed cube texels | 0.0068 | 0.19 / 1.28 | 0.0032 | 0.19 / 0.86 |
+| 256, rotated | 0.0071 | 0.25 / 1.64 | 0.0048 | 0.30 / 1.65 |
+| 512, rotated | 0.0066 | 0.16 / 1.61 | 0.0025 | 0.15 / 0.80 |
+| **768, rotated** | **0.0062** | **0.10 / 0.71** | 0.0029 | **0.11 / 0.45** |
+| 1536, rotated | 0.0061 | 0.05 / 0.50 | 0.0029 | 0.10 / 0.44 |
+
+At the same 1536 rays, rotating them cuts the flicker two- to fourfold: the
+fixed directions alias, and the jitter cycles through a short sequence of offsets
+that the hysteresis then shows as a pattern. 768 rotated rays already beat 1536
+fixed ones on every column, which is what sets the default. The flicker figures
+are below one 8-bit step, so they rank the layouts rather than measure them
+absolutely.
+
+The convolution's inner loop is the sample count, so the default halves the
+pass that dominated the probe cost:
+
+| Sponza, 4 probes / frame, traced gather | cube texels (0) | 768 rotated | change |
+| --- | --- | --- | --- |
+| Frame total | 5.176 | 4.681 | **-9.6%** |
+| `IrradianceProbeUpdate` | 0.692 | 0.291 | **-57.9%** |
+| `ProbeTrace` | 0.047 | 0.038 | -19.1% |
+
+Same protocol as the table above (pinned 800 / 7001 MHz, A/B/A/B/A/B, p10 in ms),
+control drift 0.72%. The first two attempts at this series drifted 4.0% and
+7.5% and were discarded rather than quoted.
+
+One regression was found and undone on the way. The first version folded the cube
+path into the same flat loop as the rays, indexing face and texel by division;
+the cube convolution then read 0.761-0.784 ms in three series against 0.692 with
+the original nested loops restored. The nested loops are what ships.
 
 ### What it changes about the frame
 
@@ -768,11 +837,13 @@ brightness knob.
 - **Cascaded shadows in the raster capture only work inside the CSM's range.** A
   probe beyond the cascade distance gathers unshadowed sunlight. The ray-traced
   gather shadows its hits with rays and does not have this limit.
-- **The ray-traced gather still fires the fixed capture directions.** It is
-  jittered sub-texel per update like the raster capture, not randomly rotated
-  the way DDGI's rays are, so it does not earn a sharper depth lobe either. It
-  also fires 1536 rays a probe, against DDGI's 256, because it feeds the existing
-  convolution unchanged.
+- **Rotated rays still feed the round-robin update.** A probe is updated once a
+  cycle with the cycle-length hysteresis, not every frame at DDGI's 0.97, and the
+  depth lobe is still the blunted 20 -- whether the rotation has earned a sharper
+  one is the next measurement, not a conclusion.
+- **Below about 512 rays the rotated layout loses to the fixed one** on these
+  scenes (256 is worse on every column), so the setting is not a free quality
+  knob in both directions.
 - **The skinned caster shades flat in the ray-traced gather**: face normal, no
   texture. Its geometry record holds bare positions.
 - **The update is not budgeted in time**, only in probe count. The debug panel

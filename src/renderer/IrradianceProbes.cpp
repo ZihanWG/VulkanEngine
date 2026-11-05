@@ -391,6 +391,63 @@ float probeRayConeTextureLod(
     return std::max(std::log2(coneWidth / texelWorldSize), 0.0f);
 }
 
+glm::vec3 probeRayDirection(uint32_t ray, uint32_t rayCount, const glm::vec4& rotation)
+{
+    const uint32_t count = std::max(rayCount, 1u);
+    const float index = static_cast<float>(std::min(ray, count - 1));
+    // Golden-ratio azimuth steps, in float like the shader, so both round the
+    // same way. Exact enough at these counts: index * 0.618 stays under 1000.
+    constexpr float kGoldenFraction = 0.6180339887f;
+    const float turns = index * kGoldenFraction;
+    const float phi = 6.2831853f * (turns - std::floor(turns));
+    const float cosTheta = 1.0f - (2.0f * index + 1.0f) / static_cast<float>(count);
+    const float sinTheta = std::sqrt(std::max(0.0f, 1.0f - cosTheta * cosTheta));
+    const glm::vec3 direction{std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, cosTheta};
+
+    // v' = v + 2 q.xyz x (q.xyz x v + w v), the rotation by a unit quaternion.
+    const glm::vec3 axis{rotation.x, rotation.y, rotation.z};
+    const glm::vec3 inner = glm::cross(axis, direction) + rotation.w * direction;
+    return direction + 2.0f * glm::cross(axis, inner);
+}
+
+glm::vec4 probeRayRotation(uint32_t updateIndex)
+{
+    // PCG-style integer hash: a different, well-mixed word per index and per
+    // stream, with no state to carry across updates.
+    const auto hash = [](uint32_t value) {
+        uint32_t state = value * 747796405u + 2891336453u;
+        const uint32_t word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+        return (word >> 22u) ^ word;
+    };
+    const auto uniform = [&](uint32_t stream) {
+        return static_cast<float>(hash(updateIndex * 3u + stream) >> 8) * (1.0f / 16777216.0f);
+    };
+    // Shoemake: three uniforms to a uniformly distributed unit quaternion.
+    const float u1 = uniform(0);
+    const float u2 = uniform(1) * 6.2831853f;
+    const float u3 = uniform(2) * 6.2831853f;
+    const float a = std::sqrt(1.0f - u1);
+    const float b = std::sqrt(u1);
+    return glm::vec4{a * std::sin(u2), a * std::cos(u2), b * std::sin(u3), b * std::cos(u3)};
+}
+
+glm::uvec2 probeRayTexel(uint32_t slot, uint32_t ray)
+{
+    const uint32_t clampedRay = std::min(ray, kProbeMaxRaysPerProbe - 1);
+    return glm::uvec2{clampedRay % kProbeRayAtlasRowTexels,
+                      std::min(slot, kMaxProbesPerFrame - 1) * kProbeCaptureFaceResolution +
+                          clampedRay / kProbeRayAtlasRowTexels};
+}
+
+glm::uvec4 packProbeIndices(const std::vector<uint32_t>& batch)
+{
+    glm::uvec4 packed{0u};
+    for (size_t slot = 0; slot < batch.size() && slot < kMaxProbesPerFrame; ++slot) {
+        packed[static_cast<glm::length_t>(slot / 4)] |= (batch[slot] & 0xFFu) << (8u * (slot % 4));
+    }
+    return packed;
+}
+
 uint32_t probeUpdateBatch(uint32_t cursor, uint32_t probesPerFrame, std::vector<uint32_t>& outProbeIndices)
 {
     outProbeIndices.clear();

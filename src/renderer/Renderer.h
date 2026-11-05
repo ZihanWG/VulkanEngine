@@ -2061,8 +2061,9 @@ private:
     // Whether this frame's capture is traced rather than rasterised. Implies
     // frameProbeCaptureActive_ and frameRayTracingSceneActive_.
     bool frameProbeTraceActive_ = false;
-    // The gather the log last reported: -1 none yet, 0 rasterised, 1 traced.
-    int probeGatherLogged_ = -1;
+    // The gather the log last reported: -1 rasterised, 0 traced cube texels, n
+    // traced rotated rays, and a value none of those can be before the first.
+    int64_t probeGatherLogged_ = -2;
     uint32_t ssrFrameCounter_ = 0;
     uint32_t gtaoFrameCounter_ = 0;
     bool useGpuShadowCulling_ = true;

@@ -425,6 +425,14 @@ struct GiSettings {
     // query and the bindless path; without them captures stay rasterised, so
     // the setting is a request rather than a guarantee.
     bool rayTracedGather = false;
+    // Rays per probe per update in the ray-traced gather. Zero fires one ray per
+    // capture texel along the cube's fixed directions; above zero, this many
+    // rays along a spherical Fibonacci set turned by a fresh random rotation
+    // each update, so successive updates sample new directions. At most a
+    // capture slot's worth, kProbeMaxRaysPerProbe. Ignored by the raster gather.
+    // 768 measured better than the 1536 fixed rays on both error and flicker at
+    // half the rays; see docs/irradiance_probes.md.
+    int raysPerProbe = 768;
 };
 
 // Internal render resolution as a fraction of the presentation resolution. The

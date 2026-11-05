@@ -66,6 +66,12 @@ const float kProbeTraceSurfaceOffset = 0.02;
 const float kProbeTraceConeSpread = 0.125;
 const float kProbeTraceMinCosine = 0.1;
 
+// Rotated rays (gi.raysPerProbe > 0): at most a capture slot's worth per probe,
+// wrapped through the slot's rows of the capture atlas this many to a row. See
+// ve::renderer::probeRayDirection.
+const uint kProbeMaxRaysPerProbe = 1536u;
+const uint kProbeRayAtlasRowTexels = 96u;
+
 // Sharpness of the depth lobe in the Chebyshev visibility test. Blunter than
 // DDGI's 50 on purpose; see docs/irradiance_probes.md.
 const float kProbeDepthLobeExponent = 20.0;

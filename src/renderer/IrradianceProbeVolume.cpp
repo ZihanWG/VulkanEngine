@@ -116,6 +116,7 @@ const std::vector<uint32_t>& IrradianceProbeVolume::beginCaptureBatch(uint32_t p
         // captured in the same frame, and a per-probe offset would buy nothing
         // that a per-update one does not.
         captureJitter_ = probeCaptureJitter(updateIndex_);
+        captureRayRotation_ = probeRayRotation(updateIndex_);
         ++updateIndex_;
     }
     capturedProbeCount_ += captureBatch_.size();
@@ -147,6 +148,8 @@ void IrradianceProbeVolume::reset()
     updateCursor_ = 0;
     updateIndex_ = 0;
     captureJitter_ = glm::vec2{0.0f};
+    captureRayCount_ = 0;
+    captureRayRotation_ = glm::vec4{0.0f, 0.0f, 0.0f, 1.0f};
     hysteresis_ = 0.0f;
     captureBatch_.clear();
     capturedProbeCount_ = 0;
@@ -467,6 +470,8 @@ void IrradianceProbeVolume::recordConvolve(VkCommandBuffer commandBuffer)
     // that would leave the whole grid permanently darker than the scene.
     pushConstants.hysteresis = gridConverged() ? std::clamp(hysteresis_, 0.0f, 0.99f) : 0.0f;
     pushConstants.jitter = captureJitter_;
+    pushConstants.rayRotation = captureRayRotation_;
+    pushConstants.rayCount = captureRayCount_;
     for (size_t slot = 0; slot < captureBatch_.size() && slot < kMaxProbesPerFrame; ++slot) {
         pushConstants.probeIndices[slot / 4][slot % 4] = static_cast<int32_t>(captureBatch_[slot]);
     }
