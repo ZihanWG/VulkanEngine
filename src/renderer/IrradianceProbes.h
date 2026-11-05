@@ -145,9 +145,17 @@ inline constexpr float kProbeDepthLobeExponent = 50.0f;
 // not correspond to any geometry.
 inline constexpr float kProbeMinVisibility = 0.02f;
 
-// Floor under the backface weight, for the same reason: a probe exactly edge-on
-// to a surface should fade, not vanish.
-inline constexpr float kProbeBackfaceFloor = 0.2f;
+// Added to the wrapped-cosine backface weight. Zero: a probe fully behind the
+// surface contributes nothing, and the curve still reaches that point with zero
+// slope, so the falloff has no edge of its own.
+//
+// It was 0.2, DDGI's value, until the probe leak room measured what it costs: a
+// probe on the far side of a surface kept a fifth of its weight whatever its
+// visibility said, and visibility cannot separate the two sides of a surface
+// thinner than its depth map resolves. Zeroing it cut the leaked light in that
+// room by 60%, and in Sponza removed a glow the thin curtains were taking from
+// the lit space behind them. See docs/irradiance_probes.md#what-makes-the-pattern.
+inline constexpr float kProbeBackfaceFloor = 0.0f;
 
 // Fraction of a probe's previous value kept when it is re-captured.
 //

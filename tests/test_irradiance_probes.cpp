@@ -946,9 +946,9 @@ TEST_CASE("Probe direction weight falls off smoothly behind the surface", "[prob
     CHECK(above > edge);
     CHECK(edge > below);
 
-    // A probe fully behind the surface still contributes a little rather than
-    // vanishing, which is what keeps the falloff from having an edge of its own.
-    CHECK(below > 0.0f);
+    // A probe fully behind the surface contributes nothing: that is where light
+    // through thin geometry came from (docs/irradiance_probes.md).
+    CHECK(below == 0.0f);
 
     float previous = -1.0f;
     for (int step = 0; step <= 64; ++step) {
@@ -959,6 +959,10 @@ TEST_CASE("Probe direction weight falls off smoothly behind the surface", "[prob
         if (previous >= 0.0f) {
             // Monotonic as the probe swings from overhead to underneath.
             CHECK(weight <= previous + 1.0e-6f);
+            // And continuous: no step anywhere, including where it reaches zero.
+            // The curve's steepest slope is 3*sqrt(3)/8 per radian, at 60
+            // degrees, so a pi/64 swing moves it by at most about 0.032.
+            CHECK(previous - weight < 0.035f);
         }
         previous = weight;
     }
