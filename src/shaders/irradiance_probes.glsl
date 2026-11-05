@@ -50,6 +50,22 @@ const int kProbeCaptureFaceResolution = 16;
 // Far plane for probe depth, and the units every stored distance is in.
 const float kProbeMaxDistance = 64.0;
 
+// Near plane of a raster capture face, which the traced gather uses as its rays'
+// minimum distance so both gathers ignore the same sliver around the probe.
+const float kProbeCaptureNearPlane = 0.05;
+
+// Cap on probes captured per frame, which sizes the capture atlas.
+const uint kMaxProbesPerFrame = 16u;
+
+// The ray-traced gather (probe_trace.comp): threads per side of a workgroup --
+// one cube face -- how far a hit's sun ray starts off the surface, the angle one
+// capture texel spans, and the floor under the cosine that stretches a cone's
+// footprint at grazing hits. See ve::renderer::probeRayConeTextureLod.
+const uint kProbeTraceLocalSize = 16u;
+const float kProbeTraceSurfaceOffset = 0.02;
+const float kProbeTraceConeSpread = 0.125;
+const float kProbeTraceMinCosine = 0.1;
+
 // Sharpness of the depth lobe in the Chebyshev visibility test. Blunter than
 // DDGI's 50 on purpose; see docs/irradiance_probes.md.
 const float kProbeDepthLobeExponent = 20.0;

@@ -505,7 +505,10 @@ RayTracingTopLevelPlan RayTracingScene::writeInstances(uint32_t frameIndex,
         std::memcpy(&instance.transform, transform.data(), sizeof(instance.transform));
         instance.instanceCustomIndex = input.frameDataIndex;
         instance.mask = 0xFF;
-        instance.instanceShaderBindingTableRecordOffset = 0;
+        // Nothing here has a shader binding table. The field marks the skinned
+        // caster instead, whose geometry record the probe gather must read as
+        // positions; see kRtSkinnedInstanceTag.
+        instance.instanceShaderBindingTableRecordOffset = input.skinned ? kRtSkinnedInstanceTag : 0u;
         // Facing culling off: a shadow is cast by whichever side of a caster
         // faces the sun, which is what the cascades' shadow pipelines draw too.
         VkGeometryInstanceFlagsKHR flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;

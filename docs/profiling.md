@@ -532,7 +532,7 @@ The current frame records timestamp scopes for:
 - `PunctualShadowAtlas` when spot or point shadows are active
 - `MainGpuCullingPass` when main GPU culling is active
 - `ClusterBuild` and `LightCull` when clustered lighting runs on the graphics queue -- not while async compute is active, which is the default wherever an async queue exists
-- `IrradianceProbeUpdate` and `ProbeCapture` when irradiance probes are active
+- `IrradianceProbeUpdate` and one of `ProbeCapture` (rasterised gather) or `ProbeTrace` (`gi.rayTracedGather`) when irradiance probes are active
 - `DepthPrepass` when `renderer.enableDepthPrepass` is on
 - `MainHDRPass`
 - `Skybox`, `RenderObjects`, and `SkinnedMesh`, recorded inside `MainHDRPass`

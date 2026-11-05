@@ -158,6 +158,7 @@
         "hysteresis": 0.7,
         "bounceWeight": 0.5,
         "debugIrradianceOnly": false,
+        "rayTracedGather": false,
         "gridOriginX": -14.0,
         "gridOriginY": 0.5,
         "gridOriginZ": -14.0,

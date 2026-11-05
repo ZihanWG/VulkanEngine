@@ -146,10 +146,14 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    // Bindings 7, 9, 10, 11 and 16 are also visible to compute: the ray-traced
+    // probe gather (probe_trace.comp) binds this set and reads the punctual
+    // atlas, the probe grid and the TLAS at the same bindings the raster capture
+    // does, so the two share one shading include.
     bindings[7].binding = 7;
     bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[7].descriptorCount = 1;
-    bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
     bindings[8].binding = 8;
     bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -163,17 +167,17 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[9].binding = 9;
     bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[9].descriptorCount = 1;
-    bindings[9].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[9].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
     bindings[10].binding = 10;
     bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[10].descriptorCount = 1;
-    bindings[10].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[10].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
     bindings[11].binding = 11;
     bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[11].descriptorCount = 1;
-    bindings[11].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[11].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
     // Ambient occlusion, sampled by the main pass so it can darken the ambient
     // term alone. The GTAO pass writes this image later in the same frame, so
@@ -229,7 +233,7 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[16].binding = 16;
     bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     bindings[16].descriptorCount = 1;
-    bindings[16].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[16].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
     // The ray-traced shadow mask, on the same condition as the TLAS: the
     // ray-query variant declares both and is the only shader that reads either.
     // An integer image, read with texelFetch through a nearest sampler.
@@ -454,6 +458,7 @@ void Renderer::createPipeline()
     // first pass, when the probe atlases do not exist yet; the constructor calls
     // it again once they do.
     createProbeCapturePipeline();
+    createProbeTracePipeline();
 
     const double pipelineBuildMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipelineBuildStart).count();
@@ -908,6 +913,45 @@ void Renderer::createProbeCapturePipeline()
         probeCapturePipeline_.reset();
         Logger::warn(std::string("Irradiance probe capture unavailable; probes will hold the debug pattern "
                                  "rather than captured radiance: ") +
+                     error.what());
+    }
+}
+
+void Renderer::createProbeTracePipeline()
+{
+    probeTracePipeline_.reset();
+
+    // The raster capture's preconditions, plus a scene to trace: the TLAS, its
+    // BLASes, and the bindless path the trace's set 0 binding 16 exists on.
+    if (!rayQueryShadingAvailable() || !irradianceProbes_.hasAtlases() ||
+        irradianceProbes_.descriptorSetLayout() == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // Set 0 is the shared material set, set 1 the bindless heap -- both at the
+    // numbers the raster capture binds them at -- and set 2 the probe volume's
+    // own compute set, whose capture-atlas binding is what the rays write.
+    const std::array<VkDescriptorSetLayout, 3> descriptorSetLayouts{
+        materialDescriptorSetLayout_.handle(),
+        bindlessTextureHeap_.descriptorSetLayout(),
+        irradianceProbes_.descriptorSetLayout(),
+    };
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(renderer::ProbeTracePushConstants))};
+
+    try {
+        rhi::VulkanComputePipelineCreateInfo pipelineInfo{};
+        pipelineInfo.shaderPath = shaderPath("probe_trace.comp.spv");
+        pipelineInfo.descriptorSetLayouts =
+            std::span<const VkDescriptorSetLayout>(descriptorSetLayouts.data(), descriptorSetLayouts.size());
+        pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+        pipelineInfo.pipelineCache = context_.pipelineCache();
+        probeTracePipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "ProbeTracePipeline");
+    } catch (const std::exception& error) {
+        // The raster capture is still there; a failed trace pipeline only takes
+        // the choice away.
+        probeTracePipeline_.reset();
+        Logger::warn(std::string("Ray-traced probe gather unavailable; probe captures stay rasterised: ") +
                      error.what());
     }
 }

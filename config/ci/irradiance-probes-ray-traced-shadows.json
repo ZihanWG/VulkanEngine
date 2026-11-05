@@ -1,0 +1,4 @@
+{
+  "gi": { "enabled": true, "rayTracedGather": true },
+  "rayTracedShadows": { "enabled": true }
+}

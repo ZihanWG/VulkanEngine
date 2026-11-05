@@ -53,19 +53,26 @@ inline constexpr uint32_t kRtShadowFlagDebugPenumbraRadius = 64u;
 // visibility, and the main pass shows that term on its own.
 inline constexpr uint32_t kRtShadowFlagDebugHistoryLength = 128u;
 
-// Where a mesh vertex keeps what the alpha test needs, in floats. The fragment
-// shader reads candidate triangles' UVs straight out of the vertex buffer by
-// device address, so these restate renderer::Vertex for GLSL; the .cpp pins
-// both against the struct with static_asserts, and
-// tools/check_shader_constants.py pins the GLSL copies in
+// Where a mesh vertex keeps what a ray hit needs, in floats: the UV for the
+// alpha test, and the normal the probe gather shades its hits with. Shaders read
+// hit triangles straight out of the vertex buffer by device address, so these
+// restate renderer::Vertex for GLSL; the .cpp pins them against the struct with
+// static_asserts, and tools/check_shader_constants.py pins the GLSL copies in
 // src/shaders/ray_traced_shadows.glsl against these.
 inline constexpr uint32_t kRtVertexStrideFloats = 15;
 inline constexpr uint32_t kRtVertexUvOffsetFloats = 6;
+inline constexpr uint32_t kRtVertexNormalOffsetFloats = 8;
 
 // The skinned caster. Its BLAS is built from positions a compute pass skins out
 // on every frame that traces with the pose moved (skin_positions.comp), three
 // floats per vertex, in workgroups of this many threads.
 inline constexpr uint32_t kRtSkinnedPositionStrideFloats = 3;
+// What the skinned caster's instance carries in its shader-binding-table offset,
+// a 24-bit field ray queries never consume: the one way a shader can tell this
+// instance's geometry record names bare positions rather than renderer::Vertex.
+// Every other instance carries zero. Only the probe gather reads it -- shadow
+// rays never look at an opaque hit's geometry.
+inline constexpr uint32_t kRtSkinnedInstanceTag = 1;
 inline constexpr uint32_t kRtPreSkinLocalSize = 64;
 
 // Workgroups that cover vertexCount with kRtPreSkinLocalSize threads each; the

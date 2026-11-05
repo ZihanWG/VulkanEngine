@@ -8,14 +8,19 @@
 #ifndef VE_RAY_TRACED_SHADOWS_GLSL
 #define VE_RAY_TRACED_SHADOWS_GLSL
 
-// renderer::Vertex as floats: its stride, and where its UV starts. Position is
-// at float 0.
+// renderer::Vertex as floats: its stride, and where its UV and normal start.
+// Position is at float 0.
 const uint kRtVertexStrideFloats = 15u;
 const uint kRtVertexUvOffsetFloats = 6u;
+const uint kRtVertexNormalOffsetFloats = 8u;
 
 // What the pre-skin dispatch writes per vertex: a bare position, the
 // R32G32B32_SFLOAT stream the skinned BLAS is built and refitted from.
 const uint kRtSkinnedPositionStrideFloats = 3u;
+
+// The skinned caster's instance shader-binding-table offset, which marks its
+// geometry record as bare positions. Zero on every other instance.
+const uint kRtSkinnedInstanceTag = 1u;
 
 // Threads per pre-skin workgroup.
 const uint kRtPreSkinLocalSize = 64u;

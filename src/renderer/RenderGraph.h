@@ -113,6 +113,7 @@ enum class RenderPassType {
     VsmPage,
     VolumetricFog,
     ProbeCapture,
+    ProbeTrace,
     IrradianceProbes,
     MainGpuCulling,
     DepthPyramid,
@@ -629,7 +630,7 @@ struct RenderGraphFrameResources {
     RenderGraphBufferResource histogramReadback;
     RenderGraphBufferResource exposureState;
     // The top-level acceleration structure's storage buffer. Imported only on
-    // frames that trace; see rayTracedShadowsEnabled.
+    // frames that trace; see rayTracingSceneEnabled.
     RenderGraphBufferResource rayTracingTopLevel;
     // The ray-traced shadow mask. Imported on every frame it exists, traced or
     // not: every pass that runs the main fragment shader declares a read of it,
@@ -685,10 +686,14 @@ struct RenderGraphFrameResources {
     uint32_t vsmDirtyPageCount = 0;
     // Declares the volumetric fog compute pass for this frame.
     bool volumetricFogEnabled = false;
+    // Imports the top-level acceleration structure: some pass traces against it
+    // this frame -- the sun's shadow rays, the probe gather, or both.
+    bool rayTracingSceneEnabled = false;
     // Declares a read of the top-level acceleration structure on every pass
     // that runs the main fragment shader. Exactly the condition the renderer
-    // sets its FrameConstants ray-tracing flag on, so a frame that traces always
-    // declares what it reads and a frame that does not declares nothing.
+    // sets its FrameConstants ray-tracing flag on, so a frame that traces sun
+    // shadows always declares what it reads and a frame that does not declares
+    // nothing -- including a frame on which only the probe gather traces.
     bool rayTracedShadowsEnabled = false;
     // Declares RayTracingSceneBuild ahead of those reads, which then order
     // against it. Only on a frame that traces and whose instances changed: a
@@ -721,6 +726,10 @@ struct RenderGraphFrameResources {
     // runs on frames with nothing to capture -- the cold-start seed, and the
     // debug-pattern path.
     bool probeCaptureEnabled = false;
+    // Declares the ray-traced probe gather instead: the same batch, the same
+    // capture atlas, filled by rays against the top-level structure. Never set
+    // together with probeCaptureEnabled.
+    bool probeTraceEnabled = false;
     // Declares the main compute frustum/occlusion cull. Comes from
     // GpuCulling::willRecordMainCull rather than from a condition rebuilt here,
     // so the declaration and the recorder cannot drift. False on the CPU culling

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <set>
 #include <utility>
@@ -1090,4 +1091,89 @@ TEST_CASE("Bounce feedback amplification stays finite", "[probes]")
     const float defaultGain = probeBounceAmplification(0.8f, ve::renderer::kProbeDefaultBounceWeight);
     INFO("albedo 0.8 at the default weight amplifies by " << defaultGain);
     CHECK(defaultGain < 2.0f);
+}
+
+TEST_CASE("A traced capture texel reads the mip its ray cone covers", "[probes]")
+{
+    using ve::renderer::kProbeTraceConeSpread;
+    using ve::renderer::probeRayConeTextureLod;
+
+    // A unit quad with a one-texel texture: one texel is one world unit wide, so
+    // the cone matches it at the distance where it is one unit wide.
+    const float matchDistance = 1.0f / kProbeTraceConeSpread;
+    CHECK(probeRayConeTextureLod(matchDistance, 1.0f, 1.0f, 1.0f, 1, 1) == Approx(0.0f).margin(1.0e-6));
+    // Each doubling of distance doubles the cone's width: one level coarser.
+    CHECK(probeRayConeTextureLod(matchDistance * 2.0f, 1.0f, 1.0f, 1.0f, 1, 1) == Approx(1.0f));
+    CHECK(probeRayConeTextureLod(matchDistance * 4.0f, 1.0f, 1.0f, 1.0f, 1, 1) == Approx(2.0f));
+    // A finer texture moves the same footprint down by its own levels.
+    CHECK(probeRayConeTextureLod(matchDistance, 1.0f, 1.0f, 1.0f, 1024, 1024) == Approx(10.0f));
+    // A texture tiled four times over the quad (UV area 16) is four times finer
+    // per world unit on each axis: two more levels.
+    CHECK(probeRayConeTextureLod(matchDistance, 1.0f, 1.0f, 16.0f, 1, 1) == Approx(2.0f));
+    // Scaling the triangle up in world space at a fixed UV mapping makes its
+    // texels bigger, so the same cone covers fewer of them.
+    CHECK(probeRayConeTextureLod(matchDistance * 2.0f, 1.0f, 4.0f, 1.0f, 1, 1) == Approx(0.0f).margin(1.0e-6));
+}
+
+TEST_CASE("The ray cone widens at grazing hits, boundedly, and never reads below level 0", "[probes]")
+{
+    using ve::renderer::kProbeTraceConeSpread;
+    using ve::renderer::kProbeTraceMinCosine;
+    using ve::renderer::probeRayConeTextureLod;
+
+    const float matchDistance = 1.0f / kProbeTraceConeSpread;
+    const float facing = probeRayConeTextureLod(matchDistance, 1.0f, 1.0f, 1.0f, 64, 64);
+    const float tilted = probeRayConeTextureLod(matchDistance, 0.5f, 1.0f, 1.0f, 64, 64);
+    CHECK(tilted == Approx(facing + 1.0f));
+    // Which side the ray came from does not matter: both gathers are two-sided.
+    CHECK(probeRayConeTextureLod(matchDistance, -0.5f, 1.0f, 1.0f, 64, 64) == Approx(tilted));
+    // Edge-on clamps at the floor rather than reaching an infinite footprint.
+    const float edgeOn = probeRayConeTextureLod(matchDistance, 0.0f, 1.0f, 1.0f, 64, 64);
+    CHECK(std::isfinite(edgeOn));
+    CHECK(edgeOn == Approx(facing + std::log2(1.0f / kProbeTraceMinCosine)));
+    // A cone narrower than a texel reads level 0, not a negative level.
+    CHECK(probeRayConeTextureLod(1.0e-3f, 1.0f, 1.0f, 1.0f, 1, 1) == 0.0f);
+}
+
+TEST_CASE("Degenerate ray-cone inputs read level 0", "[probes]")
+{
+    using ve::renderer::probeRayConeTextureLod;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK(probeRayConeTextureLod(8.0f, 1.0f, 0.0f, 1.0f, 64, 64) == 0.0f);
+    CHECK(probeRayConeTextureLod(8.0f, 1.0f, 1.0f, 0.0f, 64, 64) == 0.0f);
+    CHECK(probeRayConeTextureLod(8.0f, 1.0f, 1.0f, 1.0f, 0, 64) == 0.0f);
+    CHECK(probeRayConeTextureLod(0.0f, 1.0f, 1.0f, 1.0f, 64, 64) == 0.0f);
+    CHECK(probeRayConeTextureLod(nan, 1.0f, 1.0f, 1.0f, 64, 64) == 0.0f);
+    CHECK(probeRayConeTextureLod(8.0f, 1.0f, nan, 1.0f, 64, 64) == 0.0f);
+}
+
+TEST_CASE("The cone spread is the angle one capture texel spans", "[probes]")
+{
+    using ve::renderer::kProbeCaptureFaceResolution;
+    using ve::renderer::kProbeTraceConeSpread;
+    // The two texels either side of a face's centre: the cone a traced texel
+    // stands for should be as wide as the step between their directions.
+    const uint32_t centre = kProbeCaptureFaceResolution / 2;
+    for (uint32_t face = 0; face < kProbeCaptureFaceCount; ++face) {
+        const glm::vec3 left =
+            ve::renderer::probeCubeTexelDirection(face, centre - 1, centre, kProbeCaptureFaceResolution);
+        const glm::vec3 right =
+            ve::renderer::probeCubeTexelDirection(face, centre, centre, kProbeCaptureFaceResolution);
+        const float angle = std::acos(std::clamp(glm::dot(left, right), -1.0f, 1.0f));
+        INFO("face " << face);
+        CHECK(angle == Approx(kProbeTraceConeSpread).epsilon(0.01));
+    }
+}
+
+TEST_CASE("The probe trace push block matches the shader's std430 offsets", "[probes]")
+{
+    using ve::renderer::ProbeTracePushConstants;
+    // Five buffer references, then the scalars, then the 16-byte-aligned index
+    // array, which is where a layout slip would show first.
+    CHECK(offsetof(ProbeTracePushConstants, lightCount) == 40);
+    CHECK(offsetof(ProbeTracePushConstants, jitter) == 48);
+    CHECK(offsetof(ProbeTracePushConstants, sunRayLength) == 56);
+    CHECK(offsetof(ProbeTracePushConstants, probeCount) == 60);
+    CHECK(offsetof(ProbeTracePushConstants, probeIndices) == 64);
+    CHECK(sizeof(ProbeTracePushConstants) == 128);
 }

@@ -644,6 +644,26 @@ void Renderer::drawIrradianceProbesDebugUi()
     ImGui::SetItemTooltip("Round robin over the grid. This is the whole cost control: raising it\n"
                           "makes the grid catch up with a lighting change sooner and makes every\n"
                           "frame more expensive. Zero pauses capture without losing the cursor.");
+
+    // Greyed out, not hidden, where the device cannot trace: the reason is worth
+    // seeing next to the control it disables.
+    const bool traceAvailable = probeTracePipeline_.pipeline() != VK_NULL_HANDLE && rayQueryShadingAvailable();
+    ImGui::BeginDisabled(!traceAvailable);
+    ImGui::Checkbox("Ray-traced gather", &giSettings_.rayTracedGather);
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Fills each probe's capture with one ray per texel against the scene's\n"
+                          "acceleration structure instead of rasterising six cube faces. The\n"
+                          "convolution, hysteresis and bounce are unchanged. A hit's sun shadow\n"
+                          "is a ray, so probes beyond the cascades' range are shadowed too.\n"
+                          "Needs ray query and the bindless path.");
+    if (!traceAvailable) {
+        ImGui::TextDisabled("  Unavailable: %s.",
+                            rayQueryShadingAvailable() ? "the trace pipeline failed (see the log)"
+                                                       : "no ray query or no bindless path");
+    } else if (giSettings_.enabled) {
+        ImGui::TextDisabled("  Gathering by %s this frame.",
+                            frameProbeTraceActive_ ? "rays" : (frameProbeCaptureActive_ ? "rasterisation" : "nothing"));
+    }
     ImGui::EndDisabled();
 
     ImGui::SliderFloat("Intensity##gi", &giSettings_.intensity, 0.0f, 4.0f, "%.2f");

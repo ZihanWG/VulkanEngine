@@ -278,6 +278,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Volumetric Fog";
     case RenderPassType::ProbeCapture:
         return "Probe Capture";
+    case RenderPassType::ProbeTrace:
+        return "Probe Trace";
     case RenderPassType::IrradianceProbes:
         return "Irradiance Probes";
     case RenderPassType::MainGpuCulling:
@@ -681,9 +683,8 @@ void RenderGraph::importFrameBuffers()
     frame_.histogramReadback = importBuffer(frame_.resources.histogramReadback);
     frame_.exposureState = importBuffer(frame_.resources.exposureState);
     // Only on a frame that traces: an imported buffer nothing declares is
-    // harmless, but a valid handle is also what tells the main passes to
-    // declare their read, and that read must not outlive the build.
-    if (frame_.resources.rayTracedShadowsEnabled) {
+    // harmless, but a frame that traces nothing has no use for the handle.
+    if (frame_.resources.rayTracingSceneEnabled) {
         frame_.rayTracingTopLevel = importBuffer(frame_.resources.rayTracingTopLevel);
     }
     // An image, imported here beside the structure it is traced against. On

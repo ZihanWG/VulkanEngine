@@ -374,6 +374,23 @@ glm::vec2 probeCaptureJitter(uint32_t updateIndex)
     return glm::vec2{halton(index, 2) - 0.5f, halton(index, 3) - 0.5f};
 }
 
+float probeRayConeTextureLod(
+    float hitDistance, float cosIncidence, float worldArea, float uvArea, uint32_t textureWidth, uint32_t textureHeight)
+{
+    const float texelArea = uvArea * static_cast<float>(textureWidth) * static_cast<float>(textureHeight);
+    // Written as negated comparisons so a NaN lands here too rather than in the
+    // logarithm.
+    if (!(worldArea > 0.0f) || !(texelArea > 0.0f) || !(hitDistance > 0.0f)) {
+        return 0.0f;
+    }
+    const float cosine = std::max(std::abs(cosIncidence), kProbeTraceMinCosine);
+    const float coneWidth = hitDistance * kProbeTraceConeSpread / cosine;
+    // World size of one texel on this triangle: its world area spread over the
+    // texels its UVs cover.
+    const float texelWorldSize = std::sqrt(worldArea / texelArea);
+    return std::max(std::log2(coneWidth / texelWorldSize), 0.0f);
+}
+
 uint32_t probeUpdateBatch(uint32_t cursor, uint32_t probesPerFrame, std::vector<uint32_t>& outProbeIndices)
 {
     outProbeIndices.clear();

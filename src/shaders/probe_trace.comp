@@ -1,0 +1,256 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// The ray-traced probe gather: fills the capture atlas the convolution reads by
+// firing one ray per capture texel instead of rasterising six cube faces per
+// probe. Each ray leaves the probe along exactly the direction the convolution
+// will read its texel back as -- jitter included -- and its closest hit is
+// shaded by the same function the raster capture shades its fragments with
+// (probe_capture_shading.glsl). So everything after this pass is unchanged, and
+// the two gathers can be compared texel for texel.
+//
+// What differs from the raster capture, on purpose:
+//   - the sun's visibility at a hit is a shadow ray, not the cascades. The
+//     cascades only cover the camera's view range, so a raster-captured surface
+//     beyond it gathers unshadowed sunlight; a ray answers anywhere.
+//   - textures are sampled at the mip a ray cone picks
+//     (ve::renderer::probeRayConeTextureLod), where the raster capture takes
+//     one from derivatives at 16x16.
+//   - nothing is culled or recorded per probe on the CPU: the cost is one
+//     dispatch whatever the scene holds.
+//
+// One workgroup per (face, capture slot), one invocation per texel.
+
+#include "irradiance_probes.glsl"
+
+layout(local_size_x = kProbeTraceLocalSize, local_size_y = kProbeTraceLocalSize, local_size_z = 1) in;
+
+// Set 0 is the shared material set the raster capture also binds, at the same
+// bindings, so the shading include reads the same descriptors either way.
+layout(set = 0, binding = 7) uniform sampler2D uPunctualShadowAtlas;
+// The atlases this pass ultimately feeds, for multi-bounce: written by the update
+// pass later in the frame, so what this reads is the previous frame's contents.
+layout(set = 0, binding = 9) uniform sampler2D uProbeIrradianceAtlas;
+layout(set = 0, binding = 10) uniform sampler2D uProbeDepthAtlas;
+layout(set = 0, binding = 11) uniform ProbeShadingParams {
+    vec4 gridOrigin;   // xyz = origin, w = intensity
+    vec4 gridSpacing;  // xyz = spacing, w = surface bias
+    vec4 debug;
+} probeParams;
+layout(set = 0, binding = 16) uniform accelerationStructureEXT uSceneTopLevel;
+layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
+// The probe volume's own set; binding 2 is the capture atlas the convolution
+// reads. Bindings 0 and 1, the probe atlases as storage images, are not used
+// here.
+layout(set = 2, binding = 2, rgba16f) uniform writeonly image2D uCaptureAtlas;
+
+#include "probe_cube.glsl"
+#include "probe_capture_shading.glsl"
+#include "ray_traced_shadow_trace.glsl"
+
+// Mirrors ve::renderer::ProbeTracePushConstants.
+layout(push_constant) uniform ProbeTracePush {
+    FrameConstantsBuffer frameConstants;
+    ObjectFrameDataBuffer objectFrameData;
+    RtGeometryRecordBuffer geometry;
+    LightBuffer lights;
+    ShadowSlotBuffer punctualShadowSlots;
+    uint lightCount;
+    float bounceWeight;
+    vec2 jitter;
+    float sunRayLength;
+    uint probeCount;
+    ivec4 probeIndices[kMaxProbesPerFrame / 4u];
+} pc;
+
+layout(buffer_reference, std430) readonly buffer RtPositionFloats {
+    float values[];
+};
+
+vec3 rtVertexPosition(RtVertexFloats vertices, uint vertexIndex)
+{
+    uint base = vertexIndex * kRtVertexStrideFloats;
+    return vec3(vertices.values[base], vertices.values[base + 1u], vertices.values[base + 2u]);
+}
+
+vec3 rtVertexNormal(RtVertexFloats vertices, uint vertexIndex)
+{
+    uint base = vertexIndex * kRtVertexStrideFloats + kRtVertexNormalOffsetFloats;
+    return vec3(vertices.values[base], vertices.values[base + 1u], vertices.values[base + 2u]);
+}
+
+vec3 rtSkinnedPosition(RtPositionFloats positions, uint vertexIndex)
+{
+    uint base = vertexIndex * kRtSkinnedPositionStrideFloats;
+    return vec3(positions.values[base], positions.values[base + 1u], positions.values[base + 2u]);
+}
+
+// Mirrors ve::renderer::probeRayConeTextureLod.
+float probeRayConeTextureLod(float hitDistance, float cosIncidence, float worldArea, float uvArea, ivec2 textureSize)
+{
+    float texelArea = uvArea * float(textureSize.x) * float(textureSize.y);
+    if (!(worldArea > 0.0) || !(texelArea > 0.0) || !(hitDistance > 0.0)) {
+        return 0.0;
+    }
+    float cosine = max(abs(cosIncidence), kProbeTraceMinCosine);
+    float coneWidth = hitDistance * kProbeTraceConeSpread / cosine;
+    float texelWorldSize = sqrt(worldArea / texelArea);
+    return max(log2(coneWidth / texelWorldSize), 0.0);
+}
+
+uvec3 probeGridCoord(uint probeIndex)
+{
+    return uvec3(probeIndex % kProbeGridX, (probeIndex / kProbeGridX) % kProbeGridY, probeIndex / (kProbeGridX * kProbeGridY));
+}
+
+void main()
+{
+    int face = int(gl_WorkGroupID.x);
+    uint slot = gl_WorkGroupID.y;
+    if (slot >= pc.probeCount) {
+        return;
+    }
+
+    uint probeIndex = uint(pc.probeIndices[slot >> 2u][slot & 3u]);
+    // The grid position the shading lookup and the raster capture use:
+    // ve::renderer::probeWorldPosition through the shading parameters.
+    vec3 probePosition = probeParams.gridOrigin.xyz +
+                         vec3(probeGridCoord(probeIndex)) * max(probeParams.gridSpacing.xyz, vec3(1.0e-4));
+
+    ivec2 texel = ivec2(gl_LocalInvocationID.xy);
+    vec3 direction = probeCubeTexelDirection(face, vec2(texel), pc.jitter);
+    ivec2 target = ivec2(face * kProbeCaptureFaceResolution, int(slot) * kProbeCaptureFaceResolution) + texel;
+
+    FrameConstantsBuffer frame = pc.frameConstants;
+    vec3 ambient = frame.values.ambientColor.rgb;
+
+    // Closest hit, so cutout candidates are confirmed where they are solid and
+    // the traversal carries on past them where they are not -- the raster
+    // capture's discard, answered per ray.
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, uSceneTopLevel, gl_RayFlagsNoneEXT, 0xFFu, probePosition, kProbeCaptureNearPlane,
+                          direction, kProbeMaxDistance);
+    while (rayQueryProceedEXT(query)) {
+        if (rayQueryGetIntersectionTypeEXT(query, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {
+            uint candidateIndex = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(query, false));
+            uint candidatePrimitive = uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, false));
+            vec2 candidateBarycentrics = rayQueryGetIntersectionBarycentricsEXT(query, false);
+            if (rtCandidateIsSolid(pc.geometry, pc.objectFrameData, candidateIndex, candidatePrimitive,
+                                   candidateBarycentrics)) {
+                rayQueryConfirmIntersectionEXT(query);
+            }
+        }
+    }
+
+    // Nothing within reach: the sky term and the far bound, which is exactly
+    // what the raster capture's clear leaves in a texel nothing drew into.
+    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        imageStore(uCaptureAtlas, target, vec4(ambient, kProbeMaxDistance));
+        return;
+    }
+
+    float hitDistance = rayQueryGetIntersectionTEXT(query, true);
+    uint frameDataIndex = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(query, true));
+    uint primitive = uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, true));
+    vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
+    mat4x3 objectToWorld = rayQueryGetIntersectionObjectToWorldEXT(query, true);
+    bool skinned = rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(query, true) ==
+                   kRtSkinnedInstanceTag;
+    vec3 weights = vec3(1.0 - barycentrics.x - barycentrics.y, barycentrics.x, barycentrics.y);
+
+    RtGeometryRecord record = pc.geometry.records[frameDataIndex];
+    RtIndices indices = RtIndices(record.indexAddress);
+    uint first = primitive * 3u;
+    uvec3 corner = uvec3(indices.values[first], indices.values[first + 1u], indices.values[first + 2u]);
+
+    vec3 p0;
+    vec3 p1;
+    vec3 p2;
+    vec3 interpolatedNormal;
+    vec2 uv = vec2(0.5);
+    float uvArea = 0.0;
+    if (skinned) {
+        // The skinned caster's record names its pre-skinned positions, not a
+        // renderer::Vertex stream: no normals and no UVs to interpolate. The
+        // face normal stands in, and with no UV area the cone picks level 0 at
+        // the centre of the texture -- its material is untextured.
+        RtPositionFloats positions = RtPositionFloats(record.vertexAddress);
+        p0 = rtSkinnedPosition(positions, corner.x);
+        p1 = rtSkinnedPosition(positions, corner.y);
+        p2 = rtSkinnedPosition(positions, corner.z);
+        interpolatedNormal = cross(p1 - p0, p2 - p0);
+    } else {
+        RtVertexFloats vertices = RtVertexFloats(record.vertexAddress);
+        p0 = rtVertexPosition(vertices, corner.x);
+        p1 = rtVertexPosition(vertices, corner.y);
+        p2 = rtVertexPosition(vertices, corner.z);
+        interpolatedNormal = rtVertexNormal(vertices, corner.x) * weights.x +
+                             rtVertexNormal(vertices, corner.y) * weights.y +
+                             rtVertexNormal(vertices, corner.z) * weights.z;
+        vec2 uv0 = rtVertexUv(vertices, corner.x);
+        vec2 uv1 = rtVertexUv(vertices, corner.y);
+        vec2 uv2 = rtVertexUv(vertices, corner.z);
+        uv = uv0 * weights.x + uv1 * weights.y + uv2 * weights.z;
+        vec2 du = uv1 - uv0;
+        vec2 dv = uv2 - uv0;
+        uvArea = abs(du.x * dv.y - du.y * dv.x);
+    }
+
+    // Object to world the way the raster capture's vertex stage does it:
+    // mat3(model) on the normal, without the inverse transpose.
+    mat3 linear = mat3(objectToWorld);
+    vec3 worldEdge1 = linear * (p1 - p0);
+    vec3 worldEdge2 = linear * (p2 - p0);
+    vec3 faceNormal = cross(worldEdge1, worldEdge2);
+    float worldArea = length(faceNormal);
+    faceNormal = worldArea > 0.0 ? faceNormal / worldArea : -direction;
+
+    vec3 normal = linear * interpolatedNormal;
+    float normalLength = length(normal);
+    normal = normalLength > 0.0 ? normal / normalLength : faceNormal;
+    // Two-sided, as the raster capture: a probe inside a room sees the inward
+    // face of walls authored facing out.
+    if (dot(normal, direction) > 0.0) {
+        normal = -normal;
+    }
+
+    vec3 worldPosition = probePosition + direction * hitDistance;
+
+    ObjectFrameData object = pc.objectFrameData.objects[frameDataIndex];
+    uvec4 textureIndices = object.textureIndices;
+    float baseLod = probeRayConeTextureLod(hitDistance, dot(faceNormal, direction), worldArea, uvArea,
+                                           textureSize(uBaseColorTextures[nonuniformEXT(textureIndices.x)], 0));
+    float emissiveLod = probeRayConeTextureLod(hitDistance, dot(faceNormal, direction), worldArea, uvArea,
+                                               textureSize(uBaseColorTextures[nonuniformEXT(textureIndices.w)], 0));
+    vec3 albedo = object.baseColorFactor.rgb *
+                  textureLod(uBaseColorTextures[nonuniformEXT(textureIndices.x)], uv, baseLod).rgb;
+    vec3 emissive = object.emissiveFactor.rgb *
+                    textureLod(uBaseColorTextures[nonuniformEXT(textureIndices.w)], uv, emissiveLod).rgb;
+
+    ProbeCaptureLighting lighting;
+    lighting.sunDirection = frame.values.lightDirection.xyz;
+    lighting.sunColor = frame.values.lightColor.rgb;
+    lighting.ambient = ambient;
+    lighting.lights = pc.lights;
+    lighting.lightCount = pc.lightCount;
+    lighting.shadowSlots = pc.punctualShadowSlots;
+    lighting.bounceWeight = pc.bounceWeight;
+
+    // Traced only where the sun could light the surface at all: a surface facing
+    // away has no lambert to shadow, and a scene with the sun off (the Cornell
+    // box) has nothing to trace towards.
+    float sunVisibility = 0.0;
+    vec3 towardSun = normalize(-lighting.sunDirection);
+    if (dot(normal, towardSun) > 0.0 && dot(lighting.sunColor, vec3(1.0)) > 0.0) {
+        float sunHitDistance;
+        vec3 origin = worldPosition + normal * kProbeTraceSurfaceOffset;
+        sunVisibility = rtOccluded(pc.geometry, pc.objectFrameData, origin, towardSun, pc.sunRayLength,
+                                   sunHitDistance) ? 0.0 : 1.0;
+    }
+
+    vec3 radiance = probeCaptureRadiance(lighting, albedo, emissive, worldPosition, normal, probePosition, sunVisibility);
+    imageStore(uCaptureAtlas, target, vec4(radiance, min(hitDistance, kProbeMaxDistance)));
+}

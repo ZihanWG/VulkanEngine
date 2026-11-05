@@ -685,6 +685,10 @@ private:
     // bindless descriptor set layouts, which Renderer owns -- the same split
     // PunctualShadows uses for its caster draws.
     void createProbeCapturePipeline();
+    // The ray-traced probe gather's compute pipeline, when the device traces
+    // and the probe volume exists. After createProbeCapturePipeline, on the same
+    // calls: it shares the material set layout and the bindless heap.
+    void createProbeTracePipeline();
     void createDiffuseIrradianceMap();
     void createPrefilteredEnvironmentMap();
     void createBrdfLutTexture();
@@ -1018,6 +1022,14 @@ private:
     // same arrangement the punctual shadow atlas uses for its slots.
     void recordProbeCapturePass(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool isProbeCaptureActive() const;
+    // Whether probe captures go through rays rather than rasterisation when they
+    // happen: the setting asks for it and the device, the scene and the trace
+    // pipeline can do it. Settles nothing about this frame; see
+    // frameProbeTraceActive_.
+    [[nodiscard]] bool isProbeTraceSelected() const;
+    // The ray-traced gather: one dispatch over (cube face, capture slot), one
+    // ray per capture texel, into the capture atlas the update pass convolves.
+    void recordProbeTracePass(VkCommandBuffer commandBuffer);
     // The punctual shadow atlas pass's callback: one dynamic-rendering scope
     // over the whole atlas, with a viewport/scissor per allocated slot.
     void recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive);
@@ -1066,6 +1078,7 @@ private:
         uint32_t punctualShadow = renderer::kInvalidRenderGraphHandle;
         uint32_t volumetricFog = renderer::kInvalidRenderGraphHandle;
         uint32_t probeCapture = renderer::kInvalidRenderGraphHandle;
+        uint32_t probeTrace = renderer::kInvalidRenderGraphHandle;
         uint32_t irradianceProbes = renderer::kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = renderer::kInvalidRenderGraphHandle;
         uint32_t shadowGpuCulling = renderer::kInvalidRenderGraphHandle;
@@ -1412,6 +1425,7 @@ private:
     rhi::PipelineRef skinnedPunctualShadowPipeline_;
     rhi::PipelineRef skinnedVsmPagePipeline_;
     rhi::PipelineRef probeCapturePipeline_;
+    rhi::ComputePipelineRef probeTracePipeline_;
     // glTF BLEND geometry: same shaders as the main pass, but "over" blending,
     // depth writes off, and a scene-color-only attachment set.
     rhi::PipelineRef transparentPipeline_;
@@ -2001,6 +2015,11 @@ private:
     // have to agree; a frame that traces without it declares the reads alone and
     // traces the structure an earlier frame built.
     bool frameRayTracingSceneBuildRequired_ = false;
+    // Whether anything traces against the scene this frame -- the sun's shadow
+    // rays, the probe gather, or both -- and so whether the instances are
+    // written and the TLAS brought up to date. Latched in frame prep, before the
+    // instances.
+    bool frameRayTracingSceneActive_ = false;
     // This frame traces the shadow mask ahead of the main pass, which reads it
     // (renderer::rayTracedShadowMaskActive). Gates the mask pass's declaration,
     // its recording and the FrameConstants flag, which have to agree.
@@ -2039,6 +2058,11 @@ private:
     // the batch it refers to, because the graph declaration and the recording
     // have to agree and choosing the batch advances the round-robin cursor.
     bool frameProbeCaptureActive_ = false;
+    // Whether this frame's capture is traced rather than rasterised. Implies
+    // frameProbeCaptureActive_ and frameRayTracingSceneActive_.
+    bool frameProbeTraceActive_ = false;
+    // The gather the log last reported: -1 none yet, 0 rasterised, 1 traced.
+    int probeGatherLogged_ = -1;
     uint32_t ssrFrameCounter_ = 0;
     uint32_t gtaoFrameCounter_ = 0;
     bool useGpuShadowCulling_ = true;
