@@ -22,7 +22,13 @@
 //   - nothing is culled or recorded per probe on the CPU: the cost is one
 //     dispatch whatever the scene holds.
 //
-// One workgroup per (face, capture slot), one invocation per texel.
+// Two layouts, chosen per batch by rayCount:
+//   zero      one workgroup per (cube face, capture slot), one invocation per
+//             capture texel, the ray along that texel's fixed direction;
+//   non-zero  rayCount rays per probe along a spherical Fibonacci set turned by
+//             this update's random rotation (DDGI's sampling), one workgroup per
+//             (256 rays, capture slot), written through the slot's rows of the
+//             same atlas. The convolution reads them back the same way.
 
 #include "irradiance_probes.glsl"
 
@@ -63,7 +69,10 @@ layout(push_constant) uniform ProbeTracePush {
     vec2 jitter;
     float sunRayLength;
     uint probeCount;
-    ivec4 probeIndices[kMaxProbesPerFrame / 4u];
+    // Four 8-bit grid indices to a word: ve::renderer::packProbeIndices.
+    uvec4 packedProbeIndices;
+    vec4 rayRotation;
+    uint rayCount;
 } pc;
 
 layout(buffer_reference, std430) readonly buffer RtPositionFloats {
@@ -108,21 +117,32 @@ uvec3 probeGridCoord(uint probeIndex)
 
 void main()
 {
-    int face = int(gl_WorkGroupID.x);
     uint slot = gl_WorkGroupID.y;
     if (slot >= pc.probeCount) {
         return;
     }
 
-    uint probeIndex = uint(pc.probeIndices[slot >> 2u][slot & 3u]);
+    uint probeIndex = (pc.packedProbeIndices[slot >> 2u] >> (8u * (slot & 3u))) & 0xFFu;
     // The grid position the shading lookup and the raster capture use:
     // ve::renderer::probeWorldPosition through the shading parameters.
     vec3 probePosition = probeParams.gridOrigin.xyz +
                          vec3(probeGridCoord(probeIndex)) * max(probeParams.gridSpacing.xyz, vec3(1.0e-4));
 
-    ivec2 texel = ivec2(gl_LocalInvocationID.xy);
-    vec3 direction = probeCubeTexelDirection(face, vec2(texel), pc.jitter);
-    ivec2 target = ivec2(face * kProbeCaptureFaceResolution, int(slot) * kProbeCaptureFaceResolution) + texel;
+    vec3 direction;
+    ivec2 target;
+    if (pc.rayCount > 0u) {
+        uint ray = gl_WorkGroupID.x * (kProbeTraceLocalSize * kProbeTraceLocalSize) + gl_LocalInvocationIndex;
+        if (ray >= pc.rayCount) {
+            return;
+        }
+        direction = probeRayDirection(ray, pc.rayCount, pc.rayRotation);
+        target = probeRayTexel(slot, ray);
+    } else {
+        int face = int(gl_WorkGroupID.x);
+        ivec2 texel = ivec2(gl_LocalInvocationID.xy);
+        direction = probeCubeTexelDirection(face, vec2(texel), pc.jitter);
+        target = ivec2(face * kProbeCaptureFaceResolution, int(slot) * kProbeCaptureFaceResolution) + texel;
+    }
 
     FrameConstantsBuffer frame = pc.frameConstants;
     vec3 ambient = frame.values.ambientColor.rgb;

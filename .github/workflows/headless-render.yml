@@ -352,6 +352,7 @@ jobs:
           irradiance-probes|--settings config/ci/irradiance-probes.json
           irradiance-probes-ray-traced|--settings config/ci/irradiance-probes-ray-traced.json
           irradiance-probes-ray-traced-shadows|--settings config/ci/irradiance-probes-ray-traced-shadows.json
+          irradiance-probes-ray-traced-cube|--settings config/ci/irradiance-probes-ray-traced-cube.json
           irradiance-probes-ray-traced-declined|--settings config/ci/irradiance-probes-ray-traced.json --disable-ray-query
           gtao|--settings config/ci/gtao.json
           ssr-off|--settings config/ci/ssr-off.json

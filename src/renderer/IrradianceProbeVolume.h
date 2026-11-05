@@ -99,9 +99,17 @@ struct ProbeConvolvePushConstants {
     // Four to a vector because a push-constant array of scalars pads each
     // element to 16 bytes.
     std::array<glm::ivec4, kMaxProbesPerFrame / 4> probeIndices{};
+    // The rotated-ray layout: the rotation the trace fired with and how many
+    // rays it fired. Zero rays reads the capture as cube texels.
+    glm::vec4 rayRotation{0.0f, 0.0f, 0.0f, 1.0f};
+    uint32_t rayCount = 0;
+    // Sharpness of the depth convolution's lobe.
+    float depthLobeExponent = kProbeDepthLobeExponent;
+    uint32_t padding[2]{};
 };
 
-static_assert(sizeof(ProbeConvolvePushConstants) == 80);
+static_assert(sizeof(ProbeConvolvePushConstants) == 112);
+static_assert(offsetof(ProbeConvolvePushConstants, rayRotation) == 80);
 static_assert(sizeof(ProbeConvolvePushConstants) <= 128);
 static_assert(offsetof(ProbeConvolvePushConstants, probeIndices) == 16);
 
@@ -135,6 +143,20 @@ public:
     [[nodiscard]] glm::vec2 captureJitter() const
     {
         return captureJitter_;
+    }
+    // The rotated-ray layout for this frame's batch, latched by the frame that
+    // chose it: zero rays means the capture holds cube texels.
+    void setCaptureRays(uint32_t rayCount)
+    {
+        captureRayCount_ = std::min(rayCount, kProbeMaxRaysPerProbe);
+    }
+    [[nodiscard]] uint32_t captureRayCount() const
+    {
+        return captureRayCount_;
+    }
+    [[nodiscard]] glm::vec4 captureRayRotation() const
+    {
+        return captureRayRotation_;
     }
 
     // How much of a probe's previous value to keep. Held at zero until every
@@ -344,6 +366,8 @@ private:
     uint32_t updateCursor_ = 0;
     uint32_t updateIndex_ = 0;
     glm::vec2 captureJitter_{0.0f};
+    uint32_t captureRayCount_ = 0;
+    glm::vec4 captureRayRotation_{0.0f, 0.0f, 0.0f, 1.0f};
     float hysteresis_ = 0.0f;
     std::vector<uint32_t> captureBatch_;
     uint64_t capturedProbeCount_ = 0;

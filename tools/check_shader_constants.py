@@ -88,6 +88,8 @@ PAIRS: list[tuple[str, str, list[str]]] = [
             "kProbeTraceSurfaceOffset",
             "kProbeTraceConeSpread",
             "kProbeTraceMinCosine",
+            "kProbeMaxRaysPerProbe",
+            "kProbeRayAtlasRowTexels",
             "kProbeDepthLobeExponent",
             "kProbeMinVisibility",
             "kProbeBackfaceFloor",

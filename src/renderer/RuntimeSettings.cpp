@@ -195,6 +195,7 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     // resuming continues round-robin rather than restarting. The upper bound is
     // what the capture atlas is sized for.
     gi.probesPerFrame = std::clamp(gi.probesPerFrame, 0, static_cast<int>(renderer::kMaxProbesPerFrame));
+    gi.raysPerProbe = std::clamp(gi.raysPerProbe, 0, static_cast<int>(renderer::kProbeMaxRaysPerProbe));
     // Upper bound matches drawRenderTargetPreview, which clamps its tint at 16.
     gi.previewGain = std::clamp(gi.previewGain, 1.0f, 16.0f);
     gi.intensity = std::clamp(gi.intensity, 0.0f, 4.0f);
@@ -591,6 +592,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*gi, "bounceWeight", settings.gi.bounceWeight);
         readBool(*gi, "debugIrradianceOnly", settings.gi.debugIrradianceOnly);
         readBool(*gi, "rayTracedGather", settings.gi.rayTracedGather);
+        readInt(*gi, "raysPerProbe", settings.gi.raysPerProbe);
         readFloat(*gi, "gridOriginX", settings.gi.gridOrigin[0]);
         readFloat(*gi, "gridOriginY", settings.gi.gridOrigin[1]);
         readFloat(*gi, "gridOriginZ", settings.gi.gridOrigin[2]);
@@ -781,6 +783,7 @@ Json toJson(const RuntimeSettings& settings)
               {"bounceWeight", settings.gi.bounceWeight},
               {"debugIrradianceOnly", settings.gi.debugIrradianceOnly},
               {"rayTracedGather", settings.gi.rayTracedGather},
+              {"raysPerProbe", settings.gi.raysPerProbe},
               {"gridOriginX", settings.gi.gridOrigin[0]},
               {"gridOriginY", settings.gi.gridOrigin[1]},
               {"gridOriginZ", settings.gi.gridOrigin[2]},

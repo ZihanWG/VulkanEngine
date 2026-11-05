@@ -1992,6 +1992,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         irradianceProbes_.clearCaptureBatch();
     }
     frameProbeTraceActive_ = frameProbeCaptureActive_ && frameRayTracingSceneActive_ && isProbeTraceSelected();
+    // The capture's layout for this batch, latched with it: the trace writes it
+    // and the convolution reads it back, and the two must agree. Rotated rays
+    // exist only where rays are traced; the raster capture is always cube texels.
+    irradianceProbes_.setCaptureRays(frameProbeTraceActive_ ? static_cast<uint32_t>(giSettings_.raysPerProbe) : 0u);
     // Once per change of gather, so a headless run says which one it measured.
     if (frameProbeCaptureActive_) {
         const int gather = frameProbeTraceActive_ ? 1 : 0;

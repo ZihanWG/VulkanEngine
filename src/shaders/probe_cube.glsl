@@ -53,4 +53,28 @@ float probeCubeTexelSolidAngleAt(vec2 texel)
     return (4.0 / (size * size)) / (denominator * sqrt(denominator));
 }
 
+// --- Rotated rays ---------------------------------------------------------------
+
+// Mirrors ve::renderer::probeRayDirection: ray `ray` of a spherical Fibonacci set
+// of `rayCount`, turned by the unit quaternion `rotation` (xyz vector, w scalar).
+vec3 probeRayDirection(uint ray, uint rayCount, vec4 rotation)
+{
+    float count = float(max(rayCount, 1u));
+    float index = float(min(ray, max(rayCount, 1u) - 1u));
+    float turns = index * 0.6180339887;
+    float phi = 6.2831853 * (turns - floor(turns));
+    float cosTheta = 1.0 - (2.0 * index + 1.0) / count;
+    float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    vec3 direction = vec3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+    vec3 inner = cross(rotation.xyz, direction) + rotation.w * direction;
+    return direction + 2.0 * cross(rotation.xyz, inner);
+}
+
+// Mirrors ve::renderer::probeRayTexel.
+ivec2 probeRayTexel(uint slot, uint ray)
+{
+    return ivec2(int(ray % kProbeRayAtlasRowTexels),
+                 int(slot) * kProbeCaptureFaceResolution + int(ray / kProbeRayAtlasRowTexels));
+}
+
 #endif // VE_PROBE_CUBE_GLSL

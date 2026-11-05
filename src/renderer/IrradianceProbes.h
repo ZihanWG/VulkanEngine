@@ -230,6 +230,43 @@ inline constexpr float kProbeTraceMinCosine = 0.1f;
                                            uint32_t textureWidth,
                                            uint32_t textureHeight);
 
+// --- Rotated rays -------------------------------------------------------------
+//
+// The traced gather's second layout (gi.raysPerProbe > 0). Instead of one ray per
+// capture texel along fixed directions, each probe fires rayCount rays spread
+// evenly over the sphere by a spherical Fibonacci set, and the whole set is
+// turned by a fresh uniformly random rotation on every update -- DDGI's sampling.
+// The fixed texel directions repeat every update, jitter apart; rotated rays never
+// do, so successive updates sample independent directions and hysteresis
+// averages genuinely new information. The capture atlas holds the rays, one slot
+// row block per probe, so the layout needs no resource of its own.
+
+// Rays one probe may fire: exactly what a capture slot holds.
+inline constexpr uint32_t kProbeMaxRaysPerProbe = 1536;
+static_assert(kProbeMaxRaysPerProbe ==
+              kProbeCaptureFaceCount * kProbeCaptureFaceResolution * kProbeCaptureFaceResolution);
+// Texels in one row of the capture atlas, which is how the rays wrap.
+inline constexpr uint32_t kProbeRayAtlasRowTexels = 96;
+static_assert(kProbeRayAtlasRowTexels == kProbeCaptureFaceCount * kProbeCaptureFaceResolution);
+
+// Ray `ray` of `rayCount`, turned by `rotation` (a unit quaternion, xyz the
+// vector part, w the scalar). The unrotated set is a spherical Fibonacci lattice:
+// equal-area bands in z, golden-ratio steps in azimuth, so any count covers the
+// sphere evenly and the convolution can weight every ray the same.
+[[nodiscard]] glm::vec3 probeRayDirection(uint32_t ray, uint32_t rayCount, const glm::vec4& rotation);
+
+// The rotation for one update: uniformly distributed over all rotations
+// (Shoemake's method), from a hash of the update index so a run is reproducible.
+[[nodiscard]] glm::vec4 probeRayRotation(uint32_t updateIndex);
+
+// Where ray `ray` of capture slot `slot` lives in the capture atlas.
+[[nodiscard]] glm::uvec2 probeRayTexel(uint32_t slot, uint32_t ray);
+
+// The probe indices of a batch, four 8-bit indices to a word, as the trace's
+// push block carries them. Every probe index fits in eight bits.
+static_assert(kProbeCount <= 256);
+[[nodiscard]] glm::uvec4 packProbeIndices(const std::vector<uint32_t>& batch);
+
 // Mirrors the push block in probe_trace.comp. Device addresses as uint64_t so
 // this header stays free of Vulkan.
 struct ProbeTracePushConstants {
@@ -249,10 +286,17 @@ struct ProbeTracePushConstants {
     // camera's shadow rays (rayTracedShadowRayLength).
     float sunRayLength = 0.0f;
     uint32_t probeCount = 0;
-    // Grid index per capture slot, four to an ivec4, as in the convolution.
-    glm::ivec4 probeIndices[kMaxProbesPerFrame / 4]{};
+    // Grid index per capture slot, packed by packProbeIndices.
+    glm::uvec4 packedProbeIndices{0u};
+    // This update's rotation of the ray set (probeRayRotation). Unused when
+    // rayCount is zero.
+    glm::vec4 rayRotation{0.0f, 0.0f, 0.0f, 1.0f};
+    // Zero traces one ray per capture texel along the cube directions; non-zero
+    // fires this many rotated rays per probe.
+    uint32_t rayCount = 0;
+    uint32_t padding[3]{};
 };
-static_assert(sizeof(ProbeTracePushConstants) == 128, "probe trace push block exceeds the guaranteed minimum");
+static_assert(sizeof(ProbeTracePushConstants) == 112, "probe trace push block layout changed");
 
 // Where the grid sits in the world. Kept as data rather than constants so the
 // grid can be fitted to a scene later without touching the mapping code.

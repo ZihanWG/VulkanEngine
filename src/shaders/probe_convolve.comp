@@ -51,6 +51,12 @@ layout(push_constant) uniform ProbeConvolvePush {
     // end of a cycle, so "base + slot" is wrong on exactly the frames that are
     // hardest to notice being wrong.
     ivec4 probeIndices[4];
+    // The traced gather's rotated-ray layout: the rotation it fired with and how
+    // many rays it fired. Zero rays reads the capture as cube texels.
+    vec4 rayRotation;
+    uint rayCount;
+    // Sharpness of the depth lobe; kProbeDepthLobeExponent unless overridden.
+    float depthLobeExponent;
 } push;
 
 // The engine's octahedral decode. Identical to simple.frag, ssr_trace.frag,
@@ -82,6 +88,47 @@ vec3 probeCoreTexelDirection(ivec2 coreTexel, int resolution)
     return octDecode(octant);
 }
 
+// What the convolution accumulates for one output texel, over every sample.
+struct ConvolveSums {
+    vec3 radianceSum;
+    float radianceWeight;
+    float distanceSum;
+    float distanceSquaredSum;
+    float distanceWeight;
+};
+
+// One sample of the capture: the direction it came from, its share of the
+// sphere, and the radiance and distance it recorded.
+void accumulateSample(inout ConvolveSums sums,
+                      bool writesIrradiance,
+                      vec3 irradianceDirection,
+                      vec3 depthDirection,
+                      vec3 sampleDirection,
+                      float solidAngle,
+                      vec4 captured)
+{
+    if (writesIrradiance) {
+        float cosine = dot(irradianceDirection, sampleDirection);
+        if (cosine > 0.0) {
+            float weight = cosine * solidAngle;
+            sums.radianceSum += captured.rgb * weight;
+            sums.radianceWeight += weight;
+        }
+    }
+
+    float depthCosine = dot(depthDirection, sampleDirection);
+    if (depthCosine > 0.0) {
+        // A sharp lobe, because visibility in a direction has to describe what
+        // is actually in that direction. A cosine would average a wall together
+        // with the open space beside it and stop occluding anything.
+        float weight = pow(depthCosine, push.depthLobeExponent) * solidAngle;
+        float distance = min(captured.a, kProbeMaxDistance);
+        sums.distanceSum += distance * weight;
+        sums.distanceSquaredSum += distance * distance * weight;
+        sums.distanceWeight += weight;
+    }
+}
+
 void main()
 {
     int slot = int(gl_WorkGroupID.x);
@@ -100,46 +147,49 @@ void main()
         localTexel.x < kProbeIrradianceResolution && localTexel.y < kProbeIrradianceResolution;
     vec3 irradianceDirection = probeCoreTexelDirection(localTexel, kProbeIrradianceResolution);
 
-    vec3 radianceSum = vec3(0.0);
-    float radianceWeight = 0.0;
-    float distanceSum = 0.0;
-    float distanceSquaredSum = 0.0;
-    float distanceWeight = 0.0;
+    ConvolveSums sums;
+    sums.radianceSum = vec3(0.0);
+    sums.radianceWeight = 0.0;
+    sums.distanceSum = 0.0;
+    sums.distanceSquaredSum = 0.0;
+    sums.distanceWeight = 0.0;
 
-    for (int face = 0; face < kProbeCaptureFaceCount; ++face) {
-        int faceColumn = face * kProbeCaptureFaceResolution;
-        for (int y = 0; y < kProbeCaptureFaceResolution; ++y) {
-            for (int x = 0; x < kProbeCaptureFaceResolution; ++x) {
-                vec2 texel = vec2(float(x), float(y));
-                vec3 sampleDirection = probeCubeTexelDirection(face, texel, push.jitter);
-                float solidAngle = probeCubeTexelSolidAngleAt(texel);
-
-                vec4 captured = imageLoad(uCaptureAtlas, ivec2(faceColumn + x, captureRow + y));
-
-                if (writesIrradiance) {
-                    float cosine = dot(irradianceDirection, sampleDirection);
-                    if (cosine > 0.0) {
-                        float weight = cosine * solidAngle;
-                        radianceSum += captured.rgb * weight;
-                        radianceWeight += weight;
-                    }
-                }
-
-                float depthCosine = dot(depthDirection, sampleDirection);
-                if (depthCosine > 0.0) {
-                    // A sharp lobe, because visibility in a direction has to
-                    // describe what is actually in that direction. A cosine
-                    // would average a wall together with the open space beside
-                    // it and stop occluding anything.
-                    float weight = pow(depthCosine, kProbeDepthLobeExponent) * solidAngle;
-                    float distance = min(captured.a, kProbeMaxDistance);
-                    distanceSum += distance * weight;
-                    distanceSquaredSum += distance * distance * weight;
-                    distanceWeight += weight;
+    if (push.rayCount > 0u) {
+        // Rotated rays are spread evenly over the sphere, so each covers the same
+        // solid angle and its weight is a constant the normalisation divides out.
+        for (uint ray = 0u; ray < push.rayCount; ++ray) {
+            accumulateSample(sums,
+                             writesIrradiance,
+                             irradianceDirection,
+                             depthDirection,
+                             probeRayDirection(ray, push.rayCount, push.rayRotation),
+                             1.0,
+                             imageLoad(uCaptureAtlas, probeRayTexel(uint(slot), ray)));
+        }
+    } else {
+        // Cube texels, which shrink towards a face's corners. Nested in this
+        // order, face then row then column, as the convolution always has been.
+        for (int face = 0; face < kProbeCaptureFaceCount; ++face) {
+            int faceColumn = face * kProbeCaptureFaceResolution;
+            for (int y = 0; y < kProbeCaptureFaceResolution; ++y) {
+                for (int x = 0; x < kProbeCaptureFaceResolution; ++x) {
+                    vec2 texel = vec2(float(x), float(y));
+                    accumulateSample(sums,
+                                     writesIrradiance,
+                                     irradianceDirection,
+                                     depthDirection,
+                                     probeCubeTexelDirection(face, texel, push.jitter),
+                                     probeCubeTexelSolidAngleAt(texel),
+                                     imageLoad(uCaptureAtlas, ivec2(faceColumn + x, captureRow + y)));
                 }
             }
         }
     }
+    vec3 radianceSum = sums.radianceSum;
+    float radianceWeight = sums.radianceWeight;
+    float distanceSum = sums.distanceSum;
+    float distanceSquaredSum = sums.distanceSquaredSum;
+    float distanceWeight = sums.distanceWeight;
 
     float blend = clamp(push.hysteresis, 0.0, 1.0);
 

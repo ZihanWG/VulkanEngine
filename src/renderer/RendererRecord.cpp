@@ -293,16 +293,20 @@ void Renderer::recordProbeTracePass(VkCommandBuffer commandBuffer)
     push.jitter = irradianceProbes_.captureJitter();
     push.sunRayLength = frameRayTracedShadowRayLength_;
     push.probeCount = static_cast<uint32_t>(std::min<size_t>(batch.size(), renderer::kMaxProbesPerFrame));
-    for (uint32_t slot = 0; slot < push.probeCount; ++slot) {
-        push.probeIndices[slot / 4][slot % 4] = static_cast<int32_t>(batch[slot]);
-    }
+    push.packedProbeIndices = renderer::packProbeIndices(batch);
+    push.rayCount = irradianceProbes_.captureRayCount();
+    push.rayRotation = irradianceProbes_.captureRayRotation();
     vkCmdPushConstants(commandBuffer,
                        probeTracePipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
                        0,
                        static_cast<uint32_t>(sizeof(push)),
                        &push);
-    vkCmdDispatch(commandBuffer, renderer::kProbeCaptureFaceCount, push.probeCount, 1);
+    // Cube texels: a workgroup per face. Rotated rays: a workgroup per 256 rays.
+    constexpr uint32_t kRaysPerGroup = renderer::kProbeTraceLocalSize * renderer::kProbeTraceLocalSize;
+    const uint32_t groupsPerProbe =
+        push.rayCount > 0 ? (push.rayCount + kRaysPerGroup - 1) / kRaysPerGroup : renderer::kProbeCaptureFaceCount;
+    vkCmdDispatch(commandBuffer, groupsPerProbe, push.probeCount, 1);
 
     // Nothing is culled or recorded per probe here, so the raster capture's CPU
     // counters read zero rather than a stale count from the last raster frame.
