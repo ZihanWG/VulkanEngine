@@ -134,11 +134,11 @@ inline constexpr uint32_t kMaxProbesPerFrame = 16;
 // Visibility wants a much tighter filter than irradiance: a probe's stored
 // distance in a direction should describe what is actually in that direction,
 // not an average over the hemisphere, or a wall stops occluding anything.
-// DDGI uses 50 with a 256-ray budget and leans on temporal accumulation to make
-// that many samples enough. Until that phase exists this is deliberately
-// blunter, trading some sharpness for a result that does not swim frame to
-// frame at 1536 samples.
-inline constexpr float kProbeDepthLobeExponent = 20.0f;
+// DDGI's 50. It was 20 until it was measured: in the probe leak room 50 lets
+// through 36% less light than 20, and on every gather -- raster, cube rays,
+// rotated rays -- it moves flicker by under 0.01 of an 8-bit step. The default of
+// GiSettings::depthLobeExponent, which can override it at runtime.
+inline constexpr float kProbeDepthLobeExponent = 50.0f;
 
 // Floor under a probe's visibility weight. A hard zero puts a visible edge in
 // the shading wherever the weight crosses it, which reads as a crease that does

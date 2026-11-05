@@ -438,6 +438,52 @@ bool SceneBuilder::appendCornellBox(std::vector<RenderObject>& objects, std::str
     return true;
 }
 
+bool SceneBuilder::appendProbeLeakRoom(std::vector<RenderObject>& objects, std::string& status) const
+{
+    if (!cubeMesh_.valid() || materials_.size() <= kCornellWhiteMaterialIndex) {
+        status = "Probe leak room is unavailable: cube mesh or materials are not initialized.";
+        Logger::warn(status);
+        return false;
+    }
+
+    const auto addSlab = [this, &objects](std::string debugName, const glm::vec3& position, const glm::vec3& scale) {
+        RenderObject slab{};
+        slab.debugId = allocateDebugId_();
+        slab.sceneObjectId = slab.debugId;
+        slab.mesh = &cubeMesh_;
+        // The Cornell box's white: matte, and below 1.0 like every white here.
+        slab.material = &materials_.at(kCornellWhiteMaterialIndex);
+        slab.debugName = std::move(debugName);
+        slab.sourceType = RenderObjectSourceType::ProbeLeak;
+        slab.transform.position = position;
+        slab.transform.scale = scale;
+        slab.animateTransform = false;
+        slab.portfolioOnly = false;
+        slab.hideInPortfolio = true;
+        objects.push_back(std::move(slab));
+    };
+
+    constexpr float kHalf = kProbeLeakHalfExtent;
+    constexpr float kSize = kHalf * 2.0f;
+    constexpr float kHeight = kProbeLeakHeight;
+    constexpr float kThick = kProbeLeakWallThickness;
+    constexpr float kHalfThick = kThick * 0.5f;
+    // Walls overlap at the edges so no ray can slip through a seam; a gap there
+    // would be a real leak and would read as the probes' fault.
+    constexpr float kOuter = kSize + 2.0f * kThick;
+
+    objects.reserve(objects.size() + static_cast<size_t>(kProbeLeakObjectCount));
+    addSlab("Probe Leak Floor", {0.0f, -kHalfThick, 0.0f}, {kOuter, kThick, kOuter});
+    addSlab("Probe Leak Roof", {0.0f, kHeight + kHalfThick, 0.0f}, {kOuter, kThick, kOuter});
+    addSlab("Probe Leak Wall -X", {-kHalf - kHalfThick, kHeight * 0.5f, 0.0f}, {kThick, kHeight, kOuter});
+    addSlab("Probe Leak Wall +X", {kHalf + kHalfThick, kHeight * 0.5f, 0.0f}, {kThick, kHeight, kOuter});
+    addSlab("Probe Leak Wall -Z", {0.0f, kHeight * 0.5f, -kHalf - kHalfThick}, {kOuter, kHeight, kThick});
+    addSlab("Probe Leak Wall +Z", {0.0f, kHeight * 0.5f, kHalf + kHalfThick}, {kOuter, kHeight, kThick});
+
+    status = "Probe leak room active: sealed white room under the sun, probe grid straddling its walls.";
+    return true;
+}
+
 bool SceneBuilder::appendStressScene(std::vector<RenderObject>& objects, std::string& status) const
 {
     if (!cubeMesh_.valid() || !sphereMesh_.valid() || materials_.empty()) {
@@ -687,6 +733,17 @@ bool SceneBuilder::hasCornellBox(const std::vector<RenderObject>& objects)
         }
     }
     return count >= static_cast<size_t>(kCornellBoxObjectCount);
+}
+
+bool SceneBuilder::hasProbeLeakRoom(const std::vector<RenderObject>& objects)
+{
+    size_t count = 0;
+    for (const RenderObject& object : objects) {
+        if (object.sourceType == RenderObjectSourceType::ProbeLeak && object.mesh != nullptr) {
+            ++count;
+        }
+    }
+    return count >= static_cast<size_t>(kProbeLeakObjectCount);
 }
 
 bool SceneBuilder::hasOcclusionTest(const std::vector<RenderObject>& objects)

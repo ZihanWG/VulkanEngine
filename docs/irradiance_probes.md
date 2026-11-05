@@ -386,7 +386,7 @@ fetch the whole capture twice, and the fetch is the entire cost.
 | | filter | result |
 | --- | --- | --- |
 | Irradiance | cosine lobe, normalised | mean radiance arriving at a surface facing that way |
-| Visibility | cos^20 lobe, normalised | mean distance and mean distance squared |
+| Visibility | cos^50 lobe, normalised (`gi.depthLobeExponent`) | mean distance and mean distance squared |
 
 Normalising by the accumulated weight rather than multiplying by a constant is
 what makes the result independent of how the capture is discretised.
@@ -556,6 +556,61 @@ It is also lower than a per-frame accumulator would use (0.7 against DDGI's
 ~0.97), because a probe here is re-captured once per *cycle* rather than every
 frame: the same hysteresis costs sixty times the latency.
 
+## Measuring leaks
+
+Probe GI's characteristic artefact is light arriving through a wall, and it
+reads as a room softly lit from nowhere rather than as a bug, so it has to be
+measured rather than looked for. `--scene probe-leak` (debug UI: Scene Presets
+-> Probe leak room) is built so that one image gives the answer:
+
+- **A sealed white room under the sun.** Six slabs, overlapping at the edges so
+  no ray can slip through a seam; nothing inside emits or is lit directly, and
+  the skinned demo rig, which stands at the origin, is hidden.
+- **Probes on both sides of every wall.** Spacing 2 from -7 puts probe planes at
+  +-3 inside and +-5 outside walls at +-4, and at 4.5 and 6.5 around the roof at
+  5. The outside probes see sunlit walls; the inside ones see the room.
+- **A known answer.** With multi-bounce off (`gi.bounceWeight` 0), every inside
+  surface radiates the same albedo times ambient, so the true indirect light in
+  the room is uniform -- and leaking can only add to it. In the probe-only view
+  the darkest pixels are the true level and the mean's excess over it is the
+  leak.
+
+768 rotated rays, 16 probes a frame, frames 400-431 averaged, probe-only view at
+debug gain 1. The 5th percentile sat at 27.0/255 for every exponent, which is
+what makes it usable as the floor:
+
+| depth lobe exponent | mean | leak (mean - 27.0) | flicker, mean / p99 |
+| --- | --- | --- | --- |
+| 20 (before) | 33.34 | 6.34 | 0.018 / 0.17 |
+| 35 | 31.94 | 4.94 | 0.025 / 0.21 |
+| **50** | 31.06 | **4.06 (-36%)** | 0.029 / 0.18 |
+| 100 | 29.58 | 2.58 (-59%) | 0.033 / 0.28 |
+
+The fixed cube rays (`raysPerProbe` 0) leak the same: 6.33 at 20, 4.02 at 50.
+
+The worry that kept the exponent at 20 was noise -- fewer samples inside a
+sharper lobe. Measured on the Cornell box and the default scene with the
+convergence protocol above (hysteresis 0.7, 32 frozen frames, debug gain 0.5),
+it does not show on any gather:
+
+| gather | scene | flicker at 20, mean / p99 | at 50 | mean shift 20 -> 50 |
+| --- | --- | --- | --- | --- |
+| raster | Cornell | 0.188 / 1.28 | 0.189 / 1.28 | 0.26/255 |
+| raster | default | 0.171 / 0.86 | 0.173 / 0.86 | 0.29/255 |
+| cube rays | Cornell | 0.189 / 1.28 | 0.190 / 1.29 | 0.25/255 |
+| cube rays | default | 0.193 / 0.86 | 0.194 / 0.86 | 0.30/255 |
+| 768 rotated | Cornell | 0.096 / 0.71 | 0.098 / 0.73 | 0.25/255 |
+| 768 rotated | default | 0.112 / 0.45 | 0.114 / 0.45 | 0.31/255 |
+
+So the default is DDGI's 50. 100 halves the leak again but starts to cost: its
+flicker p99 in the leak room rises to 0.28, and on the Cornell box it moves 1.3%
+of pixels by more than 8/255 against 0.6% at 50 -- a change there is no ground
+truth to call an improvement. The exponent is a setting (`gi.depthLobeExponent`)
+for scenes that want the trade the other way.
+
+What the sharper lobe did not change is the pattern: the interior's spatial
+variation stayed at 0.136 of the mean at every exponent. See Limitations.
+
 ## The Cornell box scene
 
 Under **Scene** tab → **Scene Presets → Cornell box**. A closed room with white floor, ceiling
@@ -715,6 +770,7 @@ preset opens the Inspector on this tab.
 | Probes per frame | Round-robin batch size; 0 pauses capture without losing the cursor |
 | Intensity | How strongly probe irradiance replaces the constant environment term. Zero disables the lookup outright |
 | Surface bias | How far off a surface the grid is sampled from. The one parameter that wants tuning per scene |
+| Depth lobe exponent | Sharpness of the visibility lobe. 50 by default; higher leaks less and flickers more |
 | Hysteresis | Fraction of a probe's previous value kept on re-capture. Zero overwrites, which is the reference to compare against |
 | Debug: probe irradiance only | The indirect term alone, bypassing exposure and tone mapping |
 | Debug pattern | Fills tiles with the direction each texel stands for instead of captured radiance |
@@ -828,9 +884,11 @@ brightness knob.
 - **Visibility is a statistical bound, not an occlusion test.** Thin geometry,
   and surfaces close to a probe relative to the 16x16 visibility resolution, can
   still leak.
-- **The depth lobe exponent is blunted** to 20 against DDGI's 50, to stay stable
-  at 1536 samples. Sub-texel jitter reduces aliasing but does not decorrelate
-  captures the way a random rotation would, so raising it is not yet earned.
+- **The interior of the leak room is still not uniform.** A sharper lobe cut the
+  leaked light by a third but left the spatial variation where it was (0.136 of
+  the mean at every exponent): the blotch pattern is not mostly leak. The
+  visibility and backface floors (0.02, 0.2), which let a rejected probe keep a
+  sliver of weight, are the next suspects; not yet measured.
 - **Capture shading is not the main pass's shading.** No normal maps, no
   specular, and the lambert is unnormalised, so probe irradiance is
   self-consistent rather than physically matched to the direct term.
@@ -838,9 +896,7 @@ brightness knob.
   probe beyond the cascade distance gathers unshadowed sunlight. The ray-traced
   gather shadows its hits with rays and does not have this limit.
 - **Rotated rays still feed the round-robin update.** A probe is updated once a
-  cycle with the cycle-length hysteresis, not every frame at DDGI's 0.97, and the
-  depth lobe is still the blunted 20 -- whether the rotation has earned a sharper
-  one is the next measurement, not a conclusion.
+  cycle with the cycle-length hysteresis, not every frame at DDGI's 0.97.
 - **Below about 512 rays the rotated layout loses to the fixed one** on these
   scenes (256 is worse on every column), so the setting is not a free quality
   knob in both directions.

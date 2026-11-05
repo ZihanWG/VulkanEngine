@@ -472,6 +472,7 @@ void IrradianceProbeVolume::recordConvolve(VkCommandBuffer commandBuffer)
     pushConstants.jitter = captureJitter_;
     pushConstants.rayRotation = captureRayRotation_;
     pushConstants.rayCount = captureRayCount_;
+    pushConstants.depthLobeExponent = depthLobeExponent_;
     for (size_t slot = 0; slot < captureBatch_.size() && slot < kMaxProbesPerFrame; ++slot) {
         pushConstants.probeIndices[slot / 4][slot % 4] = static_cast<int32_t>(captureBatch_[slot]);
     }

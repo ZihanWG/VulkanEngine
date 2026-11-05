@@ -2784,6 +2784,7 @@ void Renderer::clampRuntimeSettings()
     // grid placement cannot drift from the settings it came from.
     irradianceProbes_.setBounds(giGridBounds());
     irradianceProbes_.setHysteresis(giSettings_.hysteresis);
+    irradianceProbes_.setDepthLobeExponent(giSettings_.depthLobeExponent);
 
     // GPU occlusion tuning is renderer state, not part of the settings structs,
     // so it stays here.

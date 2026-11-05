@@ -680,6 +680,11 @@ void Renderer::drawIrradianceProbesDebugUi()
     ImGui::SetItemTooltip("How far off a surface the grid is sampled from, in world units.\n"
                           "Too small and flat surfaces self-occlude into darkness; too large\n"
                           "and light leaks through thin geometry.");
+    ImGui::SliderFloat("Depth lobe exponent", &giSettings_.depthLobeExponent, 1.0f, 200.0f, "%.0f");
+    ImGui::SetItemTooltip("How sharply a probe's stored visibility describes each direction.\n"
+                          "Higher sees walls more sharply and leaks less light through them,\n"
+                          "but averages fewer rays per direction, so it is noisier.\n"
+                          "Takes effect as probes are re-gathered.");
     ImGui::SliderFloat("Hysteresis", &giSettings_.hysteresis, 0.0f, 0.99f, "%.2f");
     ImGui::SetItemTooltip("How much of a probe's previous value survives a re-capture.\n"
                           "Zero overwrites, which is the reference to compare against;\n"
@@ -1828,6 +1833,21 @@ void Renderer::drawScenePresetDebugUi()
         cornellBoxSceneStatus_ = "Cornell box inactive; default scene and sun restored.";
     }
     ImGui::TextWrapped("Status: %s", cornellBoxSceneStatus_.c_str());
+
+    ImGui::SeparatorText("Probe leak room");
+    ImGui::TextDisabled("A sealed white room under the sun, with the probe grid straddling its");
+    ImGui::TextDisabled("walls. Nothing lights the inside, so any indirect light that brightens");
+    ImGui::TextDisabled("near a wall came through it: the scene probe leaking is measured in.");
+    if (ImGui::Button("Load Probe Leak Room")) {
+        loadProbeLeakScene();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Exit Probe Leak Room")) {
+        probeLeakSceneActive_ = false;
+        resetCameraToDefault();
+        probeLeakSceneStatus_ = "Probe leak room inactive; default scene restored.";
+    }
+    ImGui::TextWrapped("Status: %s", probeLeakSceneStatus_.c_str());
 }
 
 void Renderer::drawPortfolioCaptureDebugUi()

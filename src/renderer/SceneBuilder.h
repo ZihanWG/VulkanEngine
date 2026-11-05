@@ -72,6 +72,21 @@ constexpr int kCornellBoxObjectCount = 7;
 // Interior half-extent. The room spans [-half, half] in X and Z and [0, 2*half]
 // in Y, open toward +Z so a camera can see in.
 constexpr float kCornellBoxHalfExtent = 5.0f;
+// The probe leak room: six white slabs sealing an interior that spans
+// [-half, half] in X and Z and [0, height] in Y. Nothing lights the interior, so
+// with multi-bounce off every inside surface has the same radiance -- albedo
+// times the ambient term -- and the true indirect light inside is uniform. Any
+// brightening near a wall is light the probe grid let through it.
+constexpr int kProbeLeakObjectCount = 6;
+constexpr float kProbeLeakHalfExtent = 4.0f;
+constexpr float kProbeLeakHeight = 5.0f;
+constexpr float kProbeLeakWallThickness = 0.25f;
+// Grid fitted so every wall falls between two probe planes, one inside and one
+// outside: spacing 2 from -7 puts probes at +-3 and +-5 around walls at +-4, and
+// at y 4.5 and 6.5 around the ceiling at 5.
+constexpr float kProbeLeakGridSpacing = 2.0f;
+constexpr float kProbeLeakGridOriginXZ = -7.0f;
+constexpr float kProbeLeakGridOriginY = 0.5f;
 constexpr int kOcclusionTestGridColumns = 12;
 constexpr int kOcclusionTestGridRows = 10;
 constexpr int kOcclusionTestOccluderCount = 5;
@@ -194,6 +209,7 @@ public:
     // one red and one green side wall, and two blocks. Returns false and writes
     // `status` when the cube mesh or the Cornell materials are unavailable.
     bool appendCornellBox(std::vector<RenderObject>& objects, std::string& status) const;
+    bool appendProbeLeakRoom(std::vector<RenderObject>& objects, std::string& status) const;
 
     // Appends the stress scene: a ground slab, a row of occluder slabs, and a
     // kStressGridColumns x kStressGridRows grid alternating cube and sphere.
@@ -219,6 +235,7 @@ public:
     [[nodiscard]] static bool hasPortfolioShowcase(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasOcclusionTest(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasCornellBox(const std::vector<RenderObject>& objects);
+    [[nodiscard]] static bool hasProbeLeakRoom(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasStressScene(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasFragmentStressScene(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasSunlitYard(const std::vector<RenderObject>& objects);

@@ -32,7 +32,9 @@ enum class RenderObjectSourceType {
     // every other scene is ambient-dominated, with an umbra at 31.8/255 against
     // a lit floor at 80, which is why shadow work has had to be judged from
     // patch means rather than from the picture.
-    SunlitYard
+    SunlitYard,
+    // The sealed room the probe leak measurement looks into.
+    ProbeLeak
 };
 
 struct RenderObject {
