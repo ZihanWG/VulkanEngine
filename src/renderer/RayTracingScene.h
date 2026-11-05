@@ -94,6 +94,8 @@ struct RayTracingInstanceInput {
     // pre-skins and refits it from jointPalette first whenever skinnedPose
     // differs from the pose it was last refitted to.
     bool skinned = false;
+    // The draw item's material is double-sided (kRtInstanceFlagDoubleSided).
+    bool doubleSided = false;
     VkDeviceAddress jointPalette = 0;
     // SkinnedMesh::poseHash of the palette jointPalette holds. A skinned input
     // without one casts nothing, like one without a palette.

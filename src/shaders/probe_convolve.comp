@@ -57,6 +57,8 @@ layout(push_constant) uniform ProbeConvolvePush {
     uint rayCount;
     // Sharpness of the depth lobe; kProbeDepthLobeExponent unless overridden.
     float depthLobeExponent;
+    // Non-zero classifies the probe from its back-face hits; see below.
+    uint classify;
 } push;
 
 // The engine's octahedral decode. Identical to simple.frag, ssr_trace.frag,
@@ -95,6 +97,10 @@ struct ConvolveSums {
     float distanceSum;
     float distanceSquaredSum;
     float distanceWeight;
+    // Samples whose ray hit the back of a single-sided surface, and all samples.
+    // Every thread walks every sample, so every thread holds the same counts.
+    uint backFaceSamples;
+    uint samples;
 };
 
 // One sample of the capture: the direction it came from, its share of the
@@ -116,13 +122,20 @@ void accumulateSample(inout ConvolveSums sums,
         }
     }
 
+    sums.samples += 1u;
+    // The traced gather writes a back-face hit's distance negated; the raster
+    // capture's distances are never negative, so it never classifies.
+    if (captured.a < 0.0) {
+        sums.backFaceSamples += 1u;
+    }
+
     float depthCosine = dot(depthDirection, sampleDirection);
     if (depthCosine > 0.0) {
         // A sharp lobe, because visibility in a direction has to describe what
         // is actually in that direction. A cosine would average a wall together
         // with the open space beside it and stop occluding anything.
         float weight = pow(depthCosine, push.depthLobeExponent) * solidAngle;
-        float distance = min(captured.a, kProbeMaxDistance);
+        float distance = min(abs(captured.a), kProbeMaxDistance);
         sums.distanceSum += distance * weight;
         sums.distanceSquaredSum += distance * distance * weight;
         sums.distanceWeight += weight;
@@ -153,6 +166,8 @@ void main()
     sums.distanceSum = 0.0;
     sums.distanceSquaredSum = 0.0;
     sums.distanceWeight = 0.0;
+    sums.backFaceSamples = 0u;
+    sums.samples = 0u;
 
     if (push.rayCount > 0u) {
         // Rotated rays are spread evenly over the sphere, so each covers the same
@@ -201,7 +216,13 @@ void main()
         // a ramp, and averages the jittered captures into angular detail no
         // single 16x16 capture holds.
         vec3 previous = imageLoad(uIrradianceAtlas, target).rgb;
-        imageStore(uIrradianceAtlas, target, vec4(mix(irradiance, previous, blend), 1.0));
+        // Alpha is the probe's state, not blended: 1 lights surfaces, 0 is a
+        // probe inside geometry, which shading leaves out. Constant over the
+        // tile -- the border copies it -- so a bilinear fetch returns it
+        // exactly. Mirrors ve::renderer::probeIsInsideGeometry.
+        bool inside = push.classify != 0u &&
+                      float(sums.backFaceSamples) > kProbeInsideBackFaceFraction * float(sums.samples);
+        imageStore(uIrradianceAtlas, target, vec4(mix(irradiance, previous, blend), inside ? 0.0 : 1.0));
     }
 
     float meanDistance = distanceWeight > 0.0 ? distanceSum / distanceWeight : kProbeMaxDistance;

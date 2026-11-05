@@ -680,6 +680,28 @@ void Renderer::drawFrame()
                                                                   context_.graphicsQueue()));
         }
     }
+    if (probeClassificationReportFrame_ != 0 && frameClock_.frameCount() >= probeClassificationReportFrame_) {
+        probeClassificationReportFrame_ = 0;
+        // Only where it means something: probes on, gathered by rays, and
+        // classifying. Every other configuration leaves every alpha at one.
+        if (giSettings_.enabled && giSettings_.probeClassification && isProbeTraceSelected()) {
+            const std::optional<std::vector<uint32_t>> inside =
+                irradianceProbes_.probesInsideGeometry(commandContext_.commandPool(), context_.graphicsQueue());
+            if (inside.has_value()) {
+                // The indices too, so a count can be checked probe by probe
+                // against where the geometry actually is.
+                std::string indices;
+                for (const uint32_t probe : *inside) {
+                    indices += (indices.empty() ? "" : " ") + std::to_string(probe);
+                }
+                Logger::info("Irradiance probe classification: " + std::to_string(inside->size()) + " of " +
+                             std::to_string(renderer::kProbeCount) + " probes inside geometry, left out of shading: [" +
+                             indices + "]");
+            } else {
+                Logger::error("Irradiance probe classification: could not read the atlas back.");
+            }
+        }
+    }
     if (vsmPagePoolDumpTargetFrame_ != 0 && frameClock_.frameCount() >= vsmPagePoolDumpTargetFrame_) {
         vsmPagePoolDumpTargetFrame_ = 0;
         // Every failure path inside the dump logs its own reason, so the caller has
@@ -1033,6 +1055,9 @@ void Renderer::requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path
     }
 
     frameCapture_ = renderer::FrameCaptureRequest{frameNumber, 1, std::move(outputPath), false};
+    // The probe classification is reported at the same frame, so a headless run
+    // says how many probes the captured image was lit without.
+    probeClassificationReportFrame_ = frameNumber;
     frameCaptureIncludesUi_ = includeUi;
     Logger::info("Frame capture requested at frame " + std::to_string(frameNumber) + " -> " +
                  frameCapture_.output.string() + (includeUi ? " (including the ImGui overlay)" : ""));
@@ -2785,6 +2810,7 @@ void Renderer::clampRuntimeSettings()
     irradianceProbes_.setBounds(giGridBounds());
     irradianceProbes_.setHysteresis(giSettings_.hysteresis);
     irradianceProbes_.setDepthLobeExponent(giSettings_.depthLobeExponent);
+    irradianceProbes_.setClassifyProbes(giSettings_.probeClassification);
 
     // GPU occlusion tuning is renderer state, not part of the settings structs,
     // so it stays here.

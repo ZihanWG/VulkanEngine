@@ -326,6 +326,11 @@ float probeDirectionWeight(const glm::vec3& surfaceNormal, const glm::vec3& dire
     return wrapped * wrapped + kProbeBackfaceFloor;
 }
 
+bool probeIsInsideGeometry(uint32_t backFaceSamples, uint32_t samples)
+{
+    return static_cast<float>(backFaceSamples) > kProbeInsideBackFaceFraction * static_cast<float>(samples);
+}
+
 float probeBounceAmplification(float albedo, float bounceWeight)
 {
     const float gain = std::clamp(albedo, 0.0f, 1.0f) * std::clamp(bounceWeight, 0.0f, 1.0f);

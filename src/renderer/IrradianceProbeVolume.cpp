@@ -5,6 +5,8 @@
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
 
+#include <glm/gtc/packing.hpp>
+
 #include <algorithm>
 #include <array>
 #include <exception>
@@ -168,7 +170,9 @@ void IrradianceProbeVolume::createAtlases()
     // R16G16B16A16_SFLOAT is one of the formats Vulkan requires storage-image
     // support for, so there is no format fallback path to get wrong.
     irradianceInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-    irradianceInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    // Transfer source for the classification readback
+    // (countProbesInsideGeometry), a debug path that copies the tiles back.
+    irradianceInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     irradianceInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     irradianceInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     irradianceInfo.debugName = "ProbeIrradianceAtlas";
@@ -288,6 +292,114 @@ void IrradianceProbeVolume::updateShadingParams(VkCommandBuffer commandBuffer, c
     dependency.bufferMemoryBarrierCount = 1;
     dependency.pBufferMemoryBarriers = &barrier;
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
+std::optional<std::vector<uint32_t>> IrradianceProbeVolume::probesInsideGeometry(VkCommandPool commandPool,
+                                                                                 VkQueue queue)
+{
+    if (!hasAtlases() || commandPool == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
+        return std::nullopt;
+    }
+    const VkDevice device = context_->vkDevice();
+    const glm::uvec2 size = probeAtlasSize(kProbeIrradianceResolution);
+    // R16G16B16A16_SFLOAT.
+    const size_t texelCount = static_cast<size_t>(size.x) * size.y;
+    const VkDeviceSize byteCount = static_cast<VkDeviceSize>(texelCount) * 4u * sizeof(uint16_t);
+
+    vkDeviceWaitIdle(device);
+
+    rhi::VulkanBufferCreateInfo bufferInfo{};
+    bufferInfo.size = byteCount;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+    bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    rhi::VulkanBuffer staging;
+    staging.createBuffer(*context_, bufferInfo);
+    if (!staging.valid()) {
+        return std::nullopt;
+    }
+
+    VkCommandBufferAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocateInfo.commandPool = commandPool;
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer) != VK_SUCCESS) {
+        return std::nullopt;
+    }
+
+    // Back to the layout the graph tracks afterwards, so the next frame's first
+    // barrier starts from what the image is really in.
+    const VkImageLayout restoreLayout = irradianceAtlasLayout_ == VK_IMAGE_LAYOUT_UNDEFINED
+                                            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                            : irradianceAtlasLayout_;
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    barrier.oldLayout = irradianceAtlasLayout_;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = irradianceAtlas_.image();
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {size.x, size.y, 1};
+    vkCmdCopyImageToBuffer(
+        commandBuffer, irradianceAtlas_.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging.buffer(), 1, &region);
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = restoreLayout;
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    const VkResult submitted = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (submitted == VK_SUCCESS) {
+        vkQueueWaitIdle(queue);
+        irradianceAtlasLayout_ = restoreLayout;
+    }
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    if (submitted != VK_SUCCESS) {
+        return std::nullopt;
+    }
+
+    std::vector<uint16_t> raw(texelCount * 4u);
+    staging.download(std::as_writable_bytes(std::span<uint16_t>(raw.data(), raw.size())));
+    std::vector<uint32_t> inside;
+    for (uint32_t probe = 0; probe < kProbeCount; ++probe) {
+        // The centre of the probe's core square: alpha is constant over the tile.
+        const glm::uvec2 texel = probeTileOrigin(probe, kProbeIrradianceResolution) +
+                                 glm::uvec2{kProbeBorderTexels + kProbeIrradianceResolution / 2};
+        const size_t index = (static_cast<size_t>(texel.y) * size.x + texel.x) * 4u + 3u;
+        if (glm::unpackHalf1x16(raw[index]) < 0.5f) {
+            inside.push_back(probe);
+        }
+    }
+    return inside;
 }
 
 void IrradianceProbeVolume::createSampler()
@@ -473,6 +585,7 @@ void IrradianceProbeVolume::recordConvolve(VkCommandBuffer commandBuffer)
     pushConstants.rayRotation = captureRayRotation_;
     pushConstants.rayCount = captureRayCount_;
     pushConstants.depthLobeExponent = depthLobeExponent_;
+    pushConstants.classify = classifyProbes_ ? 1u : 0u;
     for (size_t slot = 0; slot < captureBatch_.size() && slot < kMaxProbesPerFrame; ++slot) {
         pushConstants.probeIndices[slot / 4][slot % 4] = static_cast<int32_t>(captureBatch_[slot]);
     }

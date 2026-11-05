@@ -440,6 +440,10 @@ struct GiSettings {
     // measurable noise cost; see docs/irradiance_probes.md#measuring-leaks.
     // Mirrors renderer::kProbeDepthLobeExponent.
     float depthLobeExponent = 50.0f;
+    // Leave out probes buried in geometry: a traced probe whose rays mostly hit
+    // the backs of single-sided surfaces sees only the inside of the mesh around
+    // it, and would light nearby surfaces with that. Traced gather only.
+    bool probeClassification = true;
 };
 
 // Internal render resolution as a fraction of the presentation resolution. The

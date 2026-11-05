@@ -67,12 +67,16 @@ inline constexpr uint32_t kRtVertexNormalOffsetFloats = 8;
 // on every frame that traces with the pose moved (skin_positions.comp), three
 // floats per vertex, in workgroups of this many threads.
 inline constexpr uint32_t kRtSkinnedPositionStrideFloats = 3;
-// What the skinned caster's instance carries in its shader-binding-table offset,
-// a 24-bit field ray queries never consume: the one way a shader can tell this
-// instance's geometry record names bare positions rather than renderer::Vertex.
-// Every other instance carries zero. Only the probe gather reads it -- shadow
-// rays never look at an opaque hit's geometry.
-inline constexpr uint32_t kRtSkinnedInstanceTag = 1;
+// Bits an instance carries in its shader-binding-table offset, a 24-bit field ray
+// queries never consume -- the one per-instance word a shader can read back from
+// a hit. Only the probe gather reads them; shadow rays never look at an opaque
+// hit's attributes.
+//   skinned       the geometry record names bare pre-skinned positions rather
+//                 than renderer::Vertex;
+//   double-sided  the material is double-sided, so a hit on its back is a
+//                 surface seen from behind, not a probe inside a closed mesh.
+inline constexpr uint32_t kRtInstanceFlagSkinned = 1;
+inline constexpr uint32_t kRtInstanceFlagDoubleSided = 2;
 inline constexpr uint32_t kRtPreSkinLocalSize = 64;
 
 // Workgroups that cover vertexCount with kRtPreSkinLocalSize threads each; the

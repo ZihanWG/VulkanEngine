@@ -2735,6 +2735,7 @@ void Renderer::writeRayTracingInstances(uint32_t frameIndex)
         input.model = frameModelMatrices_[drawItem.objectIndex];
         input.frameDataIndex = drawItem.frameDataIndex;
         input.kind = kind;
+        input.doubleSided = drawItem.doubleSided;
         rayTracingInstanceInputs_.push_back(input);
     }
     // The skinned mesh casts under exactly the cascades' condition for it, and
