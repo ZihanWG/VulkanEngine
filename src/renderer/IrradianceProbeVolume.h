@@ -79,6 +79,14 @@ struct ProbeShadingParams {
 
 static_assert(sizeof(ProbeShadingParams) == 48);
 
+// The same buffer carries every probe's relocation offset after the parameters:
+// one vec4 per probe (xyz offset from the grid point, w unused), written by the
+// convolution and read wherever a probe's position is. Behind the parameters
+// rather than in a buffer of its own so every reader already binds it.
+inline constexpr VkDeviceSize kProbeOffsetsByteOffset = sizeof(ProbeShadingParams);
+inline constexpr VkDeviceSize kProbeOffsetsByteSize = static_cast<VkDeviceSize>(kProbeCount) * 16u;
+inline constexpr VkDeviceSize kProbeShadingBufferSize = kProbeOffsetsByteOffset + kProbeOffsetsByteSize;
+
 enum class ProbeAtlasTarget : int32_t {
     Irradiance = 0,
     Depth = 1
@@ -108,7 +116,8 @@ struct ProbeConvolvePushConstants {
     float depthLobeExponent = kProbeDepthLobeExponent;
     // Non-zero classifies probes inside geometry from their back-face hits.
     uint32_t classify = 0;
-    uint32_t padding = 0;
+    // Non-zero moves probes by probeRelocationStep.
+    uint32_t relocate = 0;
 };
 
 static_assert(sizeof(ProbeConvolvePushConstants) == 112);
@@ -174,6 +183,21 @@ public:
     void setClassifyProbes(bool classify)
     {
         classifyProbes_ = classify;
+    }
+    void setRelocateProbes(bool relocate)
+    {
+        relocateProbes_ = relocate;
+    }
+    // Zeroes every probe's offset with the next parameter update. For when the
+    // offsets stop meaning anything: relocation turned off, the gather no
+    // longer traced, or the grid moved under them.
+    void resetProbeOffsets()
+    {
+        offsetsResetPending_ = true;
+    }
+    [[nodiscard]] VkDeviceSize shadingParamsBufferSize() const
+    {
+        return kProbeShadingBufferSize;
     }
     void setHysteresis(float hysteresis)
     {
@@ -319,6 +343,8 @@ public:
     // readback, never the frame path -- it idles the queue, like the shadow-mask
     // dump. Empty when the copy could not be made.
     [[nodiscard]] std::optional<std::vector<uint32_t>> probesInsideGeometry(VkCommandPool commandPool, VkQueue queue);
+    // Every probe's relocation offset, read back the same way.
+    [[nodiscard]] std::optional<std::vector<glm::vec3>> probeOffsets(VkCommandPool commandPool, VkQueue queue);
 
     // Buffer the material descriptor sets bind at the shading-params binding.
     // One buffer rather than one per frame: it is refreshed with a 48-byte
@@ -344,6 +370,11 @@ public:
     }
     void setBounds(const ProbeGridBounds& bounds)
     {
+        // Offsets are relative to the grid points, so a grid that moved or
+        // changed its spacing has none that still mean anything.
+        if (bounds.origin != bounds_.origin || bounds.spacing != bounds_.spacing) {
+            offsetsResetPending_ = true;
+        }
         bounds_ = bounds;
     }
 
@@ -389,6 +420,9 @@ private:
     float hysteresis_ = 0.0f;
     float depthLobeExponent_ = kProbeDepthLobeExponent;
     bool classifyProbes_ = true;
+    bool relocateProbes_ = false;
+    // Starts true: the buffer's offsets are undefined until zeroed once.
+    bool offsetsResetPending_ = true;
     std::vector<uint32_t> captureBatch_;
     uint64_t capturedProbeCount_ = 0;
     // Owned by this class but driven by the render graph, which transitions both

@@ -331,6 +331,34 @@ bool probeIsInsideGeometry(uint32_t backFaceSamples, uint32_t samples)
     return static_cast<float>(backFaceSamples) > kProbeInsideBackFaceFraction * static_cast<float>(samples);
 }
 
+glm::vec3 probeRelocationStep(const ProbeRelocationInput& input)
+{
+    const float smallestSpacing = std::min({input.spacing.x, input.spacing.y, input.spacing.z});
+    const float minFrontFace = kProbeMinFrontFaceFraction * smallestSpacing;
+    glm::vec3 next = input.offset;
+    if (probeIsInsideGeometry(input.backFaceSamples, input.samples) &&
+        input.closestBackFaceDistance < kProbeMaxDistance) {
+        // Out through the nearest back face, and half the margin past it.
+        next = input.offset + input.closestBackFaceDirection * (input.closestBackFaceDistance + 0.5f * minFrontFace);
+    } else if (input.closestFrontFaceDistance < minFrontFace) {
+        // Directly away from the nearest surface, by what it is short of.
+        next = input.offset - input.closestFrontFaceDirection * (minFrontFace - input.closestFrontFaceDistance);
+    } else {
+        // Clear of everything: back towards the grid point by as much as the
+        // clearance allows, so offsets stay as small as the geometry lets them.
+        const float length = glm::length(input.offset);
+        if (length > 0.0f) {
+            const float back = std::min(input.closestFrontFaceDistance - minFrontFace, length);
+            next = input.offset - input.offset / length * back;
+        }
+    }
+    const glm::vec3 limit = kProbeMaxOffsetFraction * input.spacing;
+    if (std::abs(next.x) > limit.x || std::abs(next.y) > limit.y || std::abs(next.z) > limit.z) {
+        return input.offset;
+    }
+    return next;
+}
+
 float probeBounceAmplification(float albedo, float bounceWeight)
 {
     const float gain = std::clamp(albedo, 0.0f, 1.0f) * std::clamp(bounceWeight, 0.0f, 1.0f);

@@ -444,6 +444,14 @@ struct GiSettings {
     // the backs of single-sided surfaces sees only the inside of the mesh around
     // it, and would light nearby surfaces with that. Traced gather only.
     bool probeClassification = true;
+    // Move probes out of geometry and off surfaces they sit too close to, rather
+    // than only leaving the buried ones out: each update nudges a probe's offset
+    // from its grid point (renderer::probeRelocationStep). Traced gather only;
+    // offsets reset to the grid whenever it is not running. Off by default: it
+    // works -- buried probes walk out -- but it darkens Sponza's probe view by
+    // 16% broadly, and there is no ground truth yet to say that is better; see
+    // docs/irradiance_probes.md#relocation.
+    bool probeRelocation = false;
 };
 
 // Internal render resolution as a fraction of the presentation resolution. The

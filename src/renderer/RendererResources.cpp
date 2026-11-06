@@ -1720,7 +1720,8 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     VkDescriptorBufferInfo probeParamsInfo{};
     probeParamsInfo.buffer = irradianceProbes_.shadingParamsBuffer();
     probeParamsInfo.offset = 0;
-    probeParamsInfo.range = sizeof(renderer::ProbeShadingParams);
+    // The whole buffer: the parameters and every probe's relocation offset.
+    probeParamsInfo.range = irradianceProbes_.shadingParamsBufferSize();
 
     const bool punctualAtlasAvailable = punctualShadows_.valid();
     VkDescriptorImageInfo punctualShadowInfo{};

@@ -127,6 +127,8 @@ layout(set = 0, binding = 8) uniform sampler3D uFogVolume;
 // the surface asking.
 layout(set = 0, binding = 9) uniform sampler2D uProbeIrradianceAtlas;
 layout(set = 0, binding = 10) uniform sampler2D uProbeDepthAtlas;
+#include "irradiance_probes.glsl"
+
 layout(set = 0, binding = 11) uniform ProbeShadingParams {
     // xyz = grid origin, w = intensity (zero disables the lookup)
     vec4 gridOrigin;
@@ -134,6 +136,9 @@ layout(set = 0, binding = 11) uniform ProbeShadingParams {
     vec4 gridSpacing;
     // x != 0 outputs probe irradiance alone instead of shaded colour
     vec4 debug;
+    // xyz = this probe's relocation offset from its grid point (zero unless
+    // gi.probeRelocation moved it); written by the convolution.
+    vec4 probeOffsets[kProbeCount];
 } probeParams;
 
 // Denoised ambient occlusion. The GTAO pass writes this later in the same
@@ -554,7 +559,6 @@ vec3 cascadeDepthDeltaDebugColor(float deltaWorld)
 // divergence produces lighting that is plausible and wrong rather than obviously
 // broken.
 
-#include "irradiance_probes.glsl"
 
 // The engine's octahedral encode, identical to octEncode above; named separately
 // only to keep the probe block self-contained and easy to compare against the
@@ -629,7 +633,9 @@ vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection, 
                           ivec3(kProbeGridX - 1u, kProbeGridY - 1u, kProbeGridZ - 1u));
         uint probeIndex = uint(coord.x) + uint(coord.y) * kProbeGridX + uint(coord.z) * kProbeGridX * kProbeGridY;
 
-        vec3 probePosition = probeParams.gridOrigin.xyz + vec3(coord) * spacing;
+        // Where the probe actually is: its grid point plus any relocation. The
+        // trilinear weights stay on the grid cell.
+        vec3 probePosition = probeParams.gridOrigin.xyz + vec3(coord) * spacing + probeParams.probeOffsets[probeIndex].xyz;
         vec3 toProbe = probePosition - biased;
         float distanceToProbe = length(toProbe);
         vec3 directionToProbe = distanceToProbe > 1.0e-6 ? toProbe / distanceToProbe : normal;

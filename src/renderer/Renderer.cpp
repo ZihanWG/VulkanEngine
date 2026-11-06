@@ -1069,10 +1069,28 @@ void Renderer::logProbeClassification()
     // sweep's few frames -- reports a partial count that has to read as partial.
     const uint64_t gathered =
         std::min<uint64_t>(irradianceProbes_.capturedProbeCount(), static_cast<uint64_t>(renderer::kProbeCount));
+    // How far relocation has moved the grid, from the offsets read back.
+    std::string relocation;
+    if (giSettings_.probeRelocation) {
+        const std::optional<std::vector<glm::vec3>> offsets =
+            irradianceProbes_.probeOffsets(commandContext_.commandPool(), context_.graphicsQueue());
+        if (offsets.has_value()) {
+            uint32_t moved = 0;
+            float farthest = 0.0f;
+            for (const glm::vec3& offset : *offsets) {
+                const float length = glm::length(offset);
+                moved += length > 0.0f ? 1u : 0u;
+                farthest = std::max(farthest, length);
+            }
+            char farthestText[32];
+            std::snprintf(farthestText, sizeof(farthestText), "%.3f", static_cast<double>(farthest));
+            relocation = "; " + std::to_string(moved) + " relocated, farthest " + farthestText;
+        }
+    }
     Logger::info("Irradiance probe classification: " + std::to_string(inside->size()) + " of " +
                  std::to_string(renderer::kProbeCount) + " probes inside geometry, left out of shading (" +
-                 std::to_string(gathered) + " of " + std::to_string(renderer::kProbeCount) + " gathered so far): [" +
-                 indices + "]");
+                 std::to_string(gathered) + " of " + std::to_string(renderer::kProbeCount) + " gathered so far" +
+                 relocation + "): [" + indices + "]");
 }
 
 void Renderer::requestFrameSequenceCaptureAt(uint64_t firstFrame,

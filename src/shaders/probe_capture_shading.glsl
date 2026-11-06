@@ -231,7 +231,7 @@ vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection, 
         uint probeIndex = uint(coord.x) + uint(coord.y) * kProbeGridX +
                           uint(coord.z) * kProbeGridX * kProbeGridY;
 
-        vec3 probePosition = probeParams.gridOrigin.xyz + vec3(coord) * spacing;
+        vec3 probePosition = probeParams.gridOrigin.xyz + vec3(coord) * spacing + probeParams.probeOffsets[probeIndex].xyz;
         vec3 toProbe = probePosition - biased;
         float distanceToProbe = length(toProbe);
         vec3 directionToProbe = distanceToProbe > 1.0e-6 ? toProbe / distanceToProbe : normal;

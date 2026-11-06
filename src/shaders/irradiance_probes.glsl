@@ -27,6 +27,7 @@
 const uint kProbeGridX = 8u;
 const uint kProbeGridY = 4u;
 const uint kProbeGridZ = 8u;
+const uint kProbeCount = kProbeGridX * kProbeGridY * kProbeGridZ;
 
 // Octahedral tile resolutions, before the border texel.
 const int kProbeIrradianceResolution = 8;
@@ -86,5 +87,11 @@ const float kProbeBackfaceFloor = 0.0;
 // single-sided surface is inside geometry, and shading leaves it out. DDGI's
 // value. See ve::renderer::probeIsInsideGeometry.
 const float kProbeInsideBackFaceFraction = 0.25;
+
+// Relocation (gi.probeRelocation): a probe nearer a front face than this share
+// of the smallest spacing is moved away from it, and no offset reaches the
+// second share of the spacing on any axis. See ve::renderer::probeRelocationStep.
+const float kProbeMinFrontFaceFraction = 0.2;
+const float kProbeMaxOffsetFraction = 0.45;
 
 #endif // VE_IRRADIANCE_PROBES_GLSL

@@ -34,6 +34,14 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(set = 0, binding = 0, rgba16f) uniform image2D uIrradianceAtlas;
 layout(set = 0, binding = 1, rg16f) uniform image2D uDepthAtlas;
 layout(set = 0, binding = 2, rgba16f) uniform readonly image2D uCaptureAtlas;
+// The shading-parameter buffer, the same bytes the shading binds as a uniform
+// block: this pass writes the relocation offsets behind the parameters.
+layout(set = 0, binding = 3, std430) buffer ProbeParamsStorage {
+    vec4 gridOrigin;
+    vec4 gridSpacing;
+    vec4 debug;
+    vec4 probeOffsets[kProbeCount];
+} probeData;
 
 layout(push_constant) uniform ProbeConvolvePush {
     int probeCount;
@@ -59,6 +67,8 @@ layout(push_constant) uniform ProbeConvolvePush {
     float depthLobeExponent;
     // Non-zero classifies the probe from its back-face hits; see below.
     uint classify;
+    // Non-zero moves the probe by the relocation step; see below.
+    uint relocate;
 } push;
 
 // The engine's octahedral decode. Identical to simple.frag, ssr_trace.frag,
@@ -101,6 +111,10 @@ struct ConvolveSums {
     // Every thread walks every sample, so every thread holds the same counts.
     uint backFaceSamples;
     uint samples;
+    // The nearest hit of each kind, from where the probe stands: direction in
+    // xyz, distance in w (kProbeMaxDistance when there was none).
+    vec4 closestBackFace;
+    vec4 closestFrontFace;
 };
 
 // One sample of the capture: the direction it came from, its share of the
@@ -127,6 +141,11 @@ void accumulateSample(inout ConvolveSums sums,
     // capture's distances are never negative, so it never classifies.
     if (captured.a < 0.0) {
         sums.backFaceSamples += 1u;
+        if (-captured.a < sums.closestBackFace.w) {
+            sums.closestBackFace = vec4(sampleDirection, -captured.a);
+        }
+    } else if (captured.a < sums.closestFrontFace.w) {
+        sums.closestFrontFace = vec4(sampleDirection, captured.a);
     }
 
     float depthCosine = dot(depthDirection, sampleDirection);
@@ -140,6 +159,31 @@ void accumulateSample(inout ConvolveSums sums,
         sums.distanceSquaredSum += distance * distance * weight;
         sums.distanceWeight += weight;
     }
+}
+
+// Mirrors ve::renderer::probeRelocationStep.
+vec3 probeRelocationStep(vec3 offset, vec3 spacing, ConvolveSums sums)
+{
+    float smallestSpacing = min(spacing.x, min(spacing.y, spacing.z));
+    float minFrontFace = kProbeMinFrontFaceFraction * smallestSpacing;
+    vec3 next = offset;
+    bool inside = float(sums.backFaceSamples) > kProbeInsideBackFaceFraction * float(sums.samples);
+    if (inside && sums.closestBackFace.w < kProbeMaxDistance) {
+        next = offset + sums.closestBackFace.xyz * (sums.closestBackFace.w + 0.5 * minFrontFace);
+    } else if (sums.closestFrontFace.w < minFrontFace) {
+        next = offset - sums.closestFrontFace.xyz * (minFrontFace - sums.closestFrontFace.w);
+    } else {
+        float len = length(offset);
+        if (len > 0.0) {
+            float back = min(sums.closestFrontFace.w - minFrontFace, len);
+            next = offset - offset / len * back;
+        }
+    }
+    vec3 limit = kProbeMaxOffsetFraction * spacing;
+    if (any(greaterThan(abs(next), limit))) {
+        return offset;
+    }
+    return next;
 }
 
 void main()
@@ -168,6 +212,8 @@ void main()
     sums.distanceWeight = 0.0;
     sums.backFaceSamples = 0u;
     sums.samples = 0u;
+    sums.closestBackFace = vec4(0.0, 0.0, 0.0, kProbeMaxDistance);
+    sums.closestFrontFace = vec4(0.0, 0.0, 0.0, kProbeMaxDistance);
 
     if (push.rayCount > 0u) {
         // Rotated rays are spread evenly over the sphere, so each covers the same
@@ -205,6 +251,14 @@ void main()
     float distanceSum = sums.distanceSum;
     float distanceSquaredSum = sums.distanceSquaredSum;
     float distanceWeight = sums.distanceWeight;
+
+    // One thread moves the probe for its next capture. Every thread holds the
+    // same sums, having walked the same samples.
+    if (push.relocate != 0u && localTexel == ivec2(0)) {
+        vec3 spacing = max(probeData.gridSpacing.xyz, vec3(1.0e-4));
+        probeData.probeOffsets[probeIndex].xyz =
+            probeRelocationStep(probeData.probeOffsets[probeIndex].xyz, spacing, sums);
+    }
 
     float blend = clamp(push.hysteresis, 0.0, 1.0);
 

@@ -45,6 +45,9 @@ layout(set = 0, binding = 11) uniform ProbeShadingParams {
     vec4 gridOrigin;   // xyz = origin, w = intensity
     vec4 gridSpacing;  // xyz = spacing, w = surface bias
     vec4 debug;
+    // xyz = this probe's relocation offset from its grid point (zero unless
+    // gi.probeRelocation moved it); written by the convolution.
+    vec4 probeOffsets[kProbeCount];
 } probeParams;
 layout(set = 0, binding = 16) uniform accelerationStructureEXT uSceneTopLevel;
 layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
@@ -125,8 +128,11 @@ void main()
     uint probeIndex = (pc.packedProbeIndices[slot >> 2u] >> (8u * (slot & 3u))) & 0xFFu;
     // The grid position the shading lookup and the raster capture use:
     // ve::renderer::probeWorldPosition through the shading parameters.
+    // Plus the probe's relocation offset: the rays leave from where the probe is,
+    // and the convolution measures the next offset from what they hit.
     vec3 probePosition = probeParams.gridOrigin.xyz +
-                         vec3(probeGridCoord(probeIndex)) * max(probeParams.gridSpacing.xyz, vec3(1.0e-4));
+                         vec3(probeGridCoord(probeIndex)) * max(probeParams.gridSpacing.xyz, vec3(1.0e-4)) +
+                         probeParams.probeOffsets[probeIndex].xyz;
 
     vec3 direction;
     ivec2 target;
