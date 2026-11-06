@@ -68,18 +68,43 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Package downloads, carried between runs. Ubuntu's Azure mirror serves
+      # some runners at a crawl -- 42.7 MB in 17 min 41 s (40 kB/s) was
+      # measured -- and with seven jobs a run waits for its slowest, so one
+      # stalled download turned four-minute runs into forty. Index refreshes
+      # stayed fast (seconds); only the .deb downloads crawled. With the
+      # archives restored, apt fetches nothing that has not changed since. The
+      # key moves with this file; restore-keys still hand back the previous
+      # entry, so a change to the package list fetches only what is new.
+      - name: Restore downloaded apt packages
+        id: apt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/apt-archives
+          key: apt-noble-build-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: apt-noble-build-
+
+      # The SDK pieces this job uses rather than the vulkan-sdk metapackage
+      # (Qt, slang, dxc and more); see headless-render.yml. LunarG's package
+      # names, so the versions are unchanged: shaderc is glslc, and the
+      # spirv-cross below resolves to LunarG's as it did before, which is what
+      # keeps the shader-interface reflection identical.
       - name: Install the Vulkan SDK (glslc, headers, loader)
         run: |
           wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
             | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc > /dev/null
           sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
             https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+          mkdir -p "$HOME/apt-archives/partial"
           sudo apt-get update
-          sudo apt-get install -y vulkan-sdk
+          sudo apt-get -o Dir::Cache::Archives="$HOME/apt-archives" -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
+            libvulkan-dev \
+            shaderc \
+            vulkan-headers
 
       - name: Install build and windowing dependencies
         run: |
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get -o Dir::Cache::Archives="$HOME/apt-archives" -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
             build-essential \
             ccache \
             cmake \
@@ -99,17 +124,30 @@ jobs:
             spirv-cross \
             wayland-protocols \
             xorg-dev
+          # apt downloaded as root; the cache action reads as the runner user.
+          sudo chown -R "$USER" "$HOME/apt-archives"
+
+      # Straight after the installs rather than at the end of the job, so a
+      # later failure still leaves the cache filled. Skipped on an exact hit;
+      # when several jobs miss together the first save wins and the rest only
+      # warn.
+      - name: Save downloaded apt packages
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
 
       - name: Verify Vulkan headers and shader compiler
         run: |
           cmake --version
           ninja --version
           test -f /usr/include/vulkan/vulkan.h || {
-            echo "Vulkan headers are unavailable; the vulkan-sdk package did not install them." >&2
+            echo "Vulkan headers are unavailable; the vulkan-headers package did not install them." >&2
             exit 1
           }
           command -v glslc || {
-            echo "glslc is unavailable; the vulkan-sdk package did not provide it." >&2
+            echo "glslc is unavailable; the shaderc package did not provide it." >&2
             exit 1
           }
           glslc --version
