@@ -242,6 +242,12 @@ public:
     // includeUi records the copy after the ImGui pass instead of before it, which
     // is the only way a scripted run can see the debug panel at all.
     void requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath, bool includeUi = false);
+    // Logs which probes the traced gather has left out as inside geometry, from
+    // a readback that idles the device. Runs on a capture frame by itself; the
+    // application also calls it when a frame budget runs out, so a headless run
+    // with no capture -- the CI sweep -- still reports. Silent unless probes are
+    // on, traced and classifying.
+    void logProbeClassification();
     // Captures `frameCount` consecutive frames from `firstFrame` into
     // `outputDirectory` as frame_0000.png onwards (--capture-sequence). The same
     // readback as a single capture, armed on every frame of the range; each

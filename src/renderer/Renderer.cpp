@@ -682,25 +682,7 @@ void Renderer::drawFrame()
     }
     if (probeClassificationReportFrame_ != 0 && frameClock_.frameCount() >= probeClassificationReportFrame_) {
         probeClassificationReportFrame_ = 0;
-        // Only where it means something: probes on, gathered by rays, and
-        // classifying. Every other configuration leaves every alpha at one.
-        if (giSettings_.enabled && giSettings_.probeClassification && isProbeTraceSelected()) {
-            const std::optional<std::vector<uint32_t>> inside =
-                irradianceProbes_.probesInsideGeometry(commandContext_.commandPool(), context_.graphicsQueue());
-            if (inside.has_value()) {
-                // The indices too, so a count can be checked probe by probe
-                // against where the geometry actually is.
-                std::string indices;
-                for (const uint32_t probe : *inside) {
-                    indices += (indices.empty() ? "" : " ") + std::to_string(probe);
-                }
-                Logger::info("Irradiance probe classification: " + std::to_string(inside->size()) + " of " +
-                             std::to_string(renderer::kProbeCount) + " probes inside geometry, left out of shading: [" +
-                             indices + "]");
-            } else {
-                Logger::error("Irradiance probe classification: could not read the atlas back.");
-            }
-        }
+        logProbeClassification();
     }
     if (vsmPagePoolDumpTargetFrame_ != 0 && frameClock_.frameCount() >= vsmPagePoolDumpTargetFrame_) {
         vsmPagePoolDumpTargetFrame_ = 0;
@@ -1061,6 +1043,36 @@ void Renderer::requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path
     frameCaptureIncludesUi_ = includeUi;
     Logger::info("Frame capture requested at frame " + std::to_string(frameNumber) + " -> " +
                  frameCapture_.output.string() + (includeUi ? " (including the ImGui overlay)" : ""));
+}
+
+void Renderer::logProbeClassification()
+{
+    // Only where it means something: probes on, gathered by rays, and
+    // classifying. Every other configuration leaves every alpha at one.
+    if (!giSettings_.enabled || !giSettings_.probeClassification || !isProbeTraceSelected()) {
+        return;
+    }
+    const std::optional<std::vector<uint32_t>> inside =
+        irradianceProbes_.probesInsideGeometry(commandContext_.commandPool(), context_.graphicsQueue());
+    if (!inside.has_value()) {
+        Logger::error("Irradiance probe classification: could not read the atlas back.");
+        return;
+    }
+    // The indices too, so a count can be checked probe by probe against where
+    // the geometry actually is.
+    std::string indices;
+    for (const uint32_t probe : *inside) {
+        indices += (indices.empty() ? "" : " ") + std::to_string(probe);
+    }
+    // How much of the grid has been gathered at all: a probe not yet traced still
+    // holds its neutral seed, which counts as outside, so a short run -- the CI
+    // sweep's few frames -- reports a partial count that has to read as partial.
+    const uint64_t gathered =
+        std::min<uint64_t>(irradianceProbes_.capturedProbeCount(), static_cast<uint64_t>(renderer::kProbeCount));
+    Logger::info("Irradiance probe classification: " + std::to_string(inside->size()) + " of " +
+                 std::to_string(renderer::kProbeCount) + " probes inside geometry, left out of shading (" +
+                 std::to_string(gathered) + " of " + std::to_string(renderer::kProbeCount) + " gathered so far): [" +
+                 indices + "]");
 }
 
 void Renderer::requestFrameSequenceCaptureAt(uint64_t firstFrame,

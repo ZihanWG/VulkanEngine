@@ -244,6 +244,9 @@ void Application::mainLoop()
         // exitAfterFrames, so this can only ever extend the run by the grace
         // window below.
         if (config_.exitAfterFrames != 0 && framesDrawn >= config_.exitAfterFrames && !captureOutstanding) {
+            // After the last frame and before teardown: the probe state the run
+            // ended with, so a sweep leg's log says what was classified.
+            renderer_->logProbeClassification();
             break;
         }
 
