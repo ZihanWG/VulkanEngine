@@ -103,18 +103,45 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Package downloads, carried between runs. Ubuntu's Azure mirror serves
+      # some runners at a crawl -- 42.7 MB in 17 min 41 s (40 kB/s) was
+      # measured -- and with seven jobs a run waits for its slowest, so one
+      # stalled download turned four-minute runs into forty. Index refreshes
+      # stayed fast (seconds); only the .deb downloads crawled. With the
+      # archives restored, apt fetches nothing that has not changed since. The
+      # key moves with this file; restore-keys still hand back the previous
+      # entry, so a change to the package list fetches only what is new.
+      - name: Restore downloaded apt packages
+        id: apt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/apt-archives
+          key: apt-noble-headless-${{ hashFiles('.github/workflows/headless-render.yml') }}
+          restore-keys: apt-noble-headless-
+
+      # The SDK pieces this job uses, not the vulkan-sdk metapackage: that one
+      # is 118 packages and 94 MB, including Qt5 and Qt6 for its GUI tools,
+      # slang, dxc and gfxreconstruct, none of which a headless render needs.
+      # The package names are LunarG's, so the versions are the ones the
+      # metapackage installed: shaderc is glslc, vulkan-tools is vulkaninfo.
       - name: Install the Vulkan SDK (glslc, headers, loader, validation layers)
         run: |
           wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
             | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc > /dev/null
           sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
             https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+          mkdir -p "$HOME/apt-archives/partial"
           sudo apt-get update
-          sudo apt-get install -y vulkan-sdk
+          sudo apt-get -o Dir::Cache::Archives="$HOME/apt-archives" -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
+            libvulkan-dev \
+            shaderc \
+            vulkan-headers \
+            vulkan-tools \
+            vulkan-validationlayers
 
       - name: Install build, windowing, and software-rasterizer dependencies
         run: |
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get -o Dir::Cache::Archives="$HOME/apt-archives" -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
             build-essential \
             ccache \
             cmake \
@@ -135,6 +162,19 @@ jobs:
             wayland-protocols \
             xorg-dev \
             xvfb
+          # apt downloaded as root; the cache action reads as the runner user.
+          sudo chown -R "$USER" "$HOME/apt-archives"
+
+      # Straight after the installs rather than at the end of the job, so a
+      # later failure still leaves the cache filled. Skipped on an exact hit;
+      # when several jobs miss together the first save wins and the rest only
+      # warn.
+      - name: Save downloaded apt packages
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
 
       # The ICD filename is not stable across Mesa releases (lvp_icd.json on
       # Mesa 25.x, lvp_icd.<arch>.json on older packages), so discover it and
