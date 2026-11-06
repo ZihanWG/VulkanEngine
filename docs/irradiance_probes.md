@@ -717,9 +717,15 @@ default); the raster capture has no way to tell, and never classifies.
 
 ### Checked probe by probe
 
-A capture run logs the classification at its capture frame, by index (`Irradiance
-probe classification: N of 256 probes inside geometry, left out of shading:
-[...]`), from a readback of the irradiance tiles. On the Cornell box the grid
+A run logs the classification by index, from a readback of the irradiance
+tiles -- at its capture frame, and when an `--exit-after-frames` budget runs
+out, so the CI sweep's legs report it too (`Irradiance probe classification: N
+of 256 probes inside geometry, left out of shading (G of 256 gathered so far):
+[...]`). The gathered count matters for short runs: a probe not yet traced
+holds its neutral seed and counts as outside, so the sweep's 10 frames at 4
+probes a frame report the Cornell box as 1 of 256 with 40 gathered -- probe 34,
+the one buried probe among the first 40 -- which is as checkable as the full
+answer. On the Cornell box the grid
 spans the interior at 1.2 m, so some probes fall inside the two blocks: computed
 from the blocks' boxes and the grid, exactly 19, and the classification logs the
 same 19 indices, no more and no fewer. (A first version of that check rotated
