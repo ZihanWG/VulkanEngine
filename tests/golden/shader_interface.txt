@@ -131,7 +131,7 @@ probe_capture.vert
   push_constant pc : PushConstants{objectFrameData:ObjectFrameDataBuffer{objects[0]:ObjectFrameData{model:mat4@0, baseColorFactor:vec4@64, materialParams:vec4@80, textureIndices:uvec4@96, emissiveFactor:vec4@112, prevMvpNoJitter:mat4@128}@0}*@0, frameConstants:FrameConstantsBuffer{values:FrameConstants{cascadeViewProjection[4]:mat4@0, jitteredViewProjection:mat4@256, viewProjection:mat4@320, lightDirection:vec4@384, lightColor:vec4@400, ambientColor:vec4@416, cascadeSplits:vec4@432, shadowSettings:vec4@448, cameraPosition:vec4@464, cameraForward:vec4@480, shadowQuality:vec4@496, vsmLightView:mat4@512, vsmPageTable:uvec4@576, vsmParams:vec4@592, vsmCamera:vec4@608, rayTracedShadow:uvec4@624, rayTracedShadowParams:vec4@640}@0}*@8, faceViewProjection:mat4@16, probePosition:vec4@80}
 
 probe_convolve.comp
-  push_constant push : ProbeConvolvePush{probeCount:int@0, hysteresis:float@4, jitter:vec2@8, probeIndices[4]:ivec4@16, rayRotation:vec4@80, rayCount:uint@96, depthLobeExponent:float@100}
+  push_constant push : ProbeConvolvePush{probeCount:int@0, hysteresis:float@4, jitter:vec2@8, probeIndices[4]:ivec4@16, rayRotation:vec4@80, rayCount:uint@96, depthLobeExponent:float@100, classify:uint@104}
   set=0 binding=0   images       uIrradianceAtlas : image2D
   set=0 binding=1   images       uDepthAtlas : image2D
   set=0 binding=2   images       uCaptureAtlas : image2D

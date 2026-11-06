@@ -662,7 +662,88 @@ The surface bias stays where it was. It is the larger lever in the leak room,
 but it is a trade against light through thin geometry that each scene makes
 differently: 1.0 moves 17% of the Cornell box's pixels and 12% of the default
 scene's by more than 8/255, and a fixed distance cannot suit every probe
-spacing. Scaling it with the spacing, as DDGI does, is the open question.
+spacing.
+
+### Scaling the bias with the spacing: measured, deferred
+
+The obvious fix is DDGI's: make the bias a fraction of the grid's smallest
+spacing, so one value means the same offset relative to the probes on any grid.
+It was built -- the distance computed on the CPU from the fraction, so the
+shaders were untouched -- and measured, probe-only view, against the fixed 0.3:
+
+| fraction | leak room (2 m spacing), leak | Cornell (1.2 m), px moved > 8/255 | default (3 m) | Sponza (3 m) |
+| --- | --- | --- | --- | --- |
+| 0.15 | 1.69 | 1.6% | 0.1% | 24% |
+| 0.225 (DDGI's effective value) | 1.08 | 0.1% | 1.4% | 34% |
+| 0.25 | 0.93 | 0% | 2.3% | 36%, mean -15% |
+| 0.5 | 0.24 | 4.0% | 60% | 72% |
+
+The leak room improves steadily and 0.25 reproduces the Cornell box, but no
+fraction leaves both kinds of grid where they were: the fixed 0.3 had been
+tuned, in effect, on the Cornell box's 1.2 m spacing, and every fraction that
+keeps it moves the 3 m grids a lot. In Sponza the move is not the localised
+removal of leaked light the backface floor gave -- it darkens curtains, floor
+and walls alike. Sponza's grid is the default one, not fitted to the building,
+so probes sit inside its columns and walls, and a longer offset plausibly pulls
+the lookup towards them; that is the reading, not a measurement. Choosing the
+fraction needs either a ground truth for Sponza or a grid without probes buried
+in geometry, so it waits for probe classification.
+
+## Probes inside geometry
+
+A grid is placed without regard to what is in the scene, so some probes land
+inside walls, columns and blocks. Such a probe sees only the inside of the mesh
+around it, and it hands that to every surface nearby. With the traced gather
+those probes can be found and left out (`gi.probeClassification`, on by
+default); the raster capture has no way to tell, and never classifies.
+
+- **The trace marks back-face hits.** A hit where the ray travels with the
+  authored normal hit the back of the surface -- the same test that flips the
+  normal for the two-sided shading, so it does not depend on the winding
+  convention. It does not count on a double-sided material, whose back is a real
+  surface, nor on the skinned caster; both reach the shader as bits in the TLAS
+  instance's shader-binding-table offset. The hit's distance is written negated,
+  so the capture atlas needs no extra channel.
+- **The convolution classifies.** Every thread already walks every ray of its
+  probe, so every thread can count the back-face hits without a reduction. More
+  than a quarter (DDGI's threshold) and the probe is inside. The visibility
+  convolution reads the distance's magnitude, so the depth a probe stores does
+  not change.
+- **The verdict lives in the irradiance tile's alpha**, which was a constant 1.
+  It is constant over the tile, the border copies it, and so a bilinear fetch
+  returns it exactly. Shading multiplies each probe's weight by it, and where
+  every surrounding probe is out, falls back to the environment term rather
+  than to black. No buffer, binding or pass was added.
+
+### Checked probe by probe
+
+A capture run logs the classification at its capture frame, by index (`Irradiance
+probe classification: N of 256 probes inside geometry, left out of shading:
+[...]`), from a readback of the irradiance tiles. On the Cornell box the grid
+spans the interior at 1.2 m, so some probes fall inside the two blocks: computed
+from the blocks' boxes and the grid, exactly 19, and the classification logs the
+same 19 indices, no more and no fewer. (A first version of that check rotated
+the blocks the wrong way and disagreed on three probes near their corners; the
+classification was right.)
+
+| scene | probes inside geometry | probe-only view against classification off |
+| --- | --- | --- |
+| leak room | 0 | identical |
+| default | 0 | identical |
+| Cornell box | 19 | 18% of pixels change: the dark smudges beside the tall block and on the floor next to it go |
+| Sponza | 40 | mean 64.4 -> 73.4, brighter almost everywhere |
+
+The scenes with nothing buried render bit-identically to classification off,
+which is the check that it costs nothing where it has nothing to do; so does the
+whole frame with it switched off. Sponza's default grid is not fitted to the
+building, and 40 of its 256 probes were inside columns and walls, averaging their
+insides into the arcades. That is also the confounder the spacing-scaled bias ran
+into above -- it darkened Sponza broadly -- so that question can be asked again
+on a grid that no longer drags buried probes in.
+
+Probes are left out, not moved. A probe just inside a wall takes its share of the
+grid with it, and the surfaces that relied on it are lit by fewer probes;
+relocation, which moves such a probe out instead, is not done.
 
 ## The Cornell box scene
 
@@ -930,8 +1011,9 @@ brightness knob.
   than derived, so absolute indirect intensity is a tuning parameter.
 - **The grid is fixed and hand-placed.** Origin and spacing are settings. There
   is no fitting to scene bounds, no cascaded or nested volumes, and no probe
-  relocation — a probe that lands inside geometry stays there and contributes
-  whatever it sees from in there.
+  relocation. The traced gather leaves a probe inside geometry out of shading
+  ([Probes inside geometry](#probes-inside-geometry)); the raster capture cannot
+  tell, and such a probe there still contributes whatever it sees from inside.
 - **A probe outside the volume clamps to the edge probes.** Correct in the sense
   of bounded, but a large scene with a small grid is lit by its border.
 - **Visibility is a statistical bound, not an occlusion test.** Thin geometry,

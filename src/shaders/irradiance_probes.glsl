@@ -82,4 +82,9 @@ const float kProbeDepthLobeExponent = 50.0;
 const float kProbeMinVisibility = 0.02;
 const float kProbeBackfaceFloor = 0.0;
 
+// A traced probe more than this share of whose rays hit the back of a
+// single-sided surface is inside geometry, and shading leaves it out. DDGI's
+// value. See ve::renderer::probeIsInsideGeometry.
+const float kProbeInsideBackFaceFraction = 0.25;
+
 #endif // VE_IRRADIANCE_PROBES_GLSL

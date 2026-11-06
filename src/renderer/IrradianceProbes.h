@@ -157,6 +157,17 @@ inline constexpr float kProbeMinVisibility = 0.02f;
 // the lit space behind them. See docs/irradiance_probes.md#what-makes-the-pattern.
 inline constexpr float kProbeBackfaceFloor = 0.0f;
 
+// A probe is inside geometry when more than this share of its rays hit the back
+// of a single-sided surface: a probe in the open sees front faces, one buried in
+// a wall or a column sees the inside of the mesh around it. DDGI's value. Only
+// the traced gather can tell, since only a ray knows which side it hit; the
+// convolution decides and stores the verdict in the irradiance tile's alpha,
+// which shading multiplies each probe's weight by.
+inline constexpr float kProbeInsideBackFaceFraction = 0.25f;
+
+// The convolution's test, for the CPU and the tests.
+[[nodiscard]] bool probeIsInsideGeometry(uint32_t backFaceSamples, uint32_t samples);
+
 // Fraction of a probe's previous value kept when it is re-captured.
 //
 // Lower than a per-frame accumulator like DDGI's would use, because a probe here

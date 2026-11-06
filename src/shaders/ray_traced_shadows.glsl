@@ -18,9 +18,10 @@ const uint kRtVertexNormalOffsetFloats = 8u;
 // R32G32B32_SFLOAT stream the skinned BLAS is built and refitted from.
 const uint kRtSkinnedPositionStrideFloats = 3u;
 
-// The skinned caster's instance shader-binding-table offset, which marks its
-// geometry record as bare positions. Zero on every other instance.
-const uint kRtSkinnedInstanceTag = 1u;
+// Bits of an instance's shader-binding-table offset; see
+// ve::renderer::kRtInstanceFlagSkinned.
+const uint kRtInstanceFlagSkinned = 1u;
+const uint kRtInstanceFlagDoubleSided = 2u;
 
 // Threads per pre-skin workgroup.
 const uint kRtPreSkinLocalSize = 64u;

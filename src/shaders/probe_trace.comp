@@ -177,8 +177,8 @@ void main()
     uint primitive = uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, true));
     vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
     mat4x3 objectToWorld = rayQueryGetIntersectionObjectToWorldEXT(query, true);
-    bool skinned = rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(query, true) ==
-                   kRtSkinnedInstanceTag;
+    uint instanceFlags = rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(query, true);
+    bool skinned = (instanceFlags & kRtInstanceFlagSkinned) != 0u;
     vec3 weights = vec3(1.0 - barycentrics.x - barycentrics.y, barycentrics.x, barycentrics.y);
 
     RtGeometryRecord record = pc.geometry.records[frameDataIndex];
@@ -233,9 +233,18 @@ void main()
     normal = normalLength > 0.0 ? normal / normalLength : faceNormal;
     // Two-sided, as the raster capture: a probe inside a room sees the inward
     // face of walls authored facing out.
-    if (dot(normal, direction) > 0.0) {
+    //
+    // The same test says the ray hit the back of the surface -- judged against
+    // the authored normal, so it does not depend on the winding convention. A
+    // probe whose rays mostly do that is inside a closed mesh; the convolution
+    // counts them from the sign of the distance written below. Not on a
+    // double-sided material, whose back is a real surface, nor on the skinned
+    // caster, whose face normal does follow the winding.
+    bool hitBackFace = dot(normal, direction) > 0.0;
+    if (hitBackFace) {
         normal = -normal;
     }
+    bool countsAsBackFace = hitBackFace && !skinned && (instanceFlags & kRtInstanceFlagDoubleSided) == 0u;
 
     vec3 worldPosition = probePosition + direction * hitDistance;
 
@@ -272,5 +281,8 @@ void main()
     }
 
     vec3 radiance = probeCaptureRadiance(lighting, albedo, emissive, worldPosition, normal, probePosition, sunVisibility);
-    imageStore(uCaptureAtlas, target, vec4(radiance, min(hitDistance, kProbeMaxDistance)));
+    // Negative distance marks a back-face hit. The convolution reads the
+    // magnitude for visibility, so the depth a probe stores is unchanged.
+    float storedDistance = min(hitDistance, kProbeMaxDistance);
+    imageStore(uCaptureAtlas, target, vec4(radiance, countsAsBackFace ? -storedDistance : storedDistance));
 }

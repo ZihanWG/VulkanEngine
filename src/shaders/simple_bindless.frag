@@ -600,7 +600,10 @@ float probeChebyshevVisibility(vec2 moments, float distanceToProbe)
 
 // Eight surrounding probes, trilinear in the grid, each weighted by how much of
 // it the surface can actually see.
-vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection)
+// `coverage` is zero when no surrounding probe could contribute -- all inside
+// geometry, or all rejected -- which the caller answers with the environment
+// term instead of black.
+vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection, out float coverage)
 {
     vec3 spacing = max(probeParams.gridSpacing.xyz, vec3(1.0e-4));
 
@@ -652,8 +655,12 @@ vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection)
             continue;
         }
 
-        total += textureLod(uProbeIrradianceAtlas, probeAtlasUv(probeIndex, normal,
-                                                                kProbeIrradianceResolution), 0.0).rgb * weight;
+        // Alpha is the probe's state: zero for a probe inside geometry, which
+        // sees only the inside of the mesh around it.
+        vec4 probeTexel = textureLod(uProbeIrradianceAtlas,
+                                     probeAtlasUv(probeIndex, normal, kProbeIrradianceResolution), 0.0);
+        weight *= probeTexel.a;
+        total += probeTexel.rgb * weight;
         totalWeight += weight;
     }
 
@@ -661,6 +668,7 @@ vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection)
     // alone: visibility and backface terms remove probes unevenly, and without
     // renormalising, a point next to a wall would simply go dark instead of
     // taking its light from the probes it can still see.
+    coverage = totalWeight > 0.0 ? 1.0 : 0.0;
     return totalWeight > 0.0 ? total / totalWeight : vec3(0.0);
 }
 
@@ -1152,8 +1160,13 @@ void main()
     // its display gain has to be retuned every time that multiplier moves.
     vec3 probeIrradiance = vec3(0.0);
     if (probeParams.gridOrigin.w > 0.0) {
-        probeIrradiance = sampleProbeIrradiance(vWorldPosition, normal, viewDirection);
-        diffuseIbl = probeIrradiance * probeParams.gridOrigin.w * kD;
+        float probeCoverage;
+        probeIrradiance = sampleProbeIrradiance(vWorldPosition, normal, viewDirection, probeCoverage);
+        // Nothing usable around this point: keep the environment term rather
+        // than lighting it with black.
+        if (probeCoverage > 0.0) {
+            diffuseIbl = probeIrradiance * probeParams.gridOrigin.w * kD;
+        }
     }
 
     // Ambient occlusion belongs on the ambient term alone. Multiplying the

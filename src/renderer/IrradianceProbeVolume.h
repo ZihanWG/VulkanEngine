@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 #include <glm/vec2.hpp>
@@ -105,7 +106,9 @@ struct ProbeConvolvePushConstants {
     uint32_t rayCount = 0;
     // Sharpness of the depth convolution's lobe.
     float depthLobeExponent = kProbeDepthLobeExponent;
-    uint32_t padding[2]{};
+    // Non-zero classifies probes inside geometry from their back-face hits.
+    uint32_t classify = 0;
+    uint32_t padding = 0;
 };
 
 static_assert(sizeof(ProbeConvolvePushConstants) == 112);
@@ -167,6 +170,10 @@ public:
     void setDepthLobeExponent(float exponent)
     {
         depthLobeExponent_ = exponent;
+    }
+    void setClassifyProbes(bool classify)
+    {
+        classifyProbes_ = classify;
     }
     void setHysteresis(float hysteresis)
     {
@@ -307,6 +314,12 @@ public:
         return descriptorSet_;
     }
 
+    // The probes the last convolution of each marked inside geometry, by grid
+    // index: the irradiance tiles copied back and their alpha read. A debug
+    // readback, never the frame path -- it idles the queue, like the shadow-mask
+    // dump. Empty when the copy could not be made.
+    [[nodiscard]] std::optional<std::vector<uint32_t>> probesInsideGeometry(VkCommandPool commandPool, VkQueue queue);
+
     // Buffer the material descriptor sets bind at the shading-params binding.
     // One buffer rather than one per frame: it is refreshed with a 48-byte
     // vkCmdUpdateBuffer inside the frame's own command buffer, so there is no
@@ -375,6 +388,7 @@ private:
     glm::vec4 captureRayRotation_{0.0f, 0.0f, 0.0f, 1.0f};
     float hysteresis_ = 0.0f;
     float depthLobeExponent_ = kProbeDepthLobeExponent;
+    bool classifyProbes_ = true;
     std::vector<uint32_t> captureBatch_;
     uint64_t capturedProbeCount_ = 0;
     // Owned by this class but driven by the render graph, which transitions both

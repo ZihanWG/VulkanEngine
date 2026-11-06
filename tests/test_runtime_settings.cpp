@@ -379,6 +379,7 @@ TEST_CASE("The example settings file documents the current defaults", "[settings
     CHECK(loaded.gi.rayTracedGather == defaults.gi.rayTracedGather);
     CHECK(loaded.gi.raysPerProbe == defaults.gi.raysPerProbe);
     CHECK(loaded.gi.depthLobeExponent == Catch::Approx(defaults.gi.depthLobeExponent));
+    CHECK(loaded.gi.probeClassification == defaults.gi.probeClassification);
     for (std::size_t axis = 0; axis < 3; ++axis) {
         CHECK(loaded.gi.gridOrigin[axis] == Catch::Approx(defaults.gi.gridOrigin[axis]));
         CHECK(loaded.gi.gridSpacing[axis] == Catch::Approx(defaults.gi.gridSpacing[axis]));

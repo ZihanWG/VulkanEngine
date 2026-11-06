@@ -210,7 +210,7 @@ float probeChebyshevVisibility(vec2 moments, float distanceToProbe)
     return clamp(bound * bound * bound, kProbeMinVisibility, 1.0);
 }
 
-vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection)
+vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection, out float coverage)
 {
     vec3 spacing = max(probeParams.gridSpacing.xyz, vec3(1.0e-4));
     vec3 biased = worldPosition + (normal * 0.2 + viewDirection * 0.8) * max(probeParams.gridSpacing.w, 0.0);
@@ -250,11 +250,15 @@ vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection)
             continue;
         }
 
-        total += textureLod(uProbeIrradianceAtlas,
-                            probeAtlasUv(probeIndex, normal, kProbeIrradianceResolution), 0.0).rgb * weight;
+        // Alpha is the probe's state; see simple_bindless.frag.
+        vec4 probeTexel = textureLod(uProbeIrradianceAtlas,
+                                     probeAtlasUv(probeIndex, normal, kProbeIrradianceResolution), 0.0);
+        weight *= probeTexel.a;
+        total += probeTexel.rgb * weight;
         totalWeight += weight;
     }
 
+    coverage = totalWeight > 0.0 ? 1.0 : 0.0;
     return totalWeight > 0.0 ? total / totalWeight : vec3(0.0);
 }
 
@@ -307,9 +311,10 @@ vec3 probeCaptureRadiance(ProbeCaptureLighting lighting,
     vec3 indirect = lighting.ambient;
     if (lighting.bounceWeight > 0.0) {
         vec3 toProbeGrid = normalize(probePosition - worldPosition);
-        indirect = mix(lighting.ambient,
-                       sampleProbeIrradiance(worldPosition, normal, toProbeGrid),
-                       clamp(lighting.bounceWeight, 0.0, 1.0));
+        float coverage;
+        vec3 gridIrradiance = sampleProbeIrradiance(worldPosition, normal, toProbeGrid, coverage);
+        // No usable probe around the surface: it keeps the plain ambient.
+        indirect = mix(lighting.ambient, gridIrradiance, clamp(lighting.bounceWeight, 0.0, 1.0) * coverage);
     }
 
     return albedo * (direct + indirect) + emissive;

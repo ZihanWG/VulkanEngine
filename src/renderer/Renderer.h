@@ -1307,6 +1307,9 @@ private:
     std::filesystem::path vsmPagePoolDumpPath_;
     uint64_t rayTracedShadowDumpTargetFrame_ = 0;
     std::filesystem::path rayTracedShadowDumpPath_;
+    // Frame at which the probe classification is read back and logged; zero for
+    // none. Set by requestFrameCaptureAt.
+    uint64_t probeClassificationReportFrame_ = 0;
     // The frame armed for a copy in this frame's recording, 0 when none is.
     uint64_t frameCapturePendingFrame_ = 0;
     uint32_t frameCaptureFramesRecorded_ = 0;

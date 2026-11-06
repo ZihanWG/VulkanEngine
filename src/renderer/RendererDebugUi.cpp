@@ -680,6 +680,11 @@ void Renderer::drawIrradianceProbesDebugUi()
     ImGui::SetItemTooltip("How far off a surface the grid is sampled from, in world units.\n"
                           "Too small and flat surfaces self-occlude into darkness; too large\n"
                           "and light leaks through thin geometry.");
+    ImGui::Checkbox("Leave out probes inside geometry", &giSettings_.probeClassification);
+    ImGui::SetItemTooltip("Ray-traced gather only. A probe more than a quarter of whose rays hit\n"
+                          "the backs of single-sided surfaces is buried in a wall or a column;\n"
+                          "it sees only the inside of that mesh, and lighting nearby surfaces\n"
+                          "with it darkens them. Takes effect as probes are re-gathered.");
     ImGui::SliderFloat("Depth lobe exponent", &giSettings_.depthLobeExponent, 1.0f, 200.0f, "%.0f");
     ImGui::SetItemTooltip("How sharply a probe's stored visibility describes each direction.\n"
                           "Higher sees walls more sharply and leaks less light through them,\n"

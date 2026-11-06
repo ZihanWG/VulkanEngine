@@ -93,6 +93,7 @@ PAIRS: list[tuple[str, str, list[str]]] = [
             "kProbeDepthLobeExponent",
             "kProbeMinVisibility",
             "kProbeBackfaceFloor",
+            "kProbeInsideBackFaceFraction",
         ],
     ),
     # The palette buffer's two halves. A mismatched offset would not fail to
@@ -156,7 +157,8 @@ PAIRS: list[tuple[str, str, list[str]]] = [
             "kRtVertexUvOffsetFloats",
             "kRtVertexNormalOffsetFloats",
             "kRtSkinnedPositionStrideFloats",
-            "kRtSkinnedInstanceTag",
+            "kRtInstanceFlagSkinned",
+            "kRtInstanceFlagDoubleSided",
             "kRtPreSkinLocalSize",
             "kRtMaskLocalSize",
             "kRtReferenceMaxSamples",

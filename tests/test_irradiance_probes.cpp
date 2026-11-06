@@ -1279,3 +1279,21 @@ TEST_CASE("Probe rays land inside their own slot's rows, each in its own texel",
         }
     }
 }
+
+TEST_CASE("A probe is inside geometry when more than a quarter of its rays hit back faces", "[probes]")
+{
+    using ve::renderer::probeIsInsideGeometry;
+    // Open space: every ray hits a front face, or nothing.
+    CHECK_FALSE(probeIsInsideGeometry(0, 768));
+    // Inside a closed mesh: every ray hits its inside.
+    CHECK(probeIsInsideGeometry(768, 768));
+    // The threshold itself, strictly above a quarter. A probe flush against a
+    // single-sided wall sees its back with a sliver of rays, not a quarter.
+    CHECK_FALSE(probeIsInsideGeometry(192, 768));
+    CHECK(probeIsInsideGeometry(193, 768));
+    // The same share at any ray count, cube texels included.
+    CHECK_FALSE(probeIsInsideGeometry(384, 1536));
+    CHECK(probeIsInsideGeometry(385, 1536));
+    // Nothing traced: not inside.
+    CHECK_FALSE(probeIsInsideGeometry(0, 0));
+}
