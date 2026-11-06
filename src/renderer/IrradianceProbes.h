@@ -201,6 +201,41 @@ inline constexpr float kProbeMaxDistance = 64.0f;
 static_assert(kProbeMaxDistance * kProbeMaxDistance < 65504.0f,
               "Squared probe distance must stay representable in a 16-bit float.");
 
+// --- Relocation -------------------------------------------------------------------
+//
+// A probe left out as inside geometry takes its share of the grid with it.
+// Relocation moves it instead (gi.probeRelocation, traced gather only): each
+// update nudges the probe's offset from its grid position, out through the
+// nearest back face if it is inside, away from a front face it sits too close
+// to, and back towards the grid point when nothing is near. Over a few cycles a
+// buried probe walks out, its back-face share falls, and classification turns it
+// back on. DDGI's scheme, with the distances as fractions of the spacing so they
+// suit any grid.
+
+// A probe nearer a front face than this share of the smallest spacing is moved
+// away from it.
+inline constexpr float kProbeMinFrontFaceFraction = 0.2f;
+// No offset reaches this share of the spacing on any axis, so a probe stays
+// closer to its own grid point than to a neighbour's. A step that would cross it
+// is not taken.
+inline constexpr float kProbeMaxOffsetFraction = 0.45f;
+
+// What one update measured from where the probe stands now. A distance of
+// kProbeMaxDistance or more means nothing of that kind was hit.
+struct ProbeRelocationInput {
+    glm::vec3 offset{0.0f};
+    glm::vec3 spacing{1.0f};
+    uint32_t backFaceSamples = 0;
+    uint32_t samples = 0;
+    glm::vec3 closestBackFaceDirection{0.0f};
+    float closestBackFaceDistance = kProbeMaxDistance;
+    glm::vec3 closestFrontFaceDirection{0.0f};
+    float closestFrontFaceDistance = kProbeMaxDistance;
+};
+
+// The probe's next offset. Mirrored by probe_convolve.comp.
+[[nodiscard]] glm::vec3 probeRelocationStep(const ProbeRelocationInput& input);
+
 // --- The ray-traced gather ----------------------------------------------------
 //
 // With VK_KHR_ray_query the capture atlas can be filled by rays instead of by

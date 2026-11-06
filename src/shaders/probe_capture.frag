@@ -20,10 +20,15 @@ layout(set = 0, binding = 7) uniform sampler2D uPunctualShadowAtlas;
 // what this reads is the previous frame's contents.
 layout(set = 0, binding = 9) uniform sampler2D uProbeIrradianceAtlas;
 layout(set = 0, binding = 10) uniform sampler2D uProbeDepthAtlas;
+#include "irradiance_probes.glsl"
+
 layout(set = 0, binding = 11) uniform ProbeShadingParams {
     vec4 gridOrigin;   // xyz = origin, w = intensity
     vec4 gridSpacing;  // xyz = spacing, w = surface bias
     vec4 debug;
+    // xyz = this probe's relocation offset from its grid point (zero unless
+    // gi.probeRelocation moved it); written by the convolution.
+    vec4 probeOffsets[kProbeCount];
 } probeParams;
 layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
 
@@ -43,7 +48,6 @@ layout(location = 15) flat in vec4 vEmissiveFactor;
 layout(location = 16) flat in vec4 vMaterialParams;
 layout(location = 17) in float vCameraViewDepth;
 
-#include "irradiance_probes.glsl"
 #include "probe_capture_shading.glsl"
 
 layout(push_constant) uniform PushConstants {

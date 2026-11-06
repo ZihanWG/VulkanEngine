@@ -1297,3 +1297,81 @@ TEST_CASE("A probe is inside geometry when more than a quarter of its rays hit b
     // Nothing traced: not inside.
     CHECK_FALSE(probeIsInsideGeometry(0, 0));
 }
+
+TEST_CASE("Relocation walks a buried probe out through the nearest back face", "[probes]")
+{
+    using ve::renderer::kProbeMinFrontFaceFraction;
+    using ve::renderer::ProbeRelocationInput;
+    using ve::renderer::probeRelocationStep;
+    ProbeRelocationInput input;
+    input.spacing = glm::vec3{2.0f};
+    input.samples = 768;
+    input.backFaceSamples = 600;
+    input.closestBackFaceDirection = glm::vec3{1.0f, 0.0f, 0.0f};
+    input.closestBackFaceDistance = 0.3f;
+    const glm::vec3 next = probeRelocationStep(input);
+    // Through the face, and half the front-face margin past it.
+    const float margin = kProbeMinFrontFaceFraction * 2.0f;
+    CHECK(next.x == Approx(0.3f + 0.5f * margin));
+    CHECK(next.y == 0.0f);
+    CHECK(next.z == 0.0f);
+}
+
+TEST_CASE("Relocation moves a probe off a surface it sits too close to", "[probes]")
+{
+    using ve::renderer::kProbeMinFrontFaceFraction;
+    using ve::renderer::ProbeRelocationInput;
+    using ve::renderer::probeRelocationStep;
+    ProbeRelocationInput input;
+    input.spacing = glm::vec3{2.0f};
+    input.samples = 768;
+    input.closestFrontFaceDirection = glm::vec3{0.0f, -1.0f, 0.0f};
+    const float margin = kProbeMinFrontFaceFraction * 2.0f;
+    input.closestFrontFaceDistance = margin * 0.25f;
+    const glm::vec3 next = probeRelocationStep(input);
+    // Straight away from the surface, by exactly what it was short of.
+    CHECK(next.y == Approx(margin * 0.75f));
+    // Far enough already: nothing to do at the grid point.
+    input.closestFrontFaceDistance = margin * 2.0f;
+    CHECK(probeRelocationStep(input) == glm::vec3{0.0f});
+}
+
+TEST_CASE("A relocated probe returns towards its grid point when nothing is near", "[probes]")
+{
+    using ve::renderer::kProbeMinFrontFaceFraction;
+    using ve::renderer::ProbeRelocationInput;
+    using ve::renderer::probeRelocationStep;
+    ProbeRelocationInput input;
+    input.spacing = glm::vec3{2.0f};
+    input.samples = 768;
+    input.offset = glm::vec3{0.5f, 0.0f, 0.0f};
+    const float margin = kProbeMinFrontFaceFraction * 2.0f;
+    // Clearance beyond the margin of 0.1: back by 0.1.
+    input.closestFrontFaceDistance = margin + 0.1f;
+    CHECK(probeRelocationStep(input).x == Approx(0.4f));
+    // Ample clearance: all the way back, and never past the grid point.
+    input.closestFrontFaceDistance = 10.0f;
+    CHECK(probeRelocationStep(input) == glm::vec3{0.0f});
+}
+
+TEST_CASE("Relocation never takes a probe beyond its share of the cell", "[probes]")
+{
+    using ve::renderer::kProbeMaxOffsetFraction;
+    using ve::renderer::ProbeRelocationInput;
+    using ve::renderer::probeRelocationStep;
+    ProbeRelocationInput input;
+    input.spacing = glm::vec3{2.0f, 1.0f, 2.0f};
+    input.samples = 768;
+    input.backFaceSamples = 768;
+    // Escaping along y would need more than 0.45 of the 1.0 spacing: refused,
+    // and the probe keeps its offset -- classification still leaves it out.
+    input.offset = glm::vec3{0.0f, 0.2f, 0.0f};
+    input.closestBackFaceDirection = glm::vec3{0.0f, 1.0f, 0.0f};
+    input.closestBackFaceDistance = 0.4f;
+    CHECK(probeRelocationStep(input) == input.offset);
+    // The same step on a wider axis fits.
+    input.closestBackFaceDirection = glm::vec3{1.0f, 0.0f, 0.0f};
+    const glm::vec3 next = probeRelocationStep(input);
+    CHECK(next.x > 0.0f);
+    CHECK(std::abs(next.x) <= kProbeMaxOffsetFraction * 2.0f);
+}

@@ -680,6 +680,11 @@ void Renderer::drawIrradianceProbesDebugUi()
     ImGui::SetItemTooltip("How far off a surface the grid is sampled from, in world units.\n"
                           "Too small and flat surfaces self-occlude into darkness; too large\n"
                           "and light leaks through thin geometry.");
+    ImGui::Checkbox("Move probes out of geometry", &giSettings_.probeRelocation);
+    ImGui::SetItemTooltip("Ray-traced gather only. Each update nudges a probe out through the\n"
+                          "nearest back face if it is buried, away from a surface it sits too\n"
+                          "close to, and back towards its grid point when nothing is near.\n"
+                          "Offsets stay under half a cell and reset when this is off.");
     ImGui::Checkbox("Leave out probes inside geometry", &giSettings_.probeClassification);
     ImGui::SetItemTooltip("Ray-traced gather only. A probe more than a quarter of whose rays hit\n"
                           "the backs of single-sided surfaces is buried in a wall or a column;\n"

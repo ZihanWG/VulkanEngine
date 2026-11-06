@@ -2005,6 +2005,11 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // and the convolution reads it back, and the two must agree. Rotated rays
     // exist only where rays are traced; the raster capture is always cube texels.
     irradianceProbes_.setCaptureRays(frameProbeTraceActive_ ? static_cast<uint32_t>(giSettings_.raysPerProbe) : 0u);
+    // Relocation needs rays to measure from, so it runs only while probes are on
+    // and traced; anywhere else the offsets are held at zero, and the raster
+    // capture and the shading see the plain grid. Decided per frame, before the
+    // shading-parameter update that zeroes them.
+    irradianceProbes_.setRelocateProbes(giSettings_.probeRelocation && giSettings_.enabled && isProbeTraceSelected());
     // Once per change of gather or ray layout, so a headless run says which one
     // it measured: -1 rasterised, 0 traced cube texels, n traced rotated rays.
     if (frameProbeCaptureActive_) {

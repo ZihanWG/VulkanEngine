@@ -94,6 +94,9 @@ PAIRS: list[tuple[str, str, list[str]]] = [
             "kProbeMinVisibility",
             "kProbeBackfaceFloor",
             "kProbeInsideBackFaceFraction",
+            "kProbeMinFrontFaceFraction",
+            "kProbeMaxOffsetFraction",
+            "kProbeCount",
         ],
     ),
     # The palette buffer's two halves. A mismatched offset would not fail to

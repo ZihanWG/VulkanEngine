@@ -21,7 +21,10 @@ namespace {
 constexpr uint32_t kBindingIrradianceAtlas = 0;
 constexpr uint32_t kBindingDepthAtlas = 1;
 constexpr uint32_t kBindingCaptureAtlas = 2;
-constexpr uint32_t kBindingCount = 3;
+// The shading-parameter buffer, whole, as a storage buffer: the convolution
+// writes the relocation offsets behind the parameters.
+constexpr uint32_t kBindingProbeParams = 3;
+constexpr uint32_t kBindingCount = 4;
 
 // Matches the local_size in probe_debug_fill.comp and probe_border.comp.
 constexpr uint32_t kProbeLocalSize = 8;
@@ -226,8 +229,12 @@ void IrradianceProbeVolume::createAtlases()
     // fragment shader still reading it, and avoiding that would mean a buffer
     // and a descriptor set per frame in flight.
     rhi::VulkanBufferCreateInfo paramsInfo{};
-    paramsInfo.size = sizeof(ProbeShadingParams);
-    paramsInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    paramsInfo.size = kProbeShadingBufferSize;
+    // Storage for the convolution's offset writes, transfer source for the
+    // offset readback, transfer destination for the parameter update and the
+    // offset reset.
+    paramsInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                       VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     paramsInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
     shadingParamsBuffer_.createBuffer(*context_, paramsInfo);
     rhi::debug::setObjectName(
@@ -260,7 +267,7 @@ void IrradianceProbeVolume::updateShadingParams(VkCommandBuffer commandBuffer, c
     previousFrameBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     previousFrameBarrier.buffer = shadingParamsBuffer_.buffer();
     previousFrameBarrier.offset = 0;
-    previousFrameBarrier.size = sizeof(ProbeShadingParams);
+    previousFrameBarrier.size = kProbeShadingBufferSize;
 
     VkDependencyInfo previousFrameDependency{};
     previousFrameDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -269,6 +276,12 @@ void IrradianceProbeVolume::updateShadingParams(VkCommandBuffer commandBuffer, c
     vkCmdPipelineBarrier2(commandBuffer, &previousFrameDependency);
 
     vkCmdUpdateBuffer(commandBuffer, shadingParamsBuffer_.buffer(), 0, sizeof(ProbeShadingParams), &params);
+    // In the same transfer scope, so the barriers around it cover it too.
+    if (offsetsResetPending_ || !relocateProbes_) {
+        vkCmdFillBuffer(
+            commandBuffer, shadingParamsBuffer_.buffer(), kProbeOffsetsByteOffset, kProbeOffsetsByteSize, 0u);
+        offsetsResetPending_ = false;
+    }
 
     // The buffer is not a render-graph resource, so the barrier is written by
     // hand the way VolumetricFogPass does for its own volumes.
@@ -285,7 +298,7 @@ void IrradianceProbeVolume::updateShadingParams(VkCommandBuffer commandBuffer, c
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.buffer = shadingParamsBuffer_.buffer();
     barrier.offset = 0;
-    barrier.size = sizeof(ProbeShadingParams);
+    barrier.size = kProbeShadingBufferSize;
 
     VkDependencyInfo dependency{};
     dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -402,6 +415,63 @@ std::optional<std::vector<uint32_t>> IrradianceProbeVolume::probesInsideGeometry
     return inside;
 }
 
+std::optional<std::vector<glm::vec3>> IrradianceProbeVolume::probeOffsets(VkCommandPool commandPool, VkQueue queue)
+{
+    if (shadingParamsBuffer_.buffer() == VK_NULL_HANDLE || commandPool == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
+        return std::nullopt;
+    }
+    const VkDevice device = context_->vkDevice();
+    vkDeviceWaitIdle(device);
+
+    rhi::VulkanBufferCreateInfo bufferInfo{};
+    bufferInfo.size = kProbeOffsetsByteSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+    bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    rhi::VulkanBuffer staging;
+    staging.createBuffer(*context_, bufferInfo);
+    if (!staging.valid()) {
+        return std::nullopt;
+    }
+    VkCommandBufferAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocateInfo.commandPool = commandPool;
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer) != VK_SUCCESS) {
+        return std::nullopt;
+    }
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    VkBufferCopy region{};
+    region.srcOffset = kProbeOffsetsByteOffset;
+    region.size = kProbeOffsetsByteSize;
+    vkCmdCopyBuffer(commandBuffer, shadingParamsBuffer_.buffer(), staging.buffer(), 1, &region);
+    vkEndCommandBuffer(commandBuffer);
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    const VkResult submitted = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (submitted == VK_SUCCESS) {
+        vkQueueWaitIdle(queue);
+    }
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    if (submitted != VK_SUCCESS) {
+        return std::nullopt;
+    }
+    std::vector<float> raw(static_cast<size_t>(kProbeCount) * 4u);
+    staging.download(std::as_writable_bytes(std::span<float>(raw.data(), raw.size())));
+    std::vector<glm::vec3> offsets(kProbeCount);
+    for (uint32_t probe = 0; probe < kProbeCount; ++probe) {
+        offsets[probe] = glm::vec3{raw[probe * 4u], raw[probe * 4u + 1u], raw[probe * 4u + 2u]};
+    }
+    return offsets;
+}
+
 void IrradianceProbeVolume::createSampler()
 {
     VkSamplerCreateInfo samplerInfo{};
@@ -450,12 +520,18 @@ void IrradianceProbeVolume::createDescriptorResources()
     bindings[kBindingCaptureAtlas].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[kBindingCaptureAtlas].descriptorCount = 1;
     bindings[kBindingCaptureAtlas].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[kBindingProbeParams].binding = kBindingProbeParams;
+    bindings[kBindingProbeParams].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[kBindingProbeParams].descriptorCount = 1;
+    bindings[kBindingProbeParams].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     setLayout_.create(device, std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
 
-    std::array<VkDescriptorPoolSize, 1> poolSizes{};
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[0].descriptorCount = kBindingCount;
+    poolSizes[0].descriptorCount = 3;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[1].descriptorCount = 1;
     descriptorPool_.create(device, std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), 1);
 
     const VkDescriptorSetLayout layout = setLayout_.handle();
@@ -537,6 +613,13 @@ void IrradianceProbeVolume::writeDescriptorSet()
     writes[kBindingIrradianceAtlas].pImageInfo = &irradianceInfo;
     writes[kBindingDepthAtlas].pImageInfo = &depthInfo;
     writes[kBindingCaptureAtlas].pImageInfo = &captureInfo;
+    VkDescriptorBufferInfo paramsBufferInfo{};
+    paramsBufferInfo.buffer = shadingParamsBuffer_.buffer();
+    paramsBufferInfo.offset = 0;
+    paramsBufferInfo.range = kProbeShadingBufferSize;
+    writes[kBindingProbeParams].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[kBindingProbeParams].pImageInfo = nullptr;
+    writes[kBindingProbeParams].pBufferInfo = &paramsBufferInfo;
 
     vkUpdateDescriptorSets(context_->vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
@@ -586,9 +669,41 @@ void IrradianceProbeVolume::recordConvolve(VkCommandBuffer commandBuffer)
     pushConstants.rayCount = captureRayCount_;
     pushConstants.depthLobeExponent = depthLobeExponent_;
     pushConstants.classify = classifyProbes_ ? 1u : 0u;
+    pushConstants.relocate = relocateProbes_ ? 1u : 0u;
     for (size_t slot = 0; slot < captureBatch_.size() && slot < kMaxProbesPerFrame; ++slot) {
         pushConstants.probeIndices[slot / 4][slot % 4] = static_cast<int32_t>(captureBatch_[slot]);
     }
+
+    // The offsets are read as uniforms -- by the trace earlier this frame, and by
+    // last frame's shading -- before this dispatch rewrites them, and read again
+    // by this frame's shading after it. The buffer is not a graph resource, so
+    // both edges are written here, the way the parameter update writes its own.
+    const auto offsetsBarrier = [&](VkPipelineStageFlags2 srcStages,
+                                    VkAccessFlags2 srcAccess,
+                                    VkPipelineStageFlags2 dstStages,
+                                    VkAccessFlags2 dstAccess) {
+        VkBufferMemoryBarrier2 barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        barrier.srcStageMask = srcStages;
+        barrier.srcAccessMask = srcAccess;
+        barrier.dstStageMask = dstStages;
+        barrier.dstAccessMask = dstAccess;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer = shadingParamsBuffer_.buffer();
+        barrier.offset = kProbeOffsetsByteOffset;
+        barrier.size = kProbeOffsetsByteSize;
+        VkDependencyInfo dependency{};
+        dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency.bufferMemoryBarrierCount = 1;
+        dependency.pBufferMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    };
+    offsetsBarrier(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                       VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                   VK_ACCESS_2_UNIFORM_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, convolvePipeline_.pipeline());
     vkCmdBindDescriptorSets(
@@ -602,6 +717,12 @@ void IrradianceProbeVolume::recordConvolve(VkCommandBuffer commandBuffer)
     // One workgroup per probe in the batch. The workgroup is 16x16, sized to the
     // depth tile, and its first 8x8 threads also produce the irradiance tile.
     vkCmdDispatch(commandBuffer, static_cast<uint32_t>(captureBatch_.size()), 1, 1);
+
+    offsetsBarrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                       VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                   VK_ACCESS_2_UNIFORM_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
 
 void IrradianceProbeVolume::recordBorder(VkCommandBuffer commandBuffer)

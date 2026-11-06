@@ -747,9 +747,59 @@ insides into the arcades. That is also the confounder the spacing-scaled bias ra
 into above -- it darkened Sponza broadly -- so that question can be asked again
 on a grid that no longer drags buried probes in.
 
-Probes are left out, not moved. A probe just inside a wall takes its share of the
-grid with it, and the surfaces that relied on it are lit by fewer probes;
-relocation, which moves such a probe out instead, is not done.
+Left out, a probe just inside a wall takes its share of the grid with it, and the
+surfaces that relied on it are lit by fewer probes. Relocation moves it instead.
+
+### Relocation
+
+`gi.probeRelocation` (traced gather only, **off by default** -- see below) gives
+every probe an offset from its grid point and updates it each time the probe is
+convolved, from the same rays the classification counts (DDGI's scheme, with the
+distances as shares of the spacing):
+
+- **Inside geometry:** out through the nearest back face, half a margin past it.
+- **Nearer a front face than 0.2 of the smallest spacing:** straight away from
+  it, by what it is short of.
+- **Otherwise:** back towards the grid point by as much as the clearance allows,
+  so offsets stay as small as the geometry lets them.
+- **Never past 0.45 of the spacing on any axis**, so a probe stays nearer its own
+  grid point than a neighbour's; a step that would cross that is not taken.
+
+The offsets live behind the shading parameters in the buffer every probe reader
+already binds (set 0 binding 11), one vec4 per probe from byte 48, so the trace
+leaves from the moved position and shading measures distance and visibility from
+it, with no new binding in the material set. The convolution writes them through
+the probe volume's own set; the buffer is not a graph resource, so the barriers
+on either side of that write are explicit, like the parameter update's, and the
+relocation runs are clean under synchronization validation. When relocation
+cannot run -- probes off, or not traced -- the offsets are held at zero, so the
+raster capture and the shading see the plain grid; they are also zeroed when the
+grid moves. The step is unit-tested on the CPU and mirrored in the shader.
+
+It does what it is for. Read back at frame 400, 16 probes a frame:
+
+| scene | inside geometry, unrelocated -> relocated | probes moved | largest offset |
+| --- | --- | --- | --- |
+| Cornell box | 19 -> 2 | 19 | 1.28 m (y spacing 2.8) |
+| Sponza | 40 -> 2 | 88 | 2.24 m (spacing 4, 3, 4) |
+| leak room, default | 0 -> 0 | 0 | 0 |
+
+The counts settle within two grid cycles and hold to frame 400; a short run
+reports a probe part-way out as still inside. The two left in each scene cannot
+get out within 0.45 of a cell, and classification still leaves them out. Where
+nothing needs moving the image does not change, and with the setting off the
+frame is the classification-only frame (Cornell bit-identical; Sponza bar its one
+known nondeterministic pixel).
+
+**Why it is off.** On the Cornell box it moves 1.4% of the probe view's pixels. On
+Sponza it moves half of them and darkens the view from 73.4 to 61.3 mean --
+below where it stood before classification, 64.4 -- broadly, across floor, arches
+and curtains alike, with some dark regions brightening. That is not the
+localised removal of an artefact the backface floor and classification gave: it
+is a different solution, made of 38 reactivated probes and 50 nudged ones whose
+new surroundings decide what they see, and nothing here can say whether it is
+the better one. A ground truth for Sponza's indirect light is what would; until
+there is one, relocation stays a switch.
 
 ## The Cornell box scene
 

@@ -596,6 +596,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readInt(*gi, "raysPerProbe", settings.gi.raysPerProbe);
         readFloat(*gi, "depthLobeExponent", settings.gi.depthLobeExponent);
         readBool(*gi, "probeClassification", settings.gi.probeClassification);
+        readBool(*gi, "probeRelocation", settings.gi.probeRelocation);
         readFloat(*gi, "gridOriginX", settings.gi.gridOrigin[0]);
         readFloat(*gi, "gridOriginY", settings.gi.gridOrigin[1]);
         readFloat(*gi, "gridOriginZ", settings.gi.gridOrigin[2]);
@@ -789,6 +790,7 @@ Json toJson(const RuntimeSettings& settings)
               {"raysPerProbe", settings.gi.raysPerProbe},
               {"depthLobeExponent", settings.gi.depthLobeExponent},
               {"probeClassification", settings.gi.probeClassification},
+              {"probeRelocation", settings.gi.probeRelocation},
               {"gridOriginX", settings.gi.gridOrigin[0]},
               {"gridOriginY", settings.gi.gridOrigin[1]},
               {"gridOriginZ", settings.gi.gridOrigin[2]},
