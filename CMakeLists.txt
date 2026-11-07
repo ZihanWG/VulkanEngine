@@ -328,6 +328,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/PostProcessStack.cpp
     src/renderer/PunctualShadows.cpp
     src/renderer/RayTracedShadowMask.cpp
+    src/renderer/ProbeReference.cpp
     src/renderer/RayTracingScene.cpp
     src/renderer/RayTracingSkinning.cpp
     src/renderer/VolumetricFogPass.cpp
@@ -510,6 +511,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/probe_border.comp"
     "${SHADER_SOURCE_DIR}/probe_convolve.comp"
     "${SHADER_SOURCE_DIR}/probe_trace.comp"
+    "${SHADER_SOURCE_DIR}/probe_reference.comp"
     "${SHADER_SOURCE_DIR}/probe_capture.vert"
     "${SHADER_SOURCE_DIR}/probe_capture.frag"
     "${SHADER_SOURCE_DIR}/shadow_masked.frag"
@@ -566,6 +568,7 @@ set(SHADER_INCLUDES
     "${SHADER_SOURCE_DIR}/irradiance_probes.glsl"
     "${SHADER_SOURCE_DIR}/probe_cube.glsl"
     "${SHADER_SOURCE_DIR}/probe_capture_shading.glsl"
+    "${SHADER_SOURCE_DIR}/probe_hit_shading.glsl"
     "${SHADER_SOURCE_DIR}/volumetric_fog.glsl"
     "${SHADER_SOURCE_DIR}/joint_palette.glsl"
     "${SHADER_SOURCE_DIR}/taa_disocclusion.glsl"

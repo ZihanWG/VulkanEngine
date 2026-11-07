@@ -314,6 +314,57 @@ void Renderer::recordProbeTracePass(VkCommandBuffer commandBuffer)
     probeCaptureDrawsRecorded_ = 0;
 }
 
+bool Renderer::isProbeReferenceSelected() const
+{
+    return giSettings_.enabled && giSettings_.debugReferenceRays > 0 && probeReference_.available() &&
+           rayQueryShadingAvailable() && rayTracingScene_.ready() &&
+           irradianceProbes_.descriptorSet() != VK_NULL_HANDLE && !allDrawItems_.empty();
+}
+
+void Renderer::recordProbeReferencePass(VkCommandBuffer commandBuffer)
+{
+    const VkDescriptorSet globalDescriptorSet = globalMaterialDescriptorSet();
+    if (globalDescriptorSet == VK_NULL_HANDLE) {
+        return;
+    }
+    // What the accumulation measures is the view, unjittered so that TAA jitter
+    // does not restart it every frame. A change starts the sum over.
+    uint64_t hash = 1469598103934665603ull;
+    const auto mix = [&hash](const void* data, size_t size) {
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (size_t index = 0; index < size; ++index) {
+            hash = (hash ^ bytes[index]) * 1099511628211ull;
+        }
+    };
+    mix(&frameViewProjection_, sizeof(frameViewProjection_));
+    const VkExtent2D extent = renderResolution_.extent();
+    mix(&extent, sizeof(extent));
+    if (hash != probeReferenceStateHash_) {
+        probeReferenceStateHash_ = hash;
+        probeReferenceReset_ = true;
+    }
+    if (probeReferenceReset_) {
+        probeReferenceFrames_ = 0;
+    }
+
+    renderer::ProbeReferencePushConstants push{};
+    push.inverseViewProjection = glm::inverse(frameJitteredViewProjection_);
+    push.frameConstantsAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
+    push.objectFrameDataAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    push.geometryTableAddress = rayTracingScene_.geometryTableAddress(currentFrame_);
+    push.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+    push.punctualShadowSlotAddress =
+        punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
+    push.lightCount = push.lightBufferAddress != 0 ? clusteredLighting_.lightCount() : 0;
+    push.sunRayLength = frameRayTracedShadowRayLength_;
+    push.raysPerFrame = static_cast<uint32_t>(std::clamp(giSettings_.debugReferenceRays, 1, 64));
+    push.frameAndReset = (probeReferenceFrames_ & 0x7FFFFFFFu) | (probeReferenceReset_ ? 0x80000000u : 0u);
+    push.extent = glm::uvec2(extent.width, extent.height);
+    probeReference_.record(commandBuffer, push, globalDescriptorSet, bindlessTextureHeap_.descriptorSet());
+    probeReferenceReset_ = false;
+    ++probeReferenceFrames_;
+}
+
 void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
 {
     const std::vector<uint32_t>& batch = irradianceProbes_.captureBatch();
@@ -905,6 +956,33 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
     // the graph imports the one on a frame the mask traces, the other on a frame
     // the filter runs.
     renderer::RenderGraphImageResource rayTracedShadowTraceResource{};
+    // The probe reference persistent images, imported only on a frame it runs.
+    renderer::RenderGraphImageResource probeReferenceAccumulationResource{};
+    renderer::RenderGraphImageResource probeReferenceEstimateResource{};
+    if (frameProbeReferenceActive_ && probeReference_.available()) {
+        const auto referenceResource = [](const char* name, const rhi::VulkanImage& image, VkImageLayout* layout) {
+            const VkExtent3D extent = image.extent();
+            return renderer::RenderGraphImageResource{
+                .name = name,
+                .image = image.image(),
+                .imageView = image.imageView(),
+                .extent = VkExtent2D{extent.width, extent.height},
+                .layout = layout,
+                .format = renderer::ProbeReference::kFormat,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .clearValue = VkClearValue{},
+                .hasClearValue = false,
+                .imported = true,
+            };
+        };
+        probeReferenceAccumulationResource = referenceResource(
+            "ProbeReferenceAccumulation", probeReference_.accumulation(), probeReference_.accumulationLayoutPtr());
+        probeReferenceEstimateResource = referenceResource(
+            "ProbeReferenceEstimate", probeReference_.estimate(), probeReference_.estimateLayoutPtr());
+    }
     renderer::RenderGraphImageResource rayTracedShadowFilterResource{};
     std::array<renderer::RenderGraphImageResource, 2> rayTracedShadowHistoryResources{};
     if (rayTracedShadowMask_.available()) {
@@ -1325,6 +1403,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         // The parity was advanced in frame prep: this frame writes that one.
         .rayTracedShadowHistoryWrite = rayTracedShadowHistoryResources[rayTracedShadowMask_.historyParity()],
         .rayTracedShadowHistoryRead = rayTracedShadowHistoryResources[rayTracedShadowMask_.historyParity() ^ 1u],
+        .probeReferenceAccumulation = probeReferenceAccumulationResource,
+        .probeReferenceEstimate = probeReferenceEstimateResource,
         .taaEnabled = postProcess_.isTaaActive(),
         .twoPhaseOcclusionEnabled = frameTwoPhaseOcclusionActive_,
         .depthPrepassEnabled = frameDepthPrepassActive_,
@@ -1359,6 +1439,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         // capture atlas either way.
         .probeCaptureEnabled = frameProbeCaptureActive_ && !frameProbeTraceActive_,
         .probeTraceEnabled = frameProbeTraceActive_,
+        .probeReferenceEnabled = frameProbeReferenceActive_ && probeReference_.available(),
         // GpuCulling's own answer to "will recordMainCull record anything", not a
         // restatement of it. False on the CPU culling fallback, where the pass
         // used to be declared and then skipped on every frame.

@@ -1375,3 +1375,26 @@ TEST_CASE("Relocation never takes a probe beyond its share of the cell", "[probe
     CHECK(next.x > 0.0f);
     CHECK(std::abs(next.x) <= kProbeMaxOffsetFraction * 2.0f);
 }
+
+TEST_CASE("The reference comparison averages only pixels both images cover", "[probes]")
+{
+    using ve::renderer::probeReferenceStats;
+    // Four pixels. 0: reference sum 8 over 4 rays (mean 2), probe 1.
+    // 1: reference 12 over 4 (3), probe 4. 2: no rays (sky). 3: no coverage.
+    const std::vector<float> accum{
+        8.0f, 8.0f, 8.0f, 4.0f, 12.0f, 12.0f, 12.0f, 4.0f, 0.0f, 0.0f, 0.0f, 0.0f, 5.0f, 5.0f, 5.0f, 4.0f};
+    const std::vector<float> estimate{
+        1.0f, 1.0f, 1.0f, 1.0f, 4.0f, 4.0f, 4.0f, 0.5f, 9.0f, 9.0f, 9.0f, 1.0f, 9.0f, 9.0f, 9.0f, 0.0f};
+    const auto stats = probeReferenceStats(accum, estimate);
+    CHECK(stats.pixels == 2u);
+    CHECK(stats.samplesPerPixel == Catch::Approx(4.0));
+    CHECK(stats.referenceMean == Catch::Approx(2.5));
+    CHECK(stats.probeMean == Catch::Approx(2.5));
+    // Equal means, yet each pixel is off by one: the error the mean hides.
+    CHECK(stats.meanAbsoluteError == Catch::Approx(1.0));
+    // Luminance, not one channel: pure green weighs 0.7152.
+    const std::vector<float> green{0.0f, 1.0f, 0.0f, 1.0f};
+    CHECK(probeReferenceStats(green, green).referenceMean == Catch::Approx(0.7152));
+    // Mismatched sizes count nothing.
+    CHECK(probeReferenceStats(accum, green).pixels == 0u);
+}

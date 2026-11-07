@@ -247,6 +247,7 @@ void Application::mainLoop()
             // After the last frame and before teardown: the probe state the run
             // ended with, so a sweep leg's log says what was classified.
             renderer_->logProbeClassification();
+            renderer_->logProbeReference();
             break;
         }
 

@@ -1,0 +1,3 @@
+{
+  "gi": { "enabled": true, "rayTracedGather": true, "bounceWeight": 0.0, "debugReferenceRays": 4 }
+}

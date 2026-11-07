@@ -196,6 +196,9 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     // what the capture atlas is sized for.
     gi.probesPerFrame = std::clamp(gi.probesPerFrame, 0, static_cast<int>(renderer::kMaxProbesPerFrame));
     gi.raysPerProbe = std::clamp(gi.raysPerProbe, 0, static_cast<int>(renderer::kProbeMaxRaysPerProbe));
+    // Every visible pixel traces this many each frame: 64 already costs more
+    // than the rest of the frame on Sponza.
+    gi.debugReferenceRays = std::clamp(gi.debugReferenceRays, 0, 64);
     gi.depthLobeExponent = std::clamp(gi.depthLobeExponent, 1.0f, 200.0f);
     // Upper bound matches drawRenderTargetPreview, which clamps its tint at 16.
     gi.previewGain = std::clamp(gi.previewGain, 1.0f, 16.0f);
@@ -597,6 +600,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*gi, "depthLobeExponent", settings.gi.depthLobeExponent);
         readBool(*gi, "probeClassification", settings.gi.probeClassification);
         readBool(*gi, "probeRelocation", settings.gi.probeRelocation);
+        readInt(*gi, "debugReferenceRays", settings.gi.debugReferenceRays);
         readFloat(*gi, "gridOriginX", settings.gi.gridOrigin[0]);
         readFloat(*gi, "gridOriginY", settings.gi.gridOrigin[1]);
         readFloat(*gi, "gridOriginZ", settings.gi.gridOrigin[2]);
@@ -791,6 +795,7 @@ Json toJson(const RuntimeSettings& settings)
               {"depthLobeExponent", settings.gi.depthLobeExponent},
               {"probeClassification", settings.gi.probeClassification},
               {"probeRelocation", settings.gi.probeRelocation},
+              {"debugReferenceRays", settings.gi.debugReferenceRays},
               {"gridOriginX", settings.gi.gridOrigin[0]},
               {"gridOriginY", settings.gi.gridOrigin[1]},
               {"gridOriginZ", settings.gi.gridOrigin[2]},

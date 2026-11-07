@@ -31,6 +31,7 @@
 #include "renderer/MeshLod.h"
 #include "renderer/ObjectTransformCache.h"
 #include "renderer/PostProcessStack.h"
+#include "renderer/ProbeReference.h"
 #include "renderer/RayTracedShadowMask.h"
 #include "renderer/RayTracingScene.h"
 #include "renderer/RenderGraph.h"
@@ -248,6 +249,11 @@ public:
     // with no capture -- the CI sweep -- still reports. Silent unless probes are
     // on, traced and classifying.
     void logProbeClassification();
+    // Logs the probes' irradiance against the traced reference over the visible
+    // surfaces, from a readback that idles the device. Silent unless
+    // gi.debugReferenceRays is on and the reference ran. Called at the capture
+    // frame and when a frame budget runs out, like logProbeClassification.
+    void logProbeReference();
     // Captures `frameCount` consecutive frames from `firstFrame` into
     // `outputDirectory` as frame_0000.png onwards (--capture-sequence). The same
     // readback as a single capture, armed on every frame of the range; each
@@ -695,6 +701,9 @@ private:
     // and the probe volume exists. After createProbeCapturePipeline, on the same
     // calls: it shares the material set layout and the bindless heap.
     void createProbeTracePipeline();
+    // The ray-traced reference's pipeline (gi.debugReferenceRays), on the same
+    // calls: it shares the material set layout and the bindless heap.
+    void createProbeReferencePipeline();
     void createDiffuseIrradianceMap();
     void createPrefilteredEnvironmentMap();
     void createBrdfLutTexture();
@@ -1036,6 +1045,9 @@ private:
     // The ray-traced gather: one dispatch over (cube face, capture slot), one
     // ray per capture texel, into the capture atlas the update pass convolves.
     void recordProbeTracePass(VkCommandBuffer commandBuffer);
+    void recordProbeReferencePass(VkCommandBuffer commandBuffer);
+    // Whether this frame runs the reference: asked and able, probes traced.
+    [[nodiscard]] bool isProbeReferenceSelected() const;
     // The punctual shadow atlas pass's callback: one dynamic-rendering scope
     // over the whole atlas, with a viewport/scissor per allocated slot.
     void recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive);
@@ -1085,6 +1097,7 @@ private:
         uint32_t volumetricFog = renderer::kInvalidRenderGraphHandle;
         uint32_t probeCapture = renderer::kInvalidRenderGraphHandle;
         uint32_t probeTrace = renderer::kInvalidRenderGraphHandle;
+        uint32_t probeReference = renderer::kInvalidRenderGraphHandle;
         uint32_t irradianceProbes = renderer::kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = renderer::kInvalidRenderGraphHandle;
         uint32_t shadowGpuCulling = renderer::kInvalidRenderGraphHandle;
@@ -2072,6 +2085,13 @@ private:
     // Whether this frame's capture is traced rather than rasterised. Implies
     // frameProbeCaptureActive_ and frameRayTracingSceneActive_.
     bool frameProbeTraceActive_ = false;
+    // Whether this frame runs the ray-traced reference (gi.debugReferenceRays).
+    bool frameProbeReferenceActive_ = false;
+    // The reference accumulation's frame count, and the inputs it measured, so a
+    // change of view or probes starts it over.
+    uint32_t probeReferenceFrames_ = 0;
+    bool probeReferenceReset_ = true;
+    uint64_t probeReferenceStateHash_ = 0;
     // The gather the log last reported: -1 rasterised, 0 traced cube texels, n
     // traced rotated rays, and a value none of those can be before the first.
     int64_t probeGatherLogged_ = -2;
@@ -2178,6 +2198,8 @@ private:
     // The per-pixel trace ahead of the main pass (renderer/RayTracedShadowMask.h).
     // After rayTracingScene_, so it is destroyed first.
     renderer::RayTracedShadowMask rayTracedShadowMask_{context_, swapchain_, pipelineStore_, renderResolution_};
+    // The ray-traced reference for probe GI (renderer/ProbeReference.h).
+    renderer::ProbeReference probeReference_{context_, swapchain_, pipelineStore_, renderResolution_};
     RayTracedShadowSettings rayTracedShadowSettings_{};
     // Reused every frame so writing the instances does not allocate.
     std::vector<renderer::RayTracingInstanceInput> rayTracingInstanceInputs_;
