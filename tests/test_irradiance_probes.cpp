@@ -1399,6 +1399,28 @@ TEST_CASE("The reference comparison averages only pixels both images cover", "[p
     CHECK(probeReferenceStats(accum, green).pixels == 0u);
 }
 
+TEST_CASE("A fitted grid puts the first and last probe on the scene's corners", "[probes]")
+{
+    using namespace ve::renderer;
+    Aabb bounds{};
+    bounds.expand(glm::vec3{-15.0f, -1.0f, -9.0f});
+    bounds.expand(glm::vec3{14.0f, 11.0f, 8.0f});
+    const ProbeGridBounds grid = fitProbeGrid(bounds);
+    CHECK(probeWorldPosition(0, grid) == bounds.min);
+    const glm::vec3 last = probeWorldPosition(kProbeCount - 1, grid);
+    CHECK(last.x == Approx(bounds.max.x));
+    CHECK(last.y == Approx(bounds.max.y));
+    CHECK(last.z == Approx(bounds.max.z));
+
+    // An invalid box leaves the neutral grid, and a flat one the smallest
+    // legal spacing rather than zero, which the lookup divides by.
+    CHECK(fitProbeGrid(Aabb{}).spacing == ProbeGridBounds{}.spacing);
+    Aabb flat{};
+    flat.expand(glm::vec3{0.0f, 2.0f, 0.0f});
+    flat.expand(glm::vec3{7.0f, 2.0f, 7.0f});
+    CHECK(fitProbeGrid(flat).spacing.y == Approx(0.05f));
+}
+
 TEST_CASE("The surface bias scales with the grid's smallest spacing", "[probes]")
 {
     using ve::renderer::probeSurfaceBiasDistance;

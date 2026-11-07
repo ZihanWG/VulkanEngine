@@ -35,6 +35,8 @@
 // or a fold -- which reads as a shading bug, far from the mapping that caused
 // it.
 
+#include "renderer/Bounds.h"
+
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -361,6 +363,14 @@ struct ProbeGridBounds {
     // World-space distance between adjacent probes on each axis.
     glm::vec3 spacing{1.0f};
 };
+
+// The grid that spans a scene's bounds exactly: the first probe on the minimum
+// corner, the last on the maximum. This is the fixed 8x4x8 lattice stretched over
+// the content instead of over a guess, so a scene smaller than the default grid
+// keeps its probes inside the building. Probes that land in walls are what
+// relocation is for. An invalid or flat box gives the smallest legal spacing on
+// that axis rather than a divide by zero.
+[[nodiscard]] ProbeGridBounds fitProbeGrid(const Aabb& sceneBounds);
 
 // Direction to a point on the [0,1]^2 octahedral square, and back.
 //

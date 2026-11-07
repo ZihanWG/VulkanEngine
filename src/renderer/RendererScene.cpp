@@ -332,6 +332,28 @@ void Renderer::pinSampleSceneCamera()
     }
     sampleSceneBounds_ = sceneBounds;
 
+    // The probe grid is fitted to the building, but only if nobody placed it:
+    // a grid that still equals the compiled default is the scene-agnostic one,
+    // while any other value came from a settings file or a UI edit and wins.
+    // Cornell and the leak room fit their own, by hand, when their preset loads.
+    const GiSettings defaultGi{};
+    const bool gridIsDefault =
+        std::equal(
+            std::begin(defaultGi.gridOrigin), std::end(defaultGi.gridOrigin), std::begin(giSettings_.gridOrigin)) &&
+        std::equal(
+            std::begin(defaultGi.gridSpacing), std::end(defaultGi.gridSpacing), std::begin(giSettings_.gridSpacing));
+    if (gridIsDefault && sceneBounds.valid()) {
+        const renderer::ProbeGridBounds fitted = renderer::fitProbeGrid(sceneBounds);
+        for (int axis = 0; axis < 3; ++axis) {
+            giSettings_.gridOrigin[axis] = fitted.origin[axis];
+            giSettings_.gridSpacing[axis] = fitted.spacing[axis];
+        }
+        Logger::info("Probe grid fitted to the sample scene: origin (" + std::to_string(fitted.origin.x) + ", " +
+                     std::to_string(fitted.origin.y) + ", " + std::to_string(fitted.origin.z) + "), spacing (" +
+                     std::to_string(fitted.spacing.x) + ", " + std::to_string(fitted.spacing.y) + ", " +
+                     std::to_string(fitted.spacing.z) + ")");
+    }
+
     // An interior shot down the scene's long axis, not framedCamera's fit of the
     // whole volume -- that one shows Sponza from outside the building, which is
     // not a measurement of an interior and not a portfolio screenshot either.
