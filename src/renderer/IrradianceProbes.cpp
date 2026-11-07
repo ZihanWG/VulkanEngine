@@ -370,6 +370,15 @@ float probeBounceAmplification(float albedo, float bounceWeight)
     return 1.0f / (1.0f - std::min(gain, kMaxGain));
 }
 
+float probeSurfaceBiasDistance(float fraction, const glm::vec3& spacing)
+{
+    const float smallest = std::min({spacing.x, spacing.y, spacing.z});
+    if (!(smallest > 0.0f) || !(fraction > 0.0f)) {
+        return 0.0f;
+    }
+    return fraction * smallest;
+}
+
 glm::vec3 probeSamplePosition(const glm::vec3& worldPosition,
                               const glm::vec3& surfaceNormal,
                               const glm::vec3& viewDirection,

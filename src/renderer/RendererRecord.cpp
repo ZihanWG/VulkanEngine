@@ -3143,7 +3143,10 @@ void Renderer::recordProbeShadingParams(VkCommandBuffer commandBuffer)
         const bool probeShadingActive = giSettings_.enabled && irradianceProbes_.hasAtlases() &&
                                         irradianceProbes_.convolveAvailable() && !giSettings_.debugPattern;
         probeParams.gridOrigin = glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
-        probeParams.gridSpacing = glm::vec4{bounds.spacing, giSettings_.surfaceBias};
+        // The shaders take the bias as a distance; the setting is a fraction of
+        // the grid's smallest spacing, so it means the same on any grid.
+        probeParams.gridSpacing =
+            glm::vec4{bounds.spacing, renderer::probeSurfaceBiasDistance(giSettings_.surfaceBias, bounds.spacing)};
         probeParams.debug.x = (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
         irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
     }

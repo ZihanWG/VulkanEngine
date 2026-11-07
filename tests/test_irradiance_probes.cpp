@@ -1398,3 +1398,22 @@ TEST_CASE("The reference comparison averages only pixels both images cover", "[p
     // Mismatched sizes count nothing.
     CHECK(probeReferenceStats(accum, green).pixels == 0u);
 }
+
+TEST_CASE("The surface bias scales with the grid's smallest spacing", "[probes]")
+{
+    using ve::renderer::probeSurfaceBiasDistance;
+    // The smallest axis sets it, whichever axis that is.
+    CHECK(probeSurfaceBiasDistance(0.25f, glm::vec3{4.0f, 3.0f, 4.0f}) == Approx(0.75f));
+    CHECK(probeSurfaceBiasDistance(0.25f, glm::vec3{1.2f, 2.8f, 1.2f}) == Approx(0.3f));
+    // Scale invariance, which is the point: scale the grid, and the bias moves
+    // with it, so a lookup clears the same share of a cell on any grid.
+    for (const float scale : {0.5f, 2.0f, 10.0f}) {
+        const glm::vec3 spacing{2.0f, 3.0f, 2.5f};
+        CHECK(probeSurfaceBiasDistance(0.25f, spacing * scale) ==
+              Approx(probeSurfaceBiasDistance(0.25f, spacing) * scale));
+    }
+    // Never negative, and zero rather than NaN for degenerate input.
+    CHECK(probeSurfaceBiasDistance(-1.0f, glm::vec3{2.0f}) == 0.0f);
+    CHECK(probeSurfaceBiasDistance(0.25f, glm::vec3{0.0f, 2.0f, 2.0f}) == 0.0f);
+    CHECK(probeSurfaceBiasDistance(std::numeric_limits<float>::quiet_NaN(), glm::vec3{2.0f}) == 0.0f);
+}

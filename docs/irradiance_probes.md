@@ -664,30 +664,36 @@ differently: 1.0 moves 17% of the Cornell box's pixels and 12% of the default
 scene's by more than 8/255, and a fixed distance cannot suit every probe
 spacing.
 
-### Scaling the bias with the spacing: measured, deferred
+### Scaling the bias with the spacing
 
-The obvious fix is DDGI's: make the bias a fraction of the grid's smallest
-spacing, so one value means the same offset relative to the probes on any grid.
-It was built -- the distance computed on the CPU from the fraction, so the
-shaders were untouched -- and measured, probe-only view, against the fixed 0.3:
+`gi.surfaceBias` is a fraction of the grid's smallest spacing
+(`probeSurfaceBiasDistance`, applied on the CPU so the shaders still receive a
+distance), default **0.25**; it was a distance in world units, 0.3. A fraction
+means one value suits any grid, which a distance tuned on the Cornell box's 1.2 m
+spacing did not: 0.25 of that is exactly the old 0.3, so the Cornell box is
+unchanged, and the 2 m leak room and 3 m Sponza grid get more.
 
-| fraction | leak room (2 m spacing), leak | Cornell (1.2 m), px moved > 8/255 | default (3 m) | Sponza (3 m) |
-| --- | --- | --- | --- | --- |
-| 0.15 | 1.69 | 1.6% | 0.1% | 24% |
-| 0.225 (DDGI's effective value) | 1.08 | 0.1% | 1.4% | 34% |
-| 0.25 | 0.93 | 0% | 2.3% | 36%, mean -15% |
-| 0.5 | 0.24 | 4.0% | 60% | 72% |
+It was built and measured against the probe-only view first, deferred because
+that view cannot say which way is better. The reference can. Probes against the
+traced reference, mean absolute error as a share of the reference, relocation
+off / on (single runs, traced gather, `bounceWeight` 0, frame 300):
 
-The leak room improves steadily and 0.25 reproduces the Cornell box, but no
-fraction leaves both kinds of grid where they were: the fixed 0.3 had been
-tuned, in effect, on the Cornell box's 1.2 m spacing, and every fraction that
-keeps it moves the 3 m grids a lot. In Sponza the move is not the localised
-removal of leaked light the backface floor gave -- it darkens curtains, floor
-and walls alike. Sponza's grid is the default one, not fitted to the building,
-so probes sit inside its columns and walls, and a longer offset plausibly pulls
-the lookup towards them; that is the reading, not a measurement. Choosing the
-fraction needs either a ground truth for Sponza or a grid without probes buried
-in geometry, so it waits for probe classification.
+| fraction (Cornell 1.2 m, leak room 2 m, Sponza 3 m) | Cornell | leak room | Sponza |
+| --- | --- | --- | --- |
+| 0.10 | 22.5 / 22.0% | 8.0 / 8.0% | 56.1 / 40.8% |
+| 0.15 | 23.1 / 22.7% | 5.9 / 5.9% | 51.0 / 37.4% |
+| 0.225 | 24.0 / 23.6% | 3.7 / 3.7% | 45.0 / 33.0% |
+| **0.25** | 24.3 / 23.9% | 3.1 / 3.1% | 43.9 / 31.9% |
+| 0.50 | 27.1 / 26.7% | 0.3 / 0.3% | 54.2 / 32.4% |
+| old fixed 0.3 | 24.3 / 23.9% | 5.9 / 5.9% | 56.1 / 40.8% |
+
+No fraction wins everywhere -- the Cornell box prefers a small bias (two points
+between 0.1 and 0.25), the leak room a large one -- but 0.25 is no worse than the
+old value anywhere and better on the two grids it was not tuned on: the leak room
+5.9 -> 3.1% and Sponza 40.8 -> 31.9% (relocated). Past it Sponza stops improving
+and the Cornell box gets worse. The earlier worry, that a longer offset on
+Sponza's 3 m grid pulls the lookup towards probes buried in columns, is what
+relocation answers: without it 0.25 only reaches 43.9%, with it 31.9%.
 
 ## Probes inside geometry
 
@@ -752,7 +758,7 @@ surfaces that relied on it are lit by fewer probes. Relocation moves it instead.
 
 ### Relocation
 
-`gi.probeRelocation` (traced gather only, **off by default** -- see below) gives
+`gi.probeRelocation` (traced gather only, **on by default** -- see below) gives
 every probe an offset from its grid point and updates it each time the probe is
 convolved, from the same rays the classification counts (DDGI's scheme, with the
 distances as shares of the spacing):
@@ -791,16 +797,17 @@ nothing needs moving the image does not change, and with the setting off the
 frame is the classification-only frame (Cornell bit-identical; Sponza bar its one
 known nondeterministic pixel).
 
-**Why it is off.** On the Cornell box it moves 1.4% of the probe view's pixels. On
-Sponza it moves half of them and darkens the view from 73.4 to 61.3 mean --
-below where it stood before classification, 64.4 -- broadly, across floor, arches
-and curtains alike, with some dark regions brightening. That is not the
-localised removal of an artefact the backface floor and classification gave: it
-is a different solution, made of 38 reactivated probes and 50 nudged ones whose
-new surroundings decide what they see, and nothing here can say whether it is
-the better one. A ground truth for Sponza's indirect light is what would, and
-[there is one now](#a-ray-traced-reference): the darkening is the probes moving
-towards it.
+**Why it is on.** It first shipped off. On Sponza it moves half of the probe
+view's pixels and darkens it from 73.4 to 61.3 mean -- below where it stood before
+classification, 64.4 -- broadly, across floor, arches and curtains alike, with
+some dark regions brightening. That is a different solution rather than the
+removal of an artefact, and nothing then could say whether it was the better one.
+The [ray-traced reference](#a-ray-traced-reference) can: the darkening is the
+probes moving towards ground truth. Sponza's probes were 20% too bright and the
+per-pixel error 56% of the reference; relocated, 7.4% and 41%. Where nothing is
+buried (the leak room) it changes nothing, and on the Cornell box it moves the
+error by under a point. `gi.probeRelocation: false` restores the fixed grid, and
+a sweep leg keeps that path covered.
 
 ## A ray-traced reference
 
@@ -1023,7 +1030,7 @@ preset opens the Inspector on this tab.
 | Enable irradiance probes | Master toggle. Off still seeds the atlases once so nothing samples them out of an undefined layout |
 | Probes per frame | Round-robin batch size; 0 pauses capture without losing the cursor |
 | Intensity | How strongly probe irradiance replaces the constant environment term. Zero disables the lookup outright |
-| Surface bias | How far off a surface the grid is sampled from. The one parameter that wants tuning per scene |
+| Surface bias | How far off a surface the grid is sampled from, as a fraction of the smallest probe spacing (0.25). The reference shows where it helps; see "Scaling the bias with the spacing" |
 | Depth lobe exponent | Sharpness of the visibility lobe. 50 by default; higher leaks less and flickers more |
 | Hysteresis | Fraction of a probe's previous value kept on re-capture. Zero overwrites, which is the reference to compare against |
 | Debug: probe irradiance only | The indirect term alone, bypassing exposure and tone mapping |
@@ -1130,8 +1137,8 @@ brightness knob.
   the right shape but the weight is a damping factor chosen for stability rather
   than derived, so absolute indirect intensity is a tuning parameter.
 - **The grid is fixed and hand-placed.** Origin and spacing are settings. There
-  is no fitting to scene bounds, no cascaded or nested volumes, and no probe
-  relocation. The traced gather leaves a probe inside geometry out of shading
+  is no fitting to scene bounds, no cascaded or nested volumes, and relocation
+  (traced gather only) is bounded to 0.45 of a cell. The traced gather leaves a probe inside geometry out of shading
   ([Probes inside geometry](#probes-inside-geometry)); the raster capture cannot
   tell, and such a probe there still contributes whatever it sees from inside.
 - **A probe outside the volume clamps to the edge probes.** Correct in the sense

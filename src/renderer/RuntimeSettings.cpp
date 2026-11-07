@@ -205,7 +205,7 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     gi.intensity = std::clamp(gi.intensity, 0.0f, 4.0f);
     // The upper bound is roughly one probe spacing: a bias past that samples a
     // different cell than the surface is in, which is worse than self-occlusion.
-    gi.surfaceBias = std::clamp(gi.surfaceBias, 0.0f, 4.0f);
+    gi.surfaceBias = std::clamp(gi.surfaceBias, 0.0f, 1.0f);
     // Capped below 1: at exactly 1 a probe would keep its previous value
     // forever and never take the capture it just paid for.
     gi.hysteresis = std::clamp(gi.hysteresis, 0.0f, 0.99f);
