@@ -550,6 +550,15 @@ probeUpdateBatch(uint32_t cursor, uint32_t probesPerFrame, std::vector<uint32_t>
 // number instead of an infinity that would reach the shading as NaN.
 [[nodiscard]] float probeBounceAmplification(float albedo, float bounceWeight);
 
+// How far off a surface the grid is sampled from, in world units: `fraction` of
+// the grid's smallest spacing (GiSettings::surfaceBias). A fraction rather than a
+// distance because what the offset has to clear scales with the grid -- the
+// outside probes a lookup must move away from sit a spacing apart -- so a fixed
+// distance that suits one grid is too small for a coarser one and too large for
+// a finer one. DDGI scales its offset the same way. Never negative; zero for a
+// degenerate spacing.
+[[nodiscard]] float probeSurfaceBiasDistance(float fraction, const glm::vec3& spacing);
+
 [[nodiscard]] glm::vec3 probeSamplePosition(const glm::vec3& worldPosition,
                                             const glm::vec3& surfaceNormal,
                                             const glm::vec3& viewDirection,

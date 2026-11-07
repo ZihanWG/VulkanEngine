@@ -405,10 +405,12 @@ struct GiSettings {
     // Zero disables the lookup outright rather than scaling it to nothing, so
     // the shader needs no separate flag.
     float intensity = 1.0f;
-    // How far off a surface the grid is sampled from, in world units. Too small
-    // and flat surfaces self-occlude into darkness; too large and light leaks
-    // through thin geometry.
-    float surfaceBias = 0.3f;
+    // How far off a surface the grid is sampled from, as a fraction of the
+    // grid's smallest probe spacing (renderer::probeSurfaceBiasDistance). Too
+    // small and flat surfaces self-occlude and outside probes leak through
+    // walls; too large and the lookup smears contact lighting. A fraction so
+    // the same value suits any grid; it was a distance in world units, 0.3.
+    float surfaceBias = 0.25f;
     // Fraction of a probe's previous value kept when it is re-captured. Zero
     // makes each capture overwrite, which is the reference the accumulated
     // result is judged against.
@@ -447,11 +449,11 @@ struct GiSettings {
     // Move probes out of geometry and off surfaces they sit too close to, rather
     // than only leaving the buried ones out: each update nudges a probe's offset
     // from its grid point (renderer::probeRelocationStep). Traced gather only;
-    // offsets reset to the grid whenever it is not running. Off by default: it
-    // works -- buried probes walk out -- but it darkens Sponza's probe view by
-    // 16% broadly, and there is no ground truth yet to say that is better; see
-    // docs/irradiance_probes.md#relocation.
-    bool probeRelocation = false;
+    // offsets reset to the grid whenever it is not running. On by default since
+    // the ray-traced reference measured it: against traced ground truth it cuts
+    // Sponza's probe error from 56% to 41% and leaves the leak room and Cornell
+    // box unchanged; see docs/irradiance_probes.md#a-ray-traced-reference.
+    bool probeRelocation = true;
     // The ray-traced reference (renderer::ProbeReference): rays per pixel per
     // frame, traced from every visible surface and accumulated while the view
     // holds still, beside what the probes supply there; zero is off. A

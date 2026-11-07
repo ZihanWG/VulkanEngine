@@ -676,10 +676,16 @@ void Renderer::drawIrradianceProbesDebugUi()
     ImGui::SliderFloat("Intensity##gi", &giSettings_.intensity, 0.0f, 4.0f, "%.2f");
     ImGui::SetItemTooltip("How strongly probe irradiance replaces the constant environment term.\n"
                           "Zero disables the lookup entirely rather than scaling it to nothing.");
-    ImGui::SliderFloat("Surface bias", &giSettings_.surfaceBias, 0.0f, 4.0f, "%.2f");
-    ImGui::SetItemTooltip("How far off a surface the grid is sampled from, in world units.\n"
-                          "Too small and flat surfaces self-occlude into darkness; too large\n"
-                          "and light leaks through thin geometry.");
+    ImGui::SliderFloat("Surface bias", &giSettings_.surfaceBias, 0.0f, 1.0f, "%.3f");
+    ImGui::SetItemTooltip("How far off a surface the grid is sampled from, as a fraction of\n"
+                          "the smallest probe spacing, so one value suits any grid.\n"
+                          "Too small and flat surfaces self-occlude and light from probes\n"
+                          "outside a wall leaks in; too large and contact lighting smears.");
+    ImGui::TextDisabled(
+        "  = %.2f world units on this grid.",
+        static_cast<double>(renderer::probeSurfaceBiasDistance(
+            giSettings_.surfaceBias,
+            glm::vec3{giSettings_.gridSpacing[0], giSettings_.gridSpacing[1], giSettings_.gridSpacing[2]})));
     ImGui::Checkbox("Move probes out of geometry", &giSettings_.probeRelocation);
     ImGui::SetItemTooltip("Ray-traced gather only. Each update nudges a probe out through the\n"
                           "nearest back face if it is buried, away from a surface it sits too\n"
