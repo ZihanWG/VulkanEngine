@@ -280,6 +280,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Probe Capture";
     case RenderPassType::ProbeTrace:
         return "Probe Trace";
+    case RenderPassType::ProbeReference:
+        return "Probe Reference";
     case RenderPassType::IrradianceProbes:
         return "Irradiance Probes";
     case RenderPassType::MainGpuCulling:
@@ -708,6 +710,11 @@ void RenderGraph::importFrameBuffers()
             frame_.resources.rayTracedShadowHistoryRead.image != VK_NULL_HANDLE) {
             frame_.rayTracedShadowHistoryRead = importTexture(frame_.resources.rayTracedShadowHistoryRead);
         }
+    }
+    if (frame_.resources.probeReferenceEnabled && frame_.resources.probeReferenceAccumulation.image != VK_NULL_HANDLE &&
+        frame_.resources.probeReferenceEstimate.image != VK_NULL_HANDLE) {
+        frame_.probeReferenceAccumulation = importTexture(frame_.resources.probeReferenceAccumulation);
+        frame_.probeReferenceEstimate = importTexture(frame_.resources.probeReferenceEstimate);
     }
 }
 

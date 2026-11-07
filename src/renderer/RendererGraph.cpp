@@ -928,6 +928,52 @@ void Renderer::declareFrameGraph(MainPassFrameState& mainPassState, uint32_t ima
              }});
     }
 
+    // The ray-traced reference for probe GI: a measuring instrument that changes no
+    // pixel, so nothing reads what it writes in the frame -- a side effect, kept
+    // alive by that rather than by a consumer. After the main depth and the thin
+    // G-buffer are final, against this frame's probe atlases.
+    if (resources.probeReferenceEnabled && board.probeReferenceAccumulation.valid() &&
+        board.probeReferenceEstimate.valid() && board.rayTracingTopLevel.valid() &&
+        board.probeIrradianceAtlas.valid() && board.probeDepthAtlas.valid()) {
+        passes.probeReference = graph.addPass(
+            "ProbeReference",
+            RenderPassType::ProbeReference,
+            RenderPassExecutionType::Compute,
+            true,
+            [&](RenderGraphBuilder& builder) {
+                builder.orderAfter(passes.probeShadingParams);
+                builder.readTexture(board.mainDepth,
+                                    RGAccess::ShaderRead,
+                                    "Reconstructs each visible surface point from the final main depth.");
+                builder.readTexture(board.normalRoughness,
+                                    RGAccess::ShaderRead,
+                                    "Reads each visible surface's shading normal from the thin G-buffer.");
+                builder.readBuffer(board.rayTracingTopLevel,
+                                   RGAccess::AccelerationStructureComputeRead,
+                                   "Traces the reference's hemisphere rays against the scene.");
+                if (board.punctualShadowAtlasImported) {
+                    builder.readTexture(board.punctualShadowAtlasDepth,
+                                        RGAccess::ShaderRead,
+                                        "Samples the punctual shadow atlas so traced radiance is shadowed.");
+                }
+                builder.readTexture(board.probeIrradianceAtlas,
+                                    RGAccess::ShaderRead,
+                                    "Looks up the probes' irradiance at each pixel, to compare with the reference.");
+                builder.readTexture(
+                    board.probeDepthAtlas, RGAccess::ShaderRead, "Reads probe visibility for that lookup.");
+                board.probeReferenceAccumulation =
+                    builder.writeTexture(board.probeReferenceAccumulation,
+                                         RGAccess::StorageImageReadWrite,
+                                         "Adds this frame's traced radiance to the running sum.");
+                board.probeReferenceEstimate = builder.writeTexture(board.probeReferenceEstimate,
+                                                                    RGAccess::StorageImageWrite,
+                                                                    "Writes the probes' irradiance per pixel.");
+            },
+            {"ProbeReference", "ProbeReference", [this](RenderGraphPassContext& context) {
+                 recordProbeReferencePass(context.commandBuffer());
+             }});
+    }
+
     if (resources.ssrEnabled && board.ssrSceneColorCopy.valid()) {
         passes.ssrCopy = graph.addPass(
             "SSRCopyPass",

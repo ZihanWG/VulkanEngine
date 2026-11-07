@@ -798,8 +798,72 @@ and curtains alike, with some dark regions brightening. That is not the
 localised removal of an artefact the backface floor and classification gave: it
 is a different solution, made of 38 reactivated probes and 50 nudged ones whose
 new surroundings decide what they see, and nothing here can say whether it is
-the better one. A ground truth for Sponza's indirect light is what would; until
-there is one, relocation stays a switch.
+the better one. A ground truth for Sponza's indirect light is what would, and
+[there is one now](#a-ray-traced-reference): the darkening is the probes moving
+towards it.
+
+## A ray-traced reference
+
+Everything above judged the probes against each other or against a picture. The
+reference judges them against the light they are meant to hold.
+`gi.debugReferenceRays` (an integer, **0 = off**, up to 64) adds a measuring pass
+(`probe_reference.comp`, `ProbeReference`) that changes no pixel:
+
+- At every visible pixel it rebuilds the surface point from the main depth and
+  takes the shading normal from the thin G-buffer, then fires cosine-distributed
+  rays over the hemisphere about that normal. With cosine sampling the plain mean
+  of the radiance *is* the cosine-weighted mean a probe's irradiance texel stores.
+- Each ray is shaded by the probe gather's own hit shading
+  (`probe_hit_shading.glsl`, shared with `probe_trace.comp`, whose output is
+  unchanged to the bit): the same surfaces, lights, shadows and sky. The
+  reference differs from the probes in where rays start and how many there are,
+  and in nothing else.
+- Radiance is summed into a persistent RGBA32F image (rgb sum, a ray count) while
+  the view holds still, and restarts when the view-projection or the extent
+  changes. Under TAA the unjittered matrix decides, so jitter does not restart it.
+- The same pass looks up the probes' irradiance at the same position and normal
+  through the shading's own eight-probe lookup, into a second image.
+
+The CPU reads both back at the capture frame and when a `--exit-after-frames`
+budget runs out, and logs luminance (Rec. 709) over the pixels both cover:
+
+    Irradiance probe reference: N pixels, R rays each; luminance reference X, probes Y (+b%), mean absolute error e% of the reference
+
+Two caveats that matter when reading it. The reference is a single bounce, so
+compare with `gi.bounceWeight` at 0, where the probes are also single bounce; the
+log says so when it is not. And it measures indirect *diffuse* light at the shaded
+point, so what it cannot see is specular, and the sky term enters both sides the
+same way. It costs a ray query per pixel per ray: a measuring instrument, not a
+setting to leave on.
+
+### What it says
+
+Traced gather, 768 rays, `bounceWeight` 0, 8 reference rays a frame to frame 300
+(2400 rays a pixel), 1280x720, frozen animation, RTX 3080 Ti Laptop:
+
+| scene | relocation | reference | probes | bias | mean abs. error |
+| --- | --- | --- | --- | --- | --- |
+| leak room | off | 0.1065 | 0.1128 | +5.9% | 5.9% |
+| leak room | on | 0.1065 | 0.1128 | +5.9% | 5.9% |
+| Sponza | off | 0.2512 | 0.3013 | +20.0% | 56.1% |
+| Sponza | on | 0.2512 | 0.2699 | +7.4% | 40.8% |
+
+Single runs on a deterministic scene, not an A/B series; the differences are far
+larger than anything run to run noise explains, but the numbers are not
+confidence-bounded.
+
+Relocation's 16% darkening of Sponza, which had no ground truth to be judged
+against, is the probes moving *towards* the reference: they were 20% too bright,
+and are 7.4% too bright after, with the per-pixel error down by a quarter. The
+brightness the unrelocated grid had was the buried probes' light, and the
+reference does not have it. The leak room, where no probe is buried and none
+moves, is unchanged to the digit, as it should be.
+
+The error that is left is mostly not bias. 40.8% mean absolute error against
++7.4% mean bias is per-pixel disagreement of both signs: a 4 m by 3 m by 4 m grid
+cannot resolve Sponza's arches and columns, which is what probe GI trades away,
+and it is the number to move with any future change to the grid, the weights or
+the visibility term.
 
 ## The Cornell box scene
 

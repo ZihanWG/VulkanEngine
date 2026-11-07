@@ -459,6 +459,10 @@ void Renderer::createPipeline()
     // it again once they do.
     createProbeCapturePipeline();
     createProbeTracePipeline();
+    createProbeReferencePipeline();
+    // The pipeline rebuild dropped the images; they come back with the next resize.
+    probeReference_.createResources(postProcess_.normalRoughness().imageView());
+    probeReferenceReset_ = true;
 
     const double pipelineBuildMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipelineBuildStart).count();
@@ -953,6 +957,25 @@ void Renderer::createProbeTracePipeline()
         probeTracePipeline_.reset();
         Logger::warn(std::string("Ray-traced probe gather unavailable; probe captures stay rasterised: ") +
                      error.what());
+    }
+}
+
+void Renderer::createProbeReferencePipeline()
+{
+    // Torn down first so a rebuild does not leave the old layout behind.
+    probeReference_.destroyResources();
+    probeReference_.destroyPipeline();
+    // The trace's preconditions: a scene to trace and the bindless heap.
+    if (!rayQueryShadingAvailable() || !irradianceProbes_.hasAtlases()) {
+        return;
+    }
+    try {
+        probeReference_.createPipeline(shaderPath("probe_reference.comp.spv"),
+                                       materialDescriptorSetLayout_.handle(),
+                                       bindlessTextureHeap_.descriptorSetLayout());
+    } catch (const std::exception& error) {
+        probeReference_.destroyPipeline();
+        Logger::warn(std::string("Probe GI reference unavailable: ") + error.what());
     }
 }
 

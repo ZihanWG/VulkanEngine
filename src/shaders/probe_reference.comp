@@ -1,0 +1,163 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// The ray-traced reference for probe GI: at every visible pixel, the indirect
+// diffuse light the probes are meant to supply, found the slow, exact way, next
+// to what the probes actually supply there.
+//
+// The question is the one a probe's irradiance texel answers -- the
+// cosine-weighted mean radiance arriving at a surface facing a given way -- asked
+// of the pixel's own surface instead of a probe's position: rays leave the
+// surface over a cosine-distributed hemisphere about its shading normal (the
+// one the main pass wrote to the thin G-buffer), and each is shaded by the probe
+// gather's own hit shading (probe_hit_shading.glsl), the same surfaces, lights,
+// shadows and sky. Single bounce, so it does not depend on the probes it is
+// judging: compare with gi.bounceWeight at zero. Accumulated over frames into a
+// running sum, reset by the CPU when the view or the probes change.
+//
+// The probe estimate is computed in the same pass, at the same position and
+// normal, through the same eight-probe lookup the shading uses, so the two
+// images differ by the estimator and nothing else. See
+// docs/irradiance_probes.md#a-ray-traced-reference.
+
+#include "irradiance_probes.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 7) uniform sampler2D uPunctualShadowAtlas;
+layout(set = 0, binding = 9) uniform sampler2D uProbeIrradianceAtlas;
+layout(set = 0, binding = 10) uniform sampler2D uProbeDepthAtlas;
+layout(set = 0, binding = 11) uniform ProbeShadingParams {
+    vec4 gridOrigin;   // xyz = origin, w = intensity
+    vec4 gridSpacing;  // xyz = spacing, w = surface bias
+    vec4 debug;
+    // xyz = this probe's relocation offset from its grid point.
+    vec4 probeOffsets[kProbeCount];
+} probeParams;
+layout(set = 0, binding = 16) uniform accelerationStructureEXT uSceneTopLevel;
+layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
+
+// The pass's own set.
+layout(set = 2, binding = 0) uniform sampler2D uSceneDepth;
+layout(set = 2, binding = 1) uniform sampler2D uNormalRoughness;
+// rgb = the reference's running sum of radiance, a = how many rays it holds.
+layout(set = 2, binding = 2, rgba32f) uniform image2D uReferenceAccum;
+// rgb = the probes' irradiance here, a = 1 where any probe could contribute.
+layout(set = 2, binding = 3, rgba32f) uniform writeonly image2D uProbeEstimate;
+
+#include "probe_capture_shading.glsl"
+#include "ray_traced_shadow_trace.glsl"
+#include "probe_hit_shading.glsl"
+
+// Mirrors ve::renderer::ProbeReferencePushConstants.
+layout(push_constant) uniform ProbeReferencePush {
+    // Inverse of the jittered view-projection the depth was rasterised with.
+    mat4 inverseViewProjection;
+    FrameConstantsBuffer frameConstants;
+    ObjectFrameDataBuffer objectFrameData;
+    RtGeometryRecordBuffer geometry;
+    LightBuffer lights;
+    ShadowSlotBuffer punctualShadowSlots;
+    uint lightCount;
+    float sunRayLength;
+    uint raysPerFrame;
+    // Bits 0-30 the accumulation's frame index, bit 31 set to start it over.
+    uint frameAndReset;
+    uvec2 extent;
+} pc;
+
+// The engine's octahedral decode, as ssr_trace.frag reads the thin G-buffer.
+vec3 octDecode(vec2 e)
+{
+    e = e * 2.0 - 1.0;
+    vec3 n = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0) {
+        n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return normalize(n);
+}
+
+// PCG hash to a uniform in [0, 1): a different, well-mixed value per pixel, frame
+// and ray, so the accumulated rays never repeat.
+float referenceRandom(uvec4 key)
+{
+    uint state = key.x * 1973u + key.y * 9277u + key.z * 26699u + key.w * 7919u;
+    state = state * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    word = (word >> 22u) ^ word;
+    return float(word >> 8) * (1.0 / 16777216.0);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(gl_GlobalInvocationID.xy, pc.extent))) {
+        return;
+    }
+    bool reset = (pc.frameAndReset & 0x80000000u) != 0u;
+    uint frameIndex = pc.frameAndReset & 0x7FFFFFFFu;
+
+    // The sky: nothing to compare. Zero rays marks the pixel as not a surface.
+    float depth = texelFetch(uSceneDepth, pixel, 0).r;
+    if (depth >= 1.0) {
+        imageStore(uReferenceAccum, pixel, vec4(0.0));
+        imageStore(uProbeEstimate, pixel, vec4(0.0));
+        return;
+    }
+
+    vec2 ndc = (vec2(pixel) + 0.5) / vec2(pc.extent) * 2.0 - 1.0;
+    vec4 world = pc.inverseViewProjection * vec4(ndc, depth, 1.0);
+    vec3 position = world.xyz / world.w;
+    vec3 normal = octDecode(texelFetch(uNormalRoughness, pixel, 0).xy);
+
+    FrameConstantsBuffer frame = pc.frameConstants;
+    vec3 camera = frame.values.cameraPosition.xyz;
+    vec3 viewDirection = normalize(camera - position);
+
+    // What the probes supply here, through the shading's own lookup.
+    float coverage;
+    vec3 probeIrradiance = sampleProbeIrradiance(position, normal, viewDirection, coverage);
+    imageStore(uProbeEstimate, pixel, vec4(probeIrradiance, coverage));
+
+    ProbeRayContext context;
+    context.frame = frame;
+    context.objects = pc.objectFrameData;
+    context.geometry = pc.geometry;
+    context.lighting.sunDirection = frame.values.lightDirection.xyz;
+    context.lighting.sunColor = frame.values.lightColor.rgb;
+    context.lighting.ambient = frame.values.ambientColor.rgb;
+    context.lighting.lights = pc.lights;
+    context.lighting.lightCount = pc.lightCount;
+    context.lighting.shadowSlots = pc.punctualShadowSlots;
+    // Single bounce: the reference must not lean on the grid it is judging.
+    context.lighting.bounceWeight = 0.0;
+    context.sunRayLength = pc.sunRayLength;
+    // An infinitesimal cone: level 0, averaged by the many rays instead.
+    context.coneSpread = 0.0;
+
+    // Off the surface by a little more with distance, which is how far depth
+    // reconstruction can put the point inside it.
+    vec3 origin = position + normal * (kProbeTraceSurfaceOffset + 1.0e-3 * length(camera - position));
+    vec3 tangent;
+    vec3 bitangent;
+    rtOrthonormalBasis(normal, tangent, bitangent);
+
+    vec3 sum = vec3(0.0);
+    for (uint ray = 0u; ray < pc.raysPerFrame; ++ray) {
+        // Cosine-distributed about the normal, so the mean of the radiance is
+        // the cosine-weighted mean the probes store, with no weight per ray.
+        float u1 = referenceRandom(uvec4(uvec2(pixel), frameIndex, ray * 2u));
+        float u2 = referenceRandom(uvec4(uvec2(pixel), frameIndex, ray * 2u + 1u));
+        float radius = sqrt(u1);
+        float phi = 6.2831853 * u2;
+        vec3 direction = normalize(tangent * (radius * cos(phi)) + bitangent * (radius * sin(phi)) +
+                                   normal * sqrt(max(0.0, 1.0 - u1)));
+        sum += probeTraceRadiance(context, origin, direction, 0.0, kProbeMaxDistance).rgb;
+    }
+
+    vec4 previous = reset ? vec4(0.0) : imageLoad(uReferenceAccum, pixel);
+    imageStore(uReferenceAccum, pixel, previous + vec4(sum, float(pc.raysPerFrame)));
+}

@@ -452,6 +452,15 @@ struct GiSettings {
     // 16% broadly, and there is no ground truth yet to say that is better; see
     // docs/irradiance_probes.md#relocation.
     bool probeRelocation = false;
+    // The ray-traced reference (renderer::ProbeReference): rays per pixel per
+    // frame, traced from every visible surface and accumulated while the view
+    // holds still, beside what the probes supply there; zero is off. A
+    // measuring instrument for the probes, not a lighting path -- it changes no
+    // pixel, and reports through the log at the capture frame and at
+    // --exit-after-frames. Single bounce, so compare with bounceWeight at zero.
+    // Needs ray query and the bindless path. See
+    // docs/irradiance_probes.md#a-ray-traced-reference.
+    int debugReferenceRays = 0;
 };
 
 // Internal render resolution as a fraction of the presentation resolution. The

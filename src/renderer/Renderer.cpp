@@ -267,6 +267,8 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     // with the scene's textures, and it shares the material set layout.
     createProbeCapturePipeline();
     createProbeTracePipeline();
+    createProbeReferencePipeline();
+    probeReference_.createResources(postProcess_.normalRoughness().imageView());
     updateDemoLights(0.0f);
     // Prefer a rigged glTF if one is present; otherwise fall back to the
     // self-contained procedural bone chain.
@@ -372,6 +374,10 @@ void Renderer::recreatePostProcessResources()
         rayTracedShadowMask_.createResources(rayTracingScene_.topLevelHandle());
     }
     refreshMaterialRayTracedShadowMaskDescriptors();
+    // After the depth image, whose view its set samples, and the thin G-buffer.
+    // The images start over, so the accumulation does too.
+    probeReference_.createResources(postProcess_.normalRoughness().imageView());
+    probeReferenceReset_ = true;
     createDepthPyramidResources();
     // The material sets hold a view of the ambient-occlusion target, which was
     // just recreated at the new size. No-op on the first call, before any
@@ -683,6 +689,7 @@ void Renderer::drawFrame()
     if (probeClassificationReportFrame_ != 0 && frameClock_.frameCount() >= probeClassificationReportFrame_) {
         probeClassificationReportFrame_ = 0;
         logProbeClassification();
+        logProbeReference();
     }
     if (vsmPagePoolDumpTargetFrame_ != 0 && frameClock_.frameCount() >= vsmPagePoolDumpTargetFrame_) {
         vsmPagePoolDumpTargetFrame_ = 0;
@@ -1091,6 +1098,38 @@ void Renderer::logProbeClassification()
                  std::to_string(renderer::kProbeCount) + " probes inside geometry, left out of shading (" +
                  std::to_string(gathered) + " of " + std::to_string(renderer::kProbeCount) + " gathered so far" +
                  relocation + "): [" + indices + "]");
+}
+
+void Renderer::logProbeReference()
+{
+    if (probeReferenceFrames_ == 0 || !probeReference_.available() || giSettings_.debugReferenceRays <= 0) {
+        return;
+    }
+    const std::optional<renderer::ProbeReferenceStats> stats =
+        probeReference_.readStats(renderResolution_.extent(), commandContext_.commandPool(), context_.graphicsQueue());
+    if (!stats.has_value() || stats->pixels == 0) {
+        Logger::error("Irradiance probe reference: nothing to compare (no covered surface pixels read back).");
+        return;
+    }
+    char text[256];
+    const double bias = stats->referenceMean > 0.0 ? (stats->probeMean / stats->referenceMean - 1.0) * 100.0 : 0.0;
+    const double error = stats->referenceMean > 0.0 ? stats->meanAbsoluteError / stats->referenceMean * 100.0 : 0.0;
+    std::snprintf(text,
+                  sizeof(text),
+                  "Irradiance probe reference: %llu pixels, %.0f rays each; luminance reference %.4f, probes %.4f "
+                  "(%+.1f%%), mean absolute error %.1f%% of the reference",
+                  static_cast<unsigned long long>(stats->pixels),
+                  stats->samplesPerPixel,
+                  stats->referenceMean,
+                  stats->probeMean,
+                  bias,
+                  error);
+    std::string line = text;
+    if (giSettings_.bounceWeight > 0.0f) {
+        line += " [gi.bounceWeight is above zero: the probes hold more than one bounce and the reference one, "
+                "so a positive bias is expected]";
+    }
+    Logger::info(line);
 }
 
 void Renderer::requestFrameSequenceCaptureAt(uint64_t firstFrame,

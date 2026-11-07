@@ -503,4 +503,42 @@ uint32_t probeUpdateBatch(uint32_t cursor, uint32_t probesPerFrame, std::vector<
     return next;
 }
 
+ProbeReferenceStats probeReferenceStats(std::span<const float> accumRgba, std::span<const float> estimateRgba)
+{
+    ProbeReferenceStats stats;
+    if (accumRgba.size() != estimateRgba.size() || accumRgba.size() % 4u != 0u) {
+        return stats;
+    }
+    const auto luminance = [](const float* rgb) {
+        return 0.2126 * static_cast<double>(rgb[0]) + 0.7152 * static_cast<double>(rgb[1]) +
+               0.0722 * static_cast<double>(rgb[2]);
+    };
+    double samples = 0.0;
+    double reference = 0.0;
+    double probe = 0.0;
+    double error = 0.0;
+    for (size_t texel = 0; texel < accumRgba.size(); texel += 4u) {
+        const float rays = accumRgba[texel + 3u];
+        const float coverage = estimateRgba[texel + 3u];
+        if (!(rays > 0.0f) || !(coverage > 0.0f)) {
+            continue;
+        }
+        const double referenceLuminance = luminance(&accumRgba[texel]) / static_cast<double>(rays);
+        const double probeLuminance = luminance(&estimateRgba[texel]);
+        ++stats.pixels;
+        samples += rays;
+        reference += referenceLuminance;
+        probe += probeLuminance;
+        error += std::abs(probeLuminance - referenceLuminance);
+    }
+    if (stats.pixels > 0) {
+        const double count = static_cast<double>(stats.pixels);
+        stats.samplesPerPixel = samples / count;
+        stats.referenceMean = reference / count;
+        stats.probeMean = probe / count;
+        stats.meanAbsoluteError = error / count;
+    }
+    return stats;
+}
+
 } // namespace ve::renderer

@@ -685,6 +685,12 @@ void Renderer::drawIrradianceProbesDebugUi()
                           "nearest back face if it is buried, away from a surface it sits too\n"
                           "close to, and back towards its grid point when nothing is near.\n"
                           "Offsets stay under half a cell and reset when this is off.");
+    ImGui::SliderInt("Reference rays", &giSettings_.debugReferenceRays, 0, 64);
+    ImGui::SetItemTooltip("Measuring only; changes no pixel. Traces this many cosine rays per\n"
+                          "pixel per frame from every visible surface, accumulates them while\n"
+                          "the view holds still, and logs the probes' irradiance against that\n"
+                          "at the capture frame and on exit. Compare with bounce weight at 0.\n"
+                          "Costly: for measurement, not play. Zero is off.");
     ImGui::Checkbox("Leave out probes inside geometry", &giSettings_.probeClassification);
     ImGui::SetItemTooltip("Ray-traced gather only. A probe more than a quarter of whose rays hit\n"
                           "the backs of single-sided surfaces is buried in a wall or a column;\n"

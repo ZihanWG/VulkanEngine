@@ -1936,7 +1936,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // the probes choose further down, because the instances have to be written
     // before the object data upload below; isProbeCaptureActive answers the same
     // question the batch will, minus the cursor.
-    frameRayTracingSceneActive_ = frameRayTracedShadowsActive_ || (isProbeTraceSelected() && isProbeCaptureActive());
+    // The reference traces the scene too, whether or not anything else does.
+    frameProbeReferenceActive_ = isProbeReferenceSelected();
+    frameRayTracingSceneActive_ = frameRayTracedShadowsActive_ || (isProbeTraceSelected() && isProbeCaptureActive()) ||
+                                  frameProbeReferenceActive_;
     frameRayTracingSceneBuildRequired_ = false;
     if (frameRayTracingSceneActive_) {
         const ScopedCpuTimer timer = cpuScope(CpuScope::RayTracingInstances);
@@ -2076,6 +2079,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameRayTracedShadowsActive_ = false;
     frameRayTracingSceneActive_ = false;
     frameProbeTraceActive_ = false;
+    frameProbeReferenceActive_ = false;
     frameRayTracedShadowMaskActive_ = false;
     frameRayTracedShadowFilterActive_ = false;
     frameRayTracedShadowTemporalActive_ = false;

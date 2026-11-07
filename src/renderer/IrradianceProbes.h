@@ -36,6 +36,7 @@
 // it.
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -553,5 +554,30 @@ probeUpdateBatch(uint32_t cursor, uint32_t probesPerFrame, std::vector<uint32_t>
                                             const glm::vec3& surfaceNormal,
                                             const glm::vec3& viewDirection,
                                             float normalBias);
+
+// --- The ray-traced reference (gi.debugReferenceRays) ---
+
+// How the probes' irradiance compares with the traced reference over the
+// pixels both cover. Luminance (Rec. 709 weights) rather than per channel: the
+// question is whether the probes supply the right amount of light, and one
+// number per pixel keeps the comparison readable in a log line.
+struct ProbeReferenceStats {
+    // Pixels with a reference sample and any probe coverage.
+    uint64_t pixels = 0;
+    // The mean number of rays each of those pixels' reference holds.
+    double samplesPerPixel = 0.0;
+    // Mean luminance of the reference and of the probe estimate.
+    double referenceMean = 0.0;
+    double probeMean = 0.0;
+    // Mean of |probe - reference| per pixel, the error a bias can hide.
+    double meanAbsoluteError = 0.0;
+};
+
+// From the two images read back as RGBA float texels: `accumRgba` the
+// reference's running sum (rgb) and ray count (a), `estimateRgba` the probes'
+// irradiance (rgb) and coverage (a). A pixel counts when both alphas are
+// positive. Mismatched sizes count nothing.
+[[nodiscard]] ProbeReferenceStats probeReferenceStats(std::span<const float> accumRgba,
+                                                      std::span<const float> estimateRgba);
 
 } // namespace ve::renderer

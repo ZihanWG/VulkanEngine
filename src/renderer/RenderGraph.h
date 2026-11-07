@@ -114,6 +114,7 @@ enum class RenderPassType {
     VolumetricFog,
     ProbeCapture,
     ProbeTrace,
+    ProbeReference,
     IrradianceProbes,
     MainGpuCulling,
     DepthPyramid,
@@ -648,6 +649,10 @@ struct RenderGraphFrameResources {
     // accumulates.
     RenderGraphImageResource rayTracedShadowHistoryWrite;
     RenderGraphImageResource rayTracedShadowHistoryRead;
+    // The probe reference's two persistent images (renderer::ProbeReference).
+    // Imported only on a frame it runs.
+    RenderGraphImageResource probeReferenceAccumulation;
+    RenderGraphImageResource probeReferenceEstimate;
     bool taaEnabled = false;
     // Declares the two-phase occlusion passes (mid-frame depth pyramid, cull
     // phase 2, second main HDR pass) for this frame.
@@ -730,6 +735,8 @@ struct RenderGraphFrameResources {
     // capture atlas, filled by rays against the top-level structure. Never set
     // together with probeCaptureEnabled.
     bool probeTraceEnabled = false;
+    // Declares the ray-traced reference pass for probe GI (gi.debugReferenceRays).
+    bool probeReferenceEnabled = false;
     // Declares the main compute frustum/occlusion cull. Comes from
     // GpuCulling::willRecordMainCull rather than from a condition rebuilt here,
     // so the declaration and the recorder cannot drift. False on the CPU culling
@@ -892,6 +899,8 @@ struct RenderGraphBlackboard {
     RGTextureHandle rayTracedShadowFilter{};
     RGTextureHandle rayTracedShadowHistoryWrite{};
     RGTextureHandle rayTracedShadowHistoryRead{};
+    RGTextureHandle probeReferenceAccumulation{};
+    RGTextureHandle probeReferenceEstimate{};
     RGTextureHandle ssrSceneColorCopy{};
     RGTextureHandle taaHistoryRead{};
     RGTextureHandle taaHistoryWrite{};
