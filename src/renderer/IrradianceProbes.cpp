@@ -370,6 +370,22 @@ float probeBounceAmplification(float albedo, float bounceWeight)
     return 1.0f / (1.0f - std::min(gain, kMaxGain));
 }
 
+ProbeGridBounds fitProbeGrid(const Aabb& sceneBounds)
+{
+    constexpr float kMinSpacing = 0.05f;
+    ProbeGridBounds grid{};
+    if (!sceneBounds.valid()) {
+        return grid;
+    }
+    const glm::vec3 counts{
+        static_cast<float>(kProbeGridX), static_cast<float>(kProbeGridY), static_cast<float>(kProbeGridZ)};
+    const glm::vec3 extent = sceneBounds.max - sceneBounds.min;
+    grid.origin = sceneBounds.min;
+    grid.spacing =
+        glm::clamp(extent / (counts - glm::vec3{1.0f}), glm::vec3{kMinSpacing}, glm::vec3{kProbeMaxDistance});
+    return grid;
+}
+
 float probeSurfaceBiasDistance(float fraction, const glm::vec3& spacing)
 {
     const float smallest = std::min({spacing.x, spacing.y, spacing.z});

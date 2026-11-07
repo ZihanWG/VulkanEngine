@@ -695,6 +695,35 @@ and the Cornell box gets worse. The earlier worry, that a longer offset on
 Sponza's 3 m grid pulls the lookup towards probes buried in columns, is what
 relocation answers: without it 0.25 only reaches 43.9%, with it 31.9%.
 
+### Fitting the grid to the scene
+
+The default grid (origin (-14, 0.5, -14), spacing (4, 3, 4)) is a guess that is
+28 m across in X and Z. Sponza is 30 m by 18 m, so nearly half of the Z probes sat
+outside the building. `fitProbeGrid` stretches the 8x4x8 lattice over a scene's
+bounds instead: the first probe on the minimum corner, the last on the maximum.
+It is applied when the sample scene loads, and only if the grid in the settings
+still equals the compiled default -- a grid from a settings file or the UI is
+somebody's placement and wins. Cornell and the leak room keep the grids their
+presets set by hand.
+
+Probes against the traced reference, Sponza, relocation on, surface bias 0.25 of
+the (now smaller) smallest spacing, single runs at frame 300:
+
+| grid | probes inside geometry | bias | mean absolute error |
+| --- | --- | --- | --- |
+| default | 2 | -4.5% | 31.9% |
+| **fitted to the bounds** | 0 | -10.8% | **24.9%** |
+| bounds inset by 3% / 6% / 9% / 12% per side | 0 / 13 / 9 / 18 | -20 / -18 / -5 / -10% | 26.0 / 24.9 / 20.6 / 19.6% |
+| hand-fitted by sweeping origin and spacing | 10 | -3.7% | 20.6% |
+
+The exact fit is the one without a free parameter, and it is what ships. The
+insets and the hand-fitted row do better, but not monotonically (26.0, 24.9, 20.6,
+19.6), which says the error is moving with where the probes happen to fall against
+the columns rather than with the inset; picking the best row would be tuning to
+one camera and one frame. What the fit reliably does is stop spending probes
+outside the building and leave none buried. The remaining error is the grid's
+resolution against Sponza's geometry.
+
 ## Probes inside geometry
 
 A grid is placed without regard to what is in the scene, so some probes land
@@ -747,8 +776,9 @@ classification was right.)
 
 The scenes with nothing buried render bit-identically to classification off,
 which is the check that it costs nothing where it has nothing to do; so does the
-whole frame with it switched off. Sponza's default grid is not fitted to the
-building, and 40 of its 256 probes were inside columns and walls, averaging their
+whole frame with it switched off. Sponza's default grid was not fitted to the
+building (it is now, see [Fitting the grid to the scene](#fitting-the-grid-to-the-scene)),
+and 40 of its 256 probes were inside columns and walls, averaging their
 insides into the arcades. That is also the confounder the spacing-scaled bias ran
 into above -- it darkened Sponza broadly -- so that question can be asked again
 on a grid that no longer drags buried probes in.
@@ -1136,8 +1166,9 @@ brightness knob.
 - **Multi-bounce is a fixed weight, not an energy-exact solve.** It converges to
   the right shape but the weight is a damping factor chosen for stability rather
   than derived, so absolute indirect intensity is a tuning parameter.
-- **The grid is fixed and hand-placed.** Origin and spacing are settings. There
-  is no fitting to scene bounds, no cascaded or nested volumes, and relocation
+- **The grid is fixed in size and placed once.** Origin and spacing are settings;
+  the sample scene's is fitted to its bounds at load, and nothing refits it when
+  the scene changes at runtime. There are no cascaded or nested volumes, and relocation
   (traced gather only) is bounded to 0.45 of a cell. The traced gather leaves a probe inside geometry out of shading
   ([Probes inside geometry](#probes-inside-geometry)); the raster capture cannot
   tell, and such a probe there still contributes whatever it sees from inside.
@@ -1149,8 +1180,8 @@ brightness knob.
 - **Probes still leak at wall junctions.** With the backface floor at zero the
   leak room's leaked light is 1.69/255 and its spatial variation 0.096 of the
   mean, from outside probes whose depth map cannot resolve where a nearby wall
-  ends. A larger surface bias removes most of it in that room, but is a per-scene
-  trade at a fixed distance; scaling it with the probe spacing is not done.
+  ends. A larger surface bias removes most of it in that room; the bias now scales
+  with the probe spacing, but no single fraction wins on every scene.
 - **Capture shading is not the main pass's shading.** No normal maps, no
   specular, and the lambert is unnormalised, so probe irradiance is
   self-consistent rather than physically matched to the direct term.
