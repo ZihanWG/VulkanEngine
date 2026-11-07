@@ -1,3 +1,3 @@
 {
-  "gi": { "enabled": true, "rayTracedGather": true, "bounceWeight": 0.0, "debugReferenceRays": 4 }
+  "gi": { "enabled": true, "rayTracedGather": true, "bounceWeight": 0.0, "debugReferenceRays": 4, "probesPerFrame": 16 }
 }

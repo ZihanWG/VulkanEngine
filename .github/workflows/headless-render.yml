@@ -333,6 +333,56 @@ jobs:
             exit 1
           }
 
+      # Probe GI against its own ground truth. Every other gate here asks whether
+      # the frame is well formed or unchanged; none asks whether the probes are
+      # right, so a bug that left the grid lit but wrong (a flipped normal, a bias
+      # that leaks, a relocation that moves the wrong way) passed all of them.
+      # debugReferenceRays traces cosine rays from every visible pixel and the
+      # engine logs how far the probes' irradiance sits from that, as a share of
+      # the reference. The Cornell box is the scene because it is closed, so the
+      # reference has nothing to miss.
+      #
+      # 16 probes per frame is the cap, which refreshes all 256 in 16 frames, and
+      # 60 frames let the hysteresis settle; the 10-frame sweep leg of the same
+      # scene reads 89% because nothing has converged yet. The cap is a regression
+      # tripwire rather than a quality claim: probes that are dark, stale or
+      # unconverged read 64% and up, a healthy grid about 29%, and a subtler
+      # regression in the weights does not move this scene much (measured, see
+      # "The CI gate" in docs/irradiance_probes.md).
+      - name: Gate probe GI against the traced reference
+        if: matrix.shard == 0
+        env:
+          PROBE_REFERENCE_FRAMES: 60
+          PROBE_REFERENCE_MAX_ERROR_PERCENT: 45
+        run: |
+          set +e
+          timeout 900 xvfb-run -a --server-args="-screen 0 1280x720x24" \
+            ./build/ci-debug/VulkanEngine \
+              --deterministic \
+              --scene cornell \
+              --settings config/ci/irradiance-probes-reference.json \
+              --exit-after-frames "$PROBE_REFERENCE_FRAMES" \
+              --fail-on-validation-error \
+            > probe-reference.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            tail -n 20 probe-reference.log
+            echo "::error::The probe reference run exited with status $status."
+            exit 1
+          fi
+          line=$(grep -o "Irradiance probe reference: .*" probe-reference.log | tail -n 1)
+          echo "${line:-<no reference line>}"
+          error=$(echo "$line" | sed -n 's/.*mean absolute error \([0-9.]*\)% of the reference.*/\1/p')
+          if [ -z "$error" ]; then
+            echo "::error::No probe reference result in the log; the reference pass did not run."
+            exit 1
+          fi
+          if ! awk -v e="$error" -v m="$PROBE_REFERENCE_MAX_ERROR_PERCENT" 'BEGIN { exit !(e <= m) }'; then
+            echo "::error::Probe GI is ${error}% from the traced reference, above the ${PROBE_REFERENCE_MAX_ERROR_PERCENT}% cap."
+            exit 1
+          fi
+
       # The default configuration is one point in a large space, and until now it
       # was the only point anything ran. docs/render_graph.md said so out loud:
       # "a mismatch introduced in a configuration nothing runs will still go
@@ -699,5 +749,6 @@ jobs:
           path: |
             lavapipe-summary.txt
             headless-render.log
+            probe-reference.log
             artifacts/
           if-no-files-found: warn

@@ -902,6 +902,29 @@ cannot resolve Sponza's arches and columns, which is what probe GI trades away,
 and it is the number to move with any future change to the grid, the weights or
 the visibility term.
 
+### The CI gate
+
+The headless job runs the Cornell box with the reference on (16 probes a frame,
+the cap, so all 256 are refreshed in 16 frames; 60 frames; 4 reference rays a
+pixel) and fails if the probes' mean absolute error is above 45% of the
+reference. It is a tripwire for gross breakage, not a quality bar, and its limits
+are measured. Locally (RTX, same configuration) a healthy grid reads 28.6%, and:
+
+| change | error |
+| --- | --- |
+| nothing updates (`probesPerFrame` 0) | 100% |
+| only 10 frames, nothing converged (the sweep leg of the same scene) | 64-89% |
+| 32 rays instead of 768 | 32.6% |
+| hysteresis 0.98 | 34.0% |
+| surface bias 0 / 1.0 | 25.6 / 32.8% |
+| visibility lobe 1.0 | 28.6% |
+
+So it catches probes that are dark, stale or unconverged, and not a subtler
+regression in the weights or the visibility term: the Cornell box is too uniform
+for its error to move much with them. The cap is deliberately loose because the
+CI value comes from a software rasteriser's ray queries and the first runs set
+the baseline; tighten it once a few runs of that value exist.
+
 ## The Cornell box scene
 
 Under **Scene** tab → **Scene Presets → Cornell box**. A closed room with white floor, ceiling
