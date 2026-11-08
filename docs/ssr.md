@@ -188,7 +188,8 @@ error measurement.
 
 ### What it costs
 
-@@COST@@
+Not yet measured. The A/B against the screen-space pass on Sponza belongs here
+once it has passed the control-drift gate.
 
 ## Limitations
 
