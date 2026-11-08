@@ -721,8 +721,8 @@ insets and the hand-fitted row do better, but not monotonically (26.0, 24.9, 20.
 19.6), which says the error is moving with where the probes happen to fall against
 the columns rather than with the inset; picking the best row would be tuning to
 one camera and one frame. What the fit reliably does is stop spending probes
-outside the building and leave none buried. The remaining error is the grid's
-resolution against Sponza's geometry.
+outside the building and leave none buried. The remaining error is not
+simply resolution: see "More probes: measured, not shipped".
 
 ## Probes inside geometry
 
@@ -901,6 +901,41 @@ The error that is left is mostly not bias. 40.8% mean absolute error against
 cannot resolve Sponza's arches and columns, which is what probe GI trades away,
 and it is the number to move with any future change to the grid, the weights or
 the visibility term.
+
+### More probes: measured, not shipped
+
+The remaining Sponza error looked like grid resolution, so the grid was made
+denser and measured. Probe indices had to be widened first -- the trace's push
+block carried them as four 8-bit values to a word, which capped the grid at 256
+probes -- then the grid dimensions were changed at compile time. Sponza,
+fitted grid, traced gather, relocation on, `probesPerFrame` 16 so a larger grid
+still completes several refresh cycles in 300 frames, 8 reference rays a frame
+(single runs, frame 300, RTX):
+
+| grid | probes | inside geometry | bias | mean abs. error |
+| --- | --- | --- | --- | --- |
+| 8x4x8 | 256 | 0 | -5.8% | 22.1% |
+| 10x5x10 | 500 | 14 | +8.4% | 24.6% |
+| 12x4x12 | 576 | 2 | -21.2% | 32.1% |
+| 12x6x12 | 864 | 33 | +7.2% | 18.9% |
+| 16x6x16 | 1536 | 94 | -14.8% | 25.8% |
+| 20x6x20 | 2400 | 205 | -5.8% | 17.6% |
+
+The error does not fall with density. Five denser grids span 17.6% to 32.1%, and
+three of them are worse than the 256-probe grid; the best is 4.5 points better
+for nearly ten times the probes, and 12x4x12 is ten points worse than 8x4x8. What
+moves the number is where the probes happen to fall against Sponza's columns and
+arches, and how many are buried (0, 14, 2, 33, 94, 205), not how many there are.
+A refresh cycle also lengthens with the count: 16 probes a frame refreshes 256 in
+16 frames and 2400 in 150.
+
+So the grid stays 8x4x8, the 16-bit widening was not kept, and the guess that the
+remaining error is grid resolution did not survive: more uniform resolution is not
+what reduces it here. What the table does show is the update
+rate: the same 8x4x8 grid reads 22.1% at 16 probes a frame and 24.9% at the
+default 4. Whether that is worth the trace cost has not been measured. Anything
+that would actually resolve the columns is non-uniform (a grid that adapts to
+geometry, or cascades), which this volume does not have.
 
 ### The CI gate
 
