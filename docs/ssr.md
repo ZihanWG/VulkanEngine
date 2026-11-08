@@ -188,8 +188,26 @@ error measurement.
 
 ### What it costs
 
-Not yet measured. The A/B against the screen-space pass on Sponza belongs here
-once it has passed the control-drift gate.
+**RTX 3080 Ti Laptop, `--scene sponza`, 1280x720, clocks pinned 800/7001, lights
+and animation frozen, every frame sampled for 60 s after a 15 s warm-up, p10 over
+29,356 and 26,897 frames, A/B/A/B, control drift 0.85%:**
+
+| | screen-space | hybrid | delta |
+| --- | --- | --- | --- |
+| `Frame total` | 3.530 ms | 4.353 ms | **+0.823 ms, +23.3%** |
+| `SSRTrace` | 0.412 ms | 1.174 ms | +0.762 ms |
+
+`SSRTrace` carries 0.762 of the 0.823 ms; every other pass moved by less than
+its own control drift, so none of the remainder is attributed. Command:
+`measure_gpu.py ab --b-set ssr.rayTracedFallback=true --repeat 2 --duration 75
+--warmup 15 --every-frame --freeze-animation --args --scene sponza`.
+
+That is expensive for what it changes on Sponza, and it is why the fallback is
+off by default. The cost follows from which pixels fire a ray: every surface
+under `maxRoughness` that the march misses, and on Sponza that is most of the
+stone -- dielectrics whose specular weight is a few percent, so their rays buy
+little. The traced share is not weighted by how much it can change the pixel,
+the trace is full resolution, and each hit traces a sun shadow ray of its own.
 
 ## Limitations
 
