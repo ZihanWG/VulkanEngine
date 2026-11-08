@@ -157,6 +157,10 @@ pass's diffuse irradiance cube rather than the probe capture's constant ambient
 traced reflection is lit as it is when seen directly. The probe gathers do not
 define it and record exactly what they did.
 
+The skinned caster, which has no UVs and an untextured material, is shaded
+with its material factors alone; see the note in `probe_hit_shading.glsl` for
+why it no longer fetches a texture.
+
 That shading is diffuse-only. A traced hit carries no specular and no normal
 mapping, and with probe GI on, the hit still takes the irradiance cube rather
 than the grid. The screen-space hit, which samples the lit scene colour, carries
