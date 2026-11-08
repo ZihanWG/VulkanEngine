@@ -84,10 +84,11 @@ reads:
   sampler, sampled as `sampler2DShadow` for the hardware-filtered lookup
 - binding 16 = the scene's top-level acceleration structure. In the layout only
   when the device has ray query, and declared only by the shaders that trace: the
-  ray-query variant of `simple_bindless.frag` (sun shadow rays),
-  `ray_traced_shadow_trace.comp`, the probe gather's `probe_trace.comp` and
-  `probe_reference.comp`, and `ssr_trace_rq.frag`, the hybrid reflection trace,
-  which binds this set at index 1 rather than 0; written once, because the
+  ray-query variant of `simple_bindless.frag` (sun shadow rays), the probe
+  gather's `probe_trace.comp` and `probe_reference.comp`, and
+  `ssr_trace_rq.frag`, the hybrid reflection trace, which binds this set at
+  index 1 rather than 0. (`ray_traced_shadow_trace.comp` traces the same
+  structure through its own set, binding 1.) Written once, because the
   structure is rebuilt in place rather than replaced
 - binding 17 = the ray-traced shadow mask, a `usampler2D` holding each pixel's
   traced visibility and the depth bits it was traced at. In the layout on the
