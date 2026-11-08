@@ -83,18 +83,19 @@ void Renderer::createScene()
     // scene" name two different scenes depending on a configure flag, and
     // docs/profiling.md's corpus rule -- every quoted timing carries hardware,
     // scene, resolution and statistic -- cannot hold if a scene stamp is
-    // ambiguous. --scene sponza is now the only way in.
-    if (sampleSceneRequested_) {
+    // ambiguous. --scene sponza (or bistro) is now the only way in.
+    if (isSampleScenePreset(sampleSceneRequested_)) {
         std::string status;
         if (buildSampleScene(status)) {
-            sampleSceneLoaded_ = true;
+            sampleSceneLoaded_ = sampleSceneRequested_;
             Logger::info(status);
             return;
         }
         // Not fatal here: the caller checked sampleSceneAvailable() before
         // construction and reports the failure with a better exit code than an
         // exception out of a constructor would give. Falling through leaves a
-        // renderable scene behind, and loadScenePreset refuses to call it Sponza.
+        // renderable scene behind, and loadScenePreset refuses to call it by the
+        // sample scene's name.
         Logger::error(status);
     }
 
@@ -192,40 +193,71 @@ void Renderer::createSceneSharedResources()
     csmSettings_.farPlane = camera_.farPlane;
 }
 
-bool sampleSceneAvailable()
+namespace {
+
+// Where this build expects each imported scene, or nothing when it has no idea.
+// Sponza's path exists only when the configure-time fetch completed; Bistro's is
+// always configured (it is a local conversion, never fetched) and may not exist.
+std::optional<std::filesystem::path> sampleScenePath(ScenePreset scene)
 {
+    switch (scene) {
+    case ScenePreset::Sponza:
 #if defined(VULKAN_ENGINE_SAMPLE_SCENE)
+        return std::filesystem::path(VULKAN_ENGINE_SAMPLE_SCENE);
+#else
+        return std::nullopt;
+#endif
+    case ScenePreset::Bistro:
+#if defined(VULKAN_ENGINE_BISTRO_SCENE)
+        return std::filesystem::path(VULKAN_ENGINE_BISTRO_SCENE);
+#else
+        return std::nullopt;
+#endif
+    default:
+        return std::nullopt;
+    }
+}
+
+} // namespace
+
+bool sampleSceneAvailable(ScenePreset scene)
+{
+    const std::optional<std::filesystem::path> path = sampleScenePath(scene);
     std::error_code error;
-    return std::filesystem::is_regular_file(std::filesystem::path(VULKAN_ENGINE_SAMPLE_SCENE), error);
-#else
-    return false;
-#endif
+    return path.has_value() && std::filesystem::is_regular_file(*path, error);
 }
 
-std::string sampleSceneUnavailableMessage()
+std::string sampleSceneUnavailableMessage(ScenePreset scene)
 {
-#if defined(VULKAN_ENGINE_SAMPLE_SCENE)
-    return "--scene sponza: this build was configured to fetch the sample scene, but " +
-           std::string(VULKAN_ENGINE_SAMPLE_SCENE) +
-           " is not there. Re-run cmake to fetch it again, or delete the fetched-assets directory and reconfigure.";
-#else
-    return std::string("--scene sponza: this build has no sample scene. Reconfigure with "
-                       "-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON (a configure-time download) and rebuild. "
-                       "See docs/asset_load_baseline.md.");
-#endif
+    const std::string flag = "--scene " + std::string(scenePresetName(scene));
+    const std::optional<std::filesystem::path> path = sampleScenePath(scene);
+    if (scene == ScenePreset::Sponza) {
+        if (path) {
+            return flag + ": this build was configured to fetch the sample scene, but " + path->string() +
+                   " is not there. Re-run cmake to fetch it again, or delete the fetched-assets directory and "
+                   "reconfigure.";
+        }
+        return flag + ": this build has no sample scene. Reconfigure with "
+                      "-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON (a configure-time download) and rebuild. "
+                      "See docs/asset_load_baseline.md.";
+    }
+    if (scene == ScenePreset::Bistro) {
+        return flag + ": " + (path ? path->string() : std::string("the configured Bistro glTF")) +
+               " is not there. Bistro ships only as FBX, so it is a local conversion: see "
+               "docs/asset_load_baseline.md#a-second-imported-scene-bistro, or point "
+               "-DVULKAN_ENGINE_BISTRO_SCENE_FILE at an existing conversion.";
+    }
+    return flag + " is not an imported scene.";
 }
 
-bool Renderer::buildSampleScene([[maybe_unused]] std::string& status)
+bool Renderer::buildSampleScene(std::string& status)
 {
-#if !defined(VULKAN_ENGINE_SAMPLE_SCENE)
-    status = sampleSceneUnavailableMessage();
-    return false;
-#else
-    const std::filesystem::path modelPath(VULKAN_ENGINE_SAMPLE_SCENE);
-    if (!sampleSceneAvailable()) {
-        status = sampleSceneUnavailableMessage();
+    const std::optional<std::filesystem::path> configuredPath = sampleScenePath(sampleSceneRequested_);
+    if (!configuredPath || !sampleSceneAvailable(sampleSceneRequested_)) {
+        status = sampleSceneUnavailableMessage(sampleSceneRequested_);
         return false;
     }
+    const std::filesystem::path& modelPath = *configuredPath;
 
     try {
         // Parse, LOD construction, and mesh buffer upload -- Mesh::createFromGltf
@@ -241,6 +273,7 @@ bool Renderer::buildSampleScene([[maybe_unused]] std::string& status)
         createImportedGltfTextures(loadedAsset.textures, loadedAsset.materials);
         createImportedGltfMaterials(loadedAsset.materials);
         importedMeshes_ = std::move(loadedAsset.meshes);
+        sampleSceneLights_ = std::move(loadedAsset.lights);
 
         // One object PER PRIMITIVE, not per node. Sponza is a single node holding
         // 103 primitives, and as one object it gave every per-object decision in
@@ -312,14 +345,14 @@ bool Renderer::buildSampleScene([[maybe_unused]] std::string& status)
         applySampleSceneLighting();
 
         status = "Loaded sample scene: " + modelPath.string() + " with " + std::to_string(importedMeshes_.size()) +
-                 " mesh slot(s), " + std::to_string(renderObjects_.size()) + " render object(s), and " +
-                 std::to_string(importedMaterials_.size()) + " material(s).";
+                 " mesh slot(s), " + std::to_string(renderObjects_.size()) + " render object(s), " +
+                 std::to_string(importedMaterials_.size()) + " material(s), and " +
+                 std::to_string(sampleSceneLights_.size()) + " glTF light(s).";
         return true;
     } catch (const std::exception& error) {
         status = "Failed to load sample scene '" + modelPath.string() + "': " + error.what();
         return false;
     }
-#endif
 }
 
 void Renderer::pinSampleSceneCamera()
@@ -387,6 +420,35 @@ void Renderer::applySampleSceneLighting()
     directionalLightSettings_.direction = glm::normalize(glm::vec3{0.22f, -1.0f, 0.34f});
     directionalLightSettings_.color = kSampleSceneSunColor;
     directionalLightSettings_.intensity = 12.0f;
+
+    // A scene that authors its own sun keeps its direction and colour. Not its
+    // intensity: glTF gives lux, and the hand-set value above is what this
+    // renderer's exposure was tuned against, so a converted number would only
+    // move the problem. Only the first is used -- there is one sun.
+    size_t pointCount = 0;
+    size_t spotCount = 0;
+    size_t directionalCount = 0;
+    for (const renderer::GltfPunctualLight& light : sampleSceneLights_) {
+        switch (light.type) {
+        case renderer::GltfPunctualLight::Type::Point:
+            ++pointCount;
+            break;
+        case renderer::GltfPunctualLight::Type::Spot:
+            ++spotCount;
+            break;
+        case renderer::GltfPunctualLight::Type::Directional:
+            if (directionalCount++ == 0) {
+                directionalLightSettings_.direction = light.direction;
+                directionalLightSettings_.color = light.color;
+            }
+            break;
+        }
+    }
+    if (!sampleSceneLights_.empty()) {
+        Logger::info("Sample scene glTF lights: " + std::to_string(pointCount) + " point, " +
+                     std::to_string(spotCount) + " spot, " + std::to_string(directionalCount) +
+                     " directional (the first sets the sun's direction and colour).");
+    }
 
     const auto vec3 = [](const glm::vec3& v) {
         return "(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
@@ -1563,14 +1625,15 @@ bool Renderer::loadScenePreset(ScenePreset preset, std::string& status)
         loadFragmentStressScene(renderer::kGpuStressLayerCount, renderer::kGpuStressLightCount);
         return true;
     case ScenePreset::Sponza:
+    case ScenePreset::Bistro:
         // Already built, by the constructor -- see
-        // RendererStartupOverrides::loadSampleScene for why it cannot be built
+        // RendererStartupOverrides::sampleScene for why it cannot be built
         // here. This is not a no-op though: it confirms that the scene standing
         // in front of the camera is the one that was named. Without the check, a
         // caller that forgot to set the override would measure the portfolio
         // showcase and report it under the name "sponza".
-        if (!sampleSceneLoaded_) {
-            status = sampleSceneUnavailableMessage();
+        if (sampleSceneLoaded_ != preset) {
+            status = sampleSceneUnavailableMessage(preset);
             return false;
         }
         return true;

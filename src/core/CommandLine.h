@@ -49,6 +49,12 @@ enum class ScenePreset {
     // load it. That case is a hard failure, never a fallback -- see
     // Renderer::loadScenePreset.
     Sponza,
+    // Amazon Lumberyard Bistro, the second imported scene. Same contract as
+    // Sponza, but never fetched: the scene ships only as FBX, so the glTF is a
+    // local conversion placed at VULKAN_ENGINE_BISTRO_SCENE_FILE (see
+    // docs/asset_load_baseline.md#a-second-imported-scene-bistro). A build without
+    // that file refuses the preset.
+    Bistro,
 
     // Not a scene. One past the last preset, so a test can walk every value and
     // check it round-trips through its name.
@@ -62,6 +68,14 @@ enum class ScenePreset {
     // measured rather than assumed.
     Count,
 };
+
+// The presets that import a scene from disk rather than build one. They are
+// startup-only (see RendererStartupOverrides::sampleScene), and each one can be
+// named on a build that cannot load it.
+[[nodiscard]] constexpr bool isSampleScenePreset(ScenePreset preset)
+{
+    return preset == ScenePreset::Sponza || preset == ScenePreset::Bistro;
+}
 
 // One table, read by both directions, so a name can never parse to one preset
 // and print back as another.

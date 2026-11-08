@@ -334,6 +334,7 @@ LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
     loadedAsset.nodeMeshInstances = std::move(geometry.nodeMeshInstances);
     loadedAsset.materials = std::move(geometry.materials);
     loadedAsset.textures = std::move(geometry.textures);
+    loadedAsset.lights = std::move(geometry.lights);
     return loadedAsset;
 }
 

@@ -108,11 +108,11 @@ void Application::initialize()
     // Checked here, before the renderer and therefore before any Vulkan device,
     // so a build that cannot load it fails in milliseconds with an actionable
     // message instead of part way through construction.
-    if (config_.scene == ScenePreset::Sponza) {
-        if (!sampleSceneAvailable()) {
-            throw SceneLoadError(sampleSceneUnavailableMessage());
+    if (isSampleScenePreset(config_.scene)) {
+        if (!sampleSceneAvailable(config_.scene)) {
+            throw SceneLoadError(sampleSceneUnavailableMessage(config_.scene));
         }
-        overrides.loadSampleScene = true;
+        overrides.sampleScene = config_.scene;
     }
 
     const auto rendererInitStart = std::chrono::steady_clock::now();

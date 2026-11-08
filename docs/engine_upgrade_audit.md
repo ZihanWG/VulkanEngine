@@ -294,8 +294,10 @@ screenshots.
   transmission/refraction, and SSR only finds what is on screen.
 - glTF support is narrow but no longer static: skinned meshes with skeletal
   animation import, and `MASK`/`BLEND` alpha modes drive real cutout and
-  transparent passes. Still unsupported: morph targets, cameras, lights, and
-  occlusion maps. Emissive factor + emissive maps are supported.
+  transparent passes, and `KHR_lights_punctual` lights import (point and spot
+  into the clustered path, the first directional as the sun). Still
+  unsupported: morph targets, cameras, and occlusion maps. Emissive factor +
+  emissive maps are supported.
 - Upload paths still use one-time command buffers and queue-idle waits for
   initialization, and are not a runtime streaming system. Texture uploads are
   batched behind a bounded staging budget and take a dedicated transfer queue

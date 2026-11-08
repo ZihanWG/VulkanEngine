@@ -1,0 +1,186 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Hand-authored fixture for KHR_lights_punctual import (tests/test_gltf_geometry.cpp)"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0,
+        1,
+        4
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0
+    },
+    {
+      "name": "Rig",
+      "translation": [
+        5.0,
+        0.0,
+        0.0
+      ],
+      "children": [
+        2,
+        3
+      ]
+    },
+    {
+      "name": "LampNode",
+      "translation": [
+        0.0,
+        2.0,
+        0.0
+      ],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 0
+        }
+      }
+    },
+    {
+      "name": "ConeNode",
+      "translation": [
+        0.0,
+        4.0,
+        0.0
+      ],
+      "rotation": [
+        -0.7071067811865476,
+        0.0,
+        0.0,
+        0.7071067811865476
+      ],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 1
+        }
+      }
+    },
+    {
+      "name": "SunNode",
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 2
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "TwoPrimitives",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0
+          },
+          "indices": 2
+        },
+        {
+          "attributes": {
+            "POSITION": 1
+          },
+          "indices": 3
+        }
+      ]
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "byteOffset": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [
+        0,
+        0,
+        0
+      ],
+      "max": [
+        1,
+        1,
+        0
+      ]
+    },
+    {
+      "bufferView": 0,
+      "byteOffset": 36,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 1,
+      "byteOffset": 0,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 1,
+      "byteOffset": 6,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 72,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 72,
+      "byteLength": 12,
+      "target": 34963
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 84,
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAgQQAAAAAAAAAAAAAwQQAAAAAAAAAAAAAgQQAAgD8AAAAAAAABAAIAAAABAAIA"
+    }
+  ],
+  "extensionsUsed": [
+    "KHR_lights_punctual"
+  ],
+  "extensions": {
+    "KHR_lights_punctual": {
+      "lights": [
+        {
+          "name": "Lamp",
+          "type": "point",
+          "color": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "intensity": 40.0
+        },
+        {
+          "name": "Cone",
+          "type": "spot",
+          "intensity": 100.0,
+          "range": 12.0,
+          "spot": {
+            "innerConeAngle": 0.2,
+            "outerConeAngle": 0.5
+          }
+        },
+        {
+          "name": "Sun",
+          "type": "directional",
+          "intensity": 3.0
+        }
+      ]
+    }
+  }
+}

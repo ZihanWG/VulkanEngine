@@ -304,6 +304,36 @@ deleting one build directory does not cost a re-download and a re-cook, and the
 debug and release builds cannot end up with separately encoded copies of the same
 lossy BC7 textures.
 
+## A second imported scene: Bistro
+
+Sponza is one building, lit by one sun and a dozen lamps placed by hand. Amazon
+Lumberyard Bistro (CC BY 4.0, from NVIDIA's Open Research Content Archive) is a
+street with an interior, and it carries its own lights, which is what makes it a
+second measurement scene rather than a second copy of the first.
+
+It is not fetched. It ships only as FBX, so the glTF is a conversion made on the
+machine that runs it, and `--scene bistro` loads it from
+`VULKAN_ENGINE_BISTRO_SCENE_FILE` -- by default
+`build/fetched-assets/bistro/Bistro.gltf`, beside Sponza. A build without the file
+refuses the preset with a message naming the path it looked at; the CI sweep does
+not run it.
+
+What the renderer takes from the glTF beyond Sponza's set is `KHR_lights_punctual`:
+
+- Point and spot lights go to the clustered path every frame, replacing the
+  hand-placed lamps. glTF gives candela, and what that means against this
+  renderer's sun is a per-scene choice, so the debug UI scales it instead of
+  converting it. A light with no authored range is cut where its inverse-square
+  illuminance falls to 0.01, capped at 64 units, since an unbounded light would
+  sit in every froxel's list (`importedLightRange`, unit-tested).
+- The first directional light sets the sun's direction and colour. Not its
+  intensity: lux would need the same per-scene interpretation, and the sun's
+  value is what exposure was tuned against.
+
+The same contract as Sponza otherwise holds: one RenderObject per primitive, no
+portfolio showcase or skinned rig in the shot, and the cooks apply unchanged
+(`vemeshcook` and `tools/cook_textures.py` against the converted glTF).
+
 ## Limitations
 
 - `--asset-load-stats` covers `VulkanTexture` only. `VulkanEnvironmentMap`

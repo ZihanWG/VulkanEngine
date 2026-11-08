@@ -14,6 +14,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <filesystem>
+#include <string>
 
 using Catch::Approx;
 using ve::renderer::CpuMeshData;
@@ -93,4 +94,78 @@ TEST_CASE("The mesh bounds are the union of the primitive bounds", "[gltf][geome
     CHECK(united.max.x == Approx(mesh.localBounds.max.x));
     CHECK(united.max.y == Approx(mesh.localBounds.max.y));
     CHECK(united.max.z == Approx(mesh.localBounds.max.z));
+}
+
+namespace {
+
+std::filesystem::path lightsFixturePath()
+{
+    return std::filesystem::path(VULKAN_ENGINE_ASSET_DIR) / "models" / "punctual_lights.gltf";
+}
+
+const ve::renderer::GltfPunctualLight* findLight(const GltfGeometry& geometry, const std::string& name)
+{
+    for (const ve::renderer::GltfPunctualLight& light : geometry.lights) {
+        if (light.debugName == name) {
+            return &light;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("KHR_lights_punctual lights are placed by their node's world transform", "[gltf][lights]")
+{
+    using Type = ve::renderer::GltfPunctualLight::Type;
+    const GltfGeometry geometry = loadGltfGeometry(lightsFixturePath());
+    REQUIRE(geometry.lights.size() == 3);
+
+    // Both children of a node translated by +5 on X: a light that ignored its
+    // parent would sit at x = 0 and still look plausible.
+    const ve::renderer::GltfPunctualLight* lamp = findLight(geometry, "Lamp");
+    REQUIRE(lamp != nullptr);
+    CHECK(lamp->type == Type::Point);
+    CHECK(lamp->position.x == Approx(5.0f));
+    CHECK(lamp->position.y == Approx(2.0f));
+    CHECK(lamp->color.g == Approx(0.5f));
+    CHECK(lamp->intensity == Approx(40.0f));
+    CHECK(lamp->range == Approx(0.0f));
+
+    // Rotated -90 degrees about X, so local -Z ends up pointing straight down.
+    const ve::renderer::GltfPunctualLight* cone = findLight(geometry, "Cone");
+    REQUIRE(cone != nullptr);
+    CHECK(cone->type == Type::Spot);
+    CHECK(cone->position.x == Approx(5.0f));
+    CHECK(cone->position.y == Approx(4.0f));
+    CHECK(cone->direction.x == Approx(0.0f).margin(1e-5));
+    CHECK(cone->direction.y == Approx(-1.0f));
+    CHECK(cone->direction.z == Approx(0.0f).margin(1e-5));
+    CHECK(cone->range == Approx(12.0f));
+    CHECK(cone->innerConeAngle == Approx(0.2f));
+    CHECK(cone->outerConeAngle == Approx(0.5f));
+
+    // Unrotated: the extension's default direction, local -Z.
+    const ve::renderer::GltfPunctualLight* sun = findLight(geometry, "Sun");
+    REQUIRE(sun != nullptr);
+    CHECK(sun->type == Type::Directional);
+    CHECK(sun->direction.z == Approx(-1.0f));
+}
+
+TEST_CASE("A glTF without KHR_lights_punctual imports no lights", "[gltf][lights]")
+{
+    CHECK(loadGltfGeometry(fixturePath()).lights.empty());
+}
+
+TEST_CASE("An imported light's cull range", "[gltf][lights]")
+{
+    using ve::renderer::importedLightRange;
+    // Authored ranges are kept, up to the cap.
+    CHECK(importedLightRange(100.0f, 12.0f, 0.01f, 50.0f) == Approx(12.0f));
+    CHECK(importedLightRange(100.0f, 80.0f, 0.01f, 50.0f) == Approx(50.0f));
+    // Unbounded: cut where intensity / d^2 reaches the cutoff -- 100 / 0.04 = 50^2.
+    CHECK(importedLightRange(100.0f, 0.0f, 0.04f, 1000.0f) == Approx(50.0f));
+    CHECK(importedLightRange(1.0e6f, 0.0f, 0.01f, 40.0f) == Approx(40.0f));
+    // A dark light reaches nothing.
+    CHECK(importedLightRange(0.0f, 0.0f, 0.01f, 40.0f) == Approx(0.0f));
 }
