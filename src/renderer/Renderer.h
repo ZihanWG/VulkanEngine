@@ -159,6 +159,10 @@ struct RendererStartupOverrides {
 // knows, so the answer cannot differ between the caller that checks and the code
 // that loads.
 [[nodiscard]] bool sampleSceneAvailable(ScenePreset scene);
+// The HDR environment an imported scene ships beside its glTF, as
+// `environment.hdr`, when there is one. Bistro's conversion puts its bundled sky
+// there; Sponza has none and keeps the default environment.
+[[nodiscard]] std::optional<std::filesystem::path> sampleSceneEnvironmentPath(ScenePreset scene);
 [[nodiscard]] std::string sampleSceneUnavailableMessage(ScenePreset scene);
 
 class Renderer final {

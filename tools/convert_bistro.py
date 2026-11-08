@@ -22,6 +22,7 @@ What the conversion has to decide, rather than copy:
 * Alpha. Foliage, curtains and lettering carry cutout alpha (MASK); glass blends.
   Everything else is single-sided -- the FBX importer marks every material
   double-sided, which would put the whole scene on the un-culled pipeline.
+* Sky. The bundled HDR is copied beside the glTF as environment.hdr.
 * Lights. The FBX holds one sun. The lamps are emissive geometry meant for a path
   tracer, so a raster renderer needs analytic lights placed at them: one per
   emissive island (merged within a radius for string lights), coloured by the
@@ -29,9 +30,10 @@ What the conversion has to decide, rather than copy:
   cull stays bounded. The table below is the authored part of this scene.
 """
 
+import glob
 import json
-import math
 import os
+import shutil
 import sys
 import time
 
@@ -40,10 +42,13 @@ import mathutils
 import numpy as np
 
 # Emissive material -> how its lamps become lights. Intensity is written verbatim as
-# glTF candela (export lighting mode RAW); range is metres.
+# glTF candela (export lighting mode RAW); range is metres. Tuned by eye against the
+# FBX camera's shot under the bundled sky: most street lamps hang off a facade, so
+# a light at the lantern sits a few centimetres from the wall, and inverse-square
+# falloff blew it out above 20.
 DERIVED_LIGHTS = {
-    "Emissive_StreetLight": {"intensity": 60.0, "range": 14.0, "merge": 0.75},
-    "Spotlight_Glass_Emissive": {"intensity": 20.0, "range": 8.0, "merge": 0.5},
+    "Emissive_StreetLight": {"intensity": 20.0, "range": 14.0, "merge": 0.75},
+    "Spotlight_Glass_Emissive": {"intensity": 6.0, "range": 6.0, "merge": 0.5},
     "Shopsign_Book_Store_Emissive": {"intensity": 10.0, "range": 6.0, "merge": 2.0},
     "Shopsign_Pharmacy_Emissive": {"intensity": 10.0, "range": 6.0, "merge": 2.0},
     "Paris_StringLights_01_Blue_Color_Emissive": {"intensity": 3.0, "range": 4.0, "merge": 2.5},
@@ -354,6 +359,13 @@ def main():
         use_selection=False,
     )
     write_light_ranges(output, dict(derived))
+
+    # The sky the scene was lit under ships beside the FBX. The renderer picks up
+    # an imported scene's environment.hdr in place of its default environment.
+    skies = sorted(glob.glob(os.path.join(os.path.dirname(source), "*.hdr")))
+    if skies:
+        shutil.copyfile(skies[0], os.path.join(output_dir, "environment.hdr"))
+        log("environment: " + os.path.basename(skies[0]))
     log("exported %s in %.1f s total" % (output, time.time() - start))
 
 
