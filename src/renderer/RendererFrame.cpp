@@ -152,7 +152,37 @@ void Renderer::updateDemoLights(float elapsedSeconds)
         return;
     }
 
-    if (sampleSceneLoaded_ && sampleSceneLampsEnabled_ && sampleSceneBounds_.valid()) {
+    // Lights the imported scene authored win over the hand-placed lamps below.
+    if (isSampleScenePreset(sampleSceneLoaded_) && sampleSceneLampsEnabled_ && !sampleSceneLights_.empty()) {
+        for (const renderer::GltfPunctualLight& light : sampleSceneLights_) {
+            const float intensity = light.intensity * sampleSceneLightIntensityScale_;
+            const float range = renderer::importedLightRange(
+                intensity, light.range, kImportedLightCutoffIlluminance, kImportedLightMaxRange);
+            if (range <= 0.0f) {
+                continue;
+            }
+            switch (light.type) {
+            case renderer::GltfPunctualLight::Type::Point:
+                clusteredLighting_.addPointLight(light.position, light.color, intensity, range);
+                break;
+            case renderer::GltfPunctualLight::Type::Spot:
+                clusteredLighting_.addSpotLight(light.position,
+                                                light.direction,
+                                                light.color,
+                                                intensity,
+                                                range,
+                                                light.innerConeAngle,
+                                                light.outerConeAngle);
+                break;
+            case renderer::GltfPunctualLight::Type::Directional:
+                // The sun, applied once at load -- see applySampleSceneLighting.
+                break;
+            }
+        }
+        return;
+    }
+
+    if (sampleSceneLoaded_ == ScenePreset::Sponza && sampleSceneLampsEnabled_ && sampleSceneBounds_.valid()) {
         // Lamps hung in the two ground-floor arcades, in one amber colour, and
         // static. The swarm orbits the origin in saturated hues, which inside the
         // building put a different tint on every curtain and column and left

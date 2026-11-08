@@ -183,6 +183,7 @@ struct LoadedGltfAsset {
     std::vector<GltfNodeMeshInstance> nodeMeshInstances;
     std::vector<GltfMaterialInfo> materials;
     std::vector<GltfTextureInfo> textures;
+    std::vector<GltfPunctualLight> lights;
 };
 
 } // namespace ve::renderer

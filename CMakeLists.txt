@@ -542,6 +542,16 @@ target_compile_definitions(VulkanEngineRuntime PRIVATE
     "VULKAN_ENGINE_CONFIG_DIR=\"${VULKAN_ENGINE_CONFIG_DIR}\""
 )
 
+# Bistro is never fetched: it ships as FBX, so its glTF is a local conversion
+# (docs/asset_load_baseline.md). The path is always compiled in and checked at
+# run time, which is what lets --scene bistro say where it looked.
+set(VULKAN_ENGINE_BISTRO_SCENE_FILE "${VULKAN_ENGINE_SAMPLE_SCENE_DIR}/bistro/Bistro.gltf"
+    CACHE FILEPATH "The converted Amazon Lumberyard Bistro glTF that --scene bistro loads")
+cmake_path(CONVERT "${VULKAN_ENGINE_BISTRO_SCENE_FILE}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_BISTRO_SCENE NORMALIZE)
+target_compile_definitions(VulkanEngineRuntime PRIVATE
+    "VULKAN_ENGINE_BISTRO_SCENE=\"${VULKAN_ENGINE_BISTRO_SCENE}\""
+)
+
 # Only defined when the fetch actually produced a complete scene, so the renderer
 # can test for the macro rather than for a path that might not exist.
 if(VULKAN_ENGINE_SAMPLE_SCENE_FILE)

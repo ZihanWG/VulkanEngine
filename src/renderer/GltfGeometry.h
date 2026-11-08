@@ -95,6 +95,39 @@ struct GltfNodeMeshInstance {
     std::string debugName;
 };
 
+// One KHR_lights_punctual light, placed by the node that references it. Kept in
+// glTF's own terms -- candela for point and spot, lux for directional, a range of
+// 0 meaning unbounded -- because what those units mean in this renderer is a
+// per-scene decision the importer has no basis for. See importedLightRange.
+struct GltfPunctualLight {
+    enum class Type : uint8_t {
+        Point,
+        Spot,
+        Directional,
+    };
+
+    Type type = Type::Point;
+    std::string debugName;
+    glm::vec3 position{0.0f};
+    // Where the light points: the node's local -Z, as the extension defines it.
+    // Normalised; meaningless for a point light, which still carries it.
+    glm::vec3 direction{0.0f, 0.0f, -1.0f};
+    glm::vec3 color{1.0f};
+    float intensity = 1.0f;
+    float range = 0.0f;
+    // Half-angles from the axis, in radians -- the same convention as
+    // ClusteredLighting::addSpotLight, so they pass through unchanged.
+    float innerConeAngle = 0.0f;
+    float outerConeAngle = 0.7853981634f;
+};
+
+// The range the clustered light cull uses for an imported light. An authored
+// range wins. An unbounded one (0) is cut where inverse-square illuminance falls
+// to `cutoffIlluminance`, since a light with no range touches every froxel and the
+// cull would put it in every list. Clamped to `maxRange` so one very bright light
+// cannot do the same thing by being bright instead of unbounded.
+[[nodiscard]] float importedLightRange(float intensity, float authoredRange, float cutoffIlluminance, float maxRange);
+
 // One mesh's geometry before it reaches a device. This is exactly what a cooked
 // mesh file has to store, and exactly what Mesh::createFromGeometry uploads.
 struct CpuMeshData {
@@ -119,6 +152,9 @@ struct GltfGeometry {
     std::vector<GltfNodeMeshInstance> nodeMeshInstances;
     std::vector<GltfMaterialInfo> materials;
     std::vector<GltfTextureInfo> textures;
+    // Read from the glTF on every load, cooked or not: a .vemesh replaces mesh
+    // assembly only, and the scene graph that places these is always parsed.
+    std::vector<GltfPunctualLight> lights;
 };
 
 // Parses `path`, assembles vertices and indices, and builds every primitive's LOD

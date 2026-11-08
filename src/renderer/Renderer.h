@@ -126,7 +126,9 @@ struct RendererStartupOverrides {
     // repeatable on content this engine does not currently ship.
     bool buildMeshlets = false;
 
-    // Build the fetched sample scene (Sponza) instead of the portfolio showcase.
+    // Build an imported sample scene (Sponza or Bistro) instead of the portfolio
+    // showcase. ScenePreset::Default means none; anything else must satisfy
+    // isSampleScenePreset.
     //
     // Startup-only, and not for the usual reason. Sponza imports 77 textures and
     // 25 materials; the bindless heap and the material descriptor set are both
@@ -134,7 +136,7 @@ struct RendererStartupOverrides {
     // afterwards would have to grow structures that cannot grow. Every other
     // preset is procedural geometry over resources the constructor already made,
     // which is why they can be selected after it.
-    bool loadSampleScene = false;
+    ScenePreset sampleScene = ScenePreset::Default;
 
     // Turn the validation layer's synchronization validation on for this run.
     // Instance-creation policy, so like everything else here it can only be
@@ -156,8 +158,8 @@ struct RendererStartupOverrides {
 // configure-time fetch sets (see cmake/FetchSampleScene.cmake) -- one place that
 // knows, so the answer cannot differ between the caller that checks and the code
 // that loads.
-[[nodiscard]] bool sampleSceneAvailable();
-[[nodiscard]] std::string sampleSceneUnavailableMessage();
+[[nodiscard]] bool sampleSceneAvailable(ScenePreset scene);
+[[nodiscard]] std::string sampleSceneUnavailableMessage(ScenePreset scene);
 
 class Renderer final {
 public:
@@ -1825,9 +1827,9 @@ private:
     renderer::LodBuildSettings meshLodBuildSettings_{};
     // What was asked for, and what was actually built. Kept apart so
     // loadScenePreset can answer "is the scene on screen the one that was named"
-    // rather than assume it -- see RendererStartupOverrides::loadSampleScene.
-    bool sampleSceneRequested_ = false;
-    bool sampleSceneLoaded_ = false;
+    // rather than assume it -- see RendererStartupOverrides::sampleScene.
+    ScenePreset sampleSceneRequested_ = ScenePreset::Default;
+    ScenePreset sampleSceneLoaded_ = ScenePreset::Default;
     // The imported scene's world bounds, kept so the sample scene's lamps can be
     // placed relative to the building rather than at authored coordinates.
     renderer::Aabb sampleSceneBounds_{};
@@ -1835,6 +1837,12 @@ private:
     // of the demo swarm. Off brings the swarm back, e.g. to stress the cluster
     // path on real geometry. Session-only, like the swarm's own controls.
     bool sampleSceneLampsEnabled_ = true;
+    // KHR_lights_punctual lights the imported scene carries. When there are any,
+    // they replace the hand-placed lamps above. Their intensity is in glTF's
+    // candela, whose meaning against this renderer's sun is a per-scene choice,
+    // so it is scaled by a session-only factor rather than reinterpreted.
+    std::vector<renderer::GltfPunctualLight> sampleSceneLights_;
+    float sampleSceneLightIntensityScale_ = 1.0f;
 
     // Point lights cost six tiles each against 64 total, so how many may cast is
     // a budget the user can see and set rather than an implicit cap.

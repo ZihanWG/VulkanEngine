@@ -1492,7 +1492,18 @@ void Renderer::drawLightsDebugUi()
     ImGui::SetItemTooltip("Heatmap tints each froxel by its light count (blue=few, red=many).");
 
     ImGui::SeparatorText("Demo light swarm");
-    if (sampleSceneLoaded_) {
+    if (!sampleSceneLights_.empty()) {
+        ImGui::Checkbox("Sample scene lights (replace the swarm)", &sampleSceneLampsEnabled_);
+        ImGui::SetItemTooltip("The scene's own KHR_lights_punctual lights. Off brings the swarm below back.");
+        ImGui::SliderFloat("glTF light intensity scale",
+                           &sampleSceneLightIntensityScale_,
+                           0.0f,
+                           10.0f,
+                           "%.3f",
+                           ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Multiplies the authored candela. What glTF units mean against this renderer's "
+                              "sun is a per-scene choice, so it is a knob rather than a conversion.");
+    } else if (sampleSceneLoaded_ == ScenePreset::Sponza) {
         ImGui::Checkbox("Sample scene lamps (replace the swarm)", &sampleSceneLampsEnabled_);
         ImGui::SetItemTooltip("12 static amber lamps along the arcades. Off brings the swarm below back.");
     }

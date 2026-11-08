@@ -388,6 +388,16 @@ TEST_CASE("The sample scene is selectable by name", "[command-line][scene]")
     REQUIRE(config.scene == ve::ScenePreset::Sponza);
 }
 
+TEST_CASE("bistro parses on a build without the converted scene", "[command-line][scene]")
+{
+    // Same rule as sponza: loadability is reported at load time, not here.
+    LaunchOptions config{};
+    REQUIRE(parse({"--scene", "bistro"}, config));
+    REQUIRE(config.scene == ve::ScenePreset::Bistro);
+    CHECK(ve::isSampleScenePreset(config.scene));
+    CHECK_FALSE(ve::isSampleScenePreset(ve::ScenePreset::Default));
+}
+
 TEST_CASE("An unknown scene name is rejected", "[command-line][scene]")
 {
     LaunchOptions config{};

@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -19,6 +20,7 @@
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -477,6 +479,47 @@ loadGltfMaterialInfo(const tinygltf::Model& model, const tinygltf::Material& sou
     return materials;
 }
 
+// Places one KHR_lights_punctual light by its node's world transform. A light of
+// a type the extension does not define is skipped with a warning rather than
+// guessed at, as is one whose node transform collapses its direction.
+[[nodiscard]] std::optional<GltfPunctualLight> makePunctualLight(const tinygltf::Light& source,
+                                                                 const glm::mat4& worldTransform)
+{
+    GltfPunctualLight light{};
+    if (source.type == "point") {
+        light.type = GltfPunctualLight::Type::Point;
+    } else if (source.type == "spot") {
+        light.type = GltfPunctualLight::Type::Spot;
+    } else if (source.type == "directional") {
+        light.type = GltfPunctualLight::Type::Directional;
+    } else {
+        Logger::warn("Skipping glTF light '" + source.name + "' of unknown type '" + source.type + "'.");
+        return std::nullopt;
+    }
+
+    light.debugName = source.name;
+    light.position = glm::vec3(worldTransform[3]);
+    const glm::vec3 direction = glm::mat3(worldTransform) * glm::vec3(0.0f, 0.0f, -1.0f);
+    const float directionLength = glm::length(direction);
+    if (!(directionLength > 1.0e-6f)) {
+        Logger::warn("Skipping glTF light '" + source.name + "': its node transform has no direction.");
+        return std::nullopt;
+    }
+    light.direction = direction / directionLength;
+    if (source.color.size() >= 3) {
+        light.color = glm::vec3(static_cast<float>(source.color[0]),
+                                static_cast<float>(source.color[1]),
+                                static_cast<float>(source.color[2]));
+    }
+    light.intensity = static_cast<float>(source.intensity);
+    light.range = static_cast<float>(std::max(source.range, 0.0));
+    if (light.type == GltfPunctualLight::Type::Spot) {
+        light.innerConeAngle = static_cast<float>(source.spot.innerConeAngle);
+        light.outerConeAngle = static_cast<float>(source.spot.outerConeAngle);
+    }
+    return light;
+}
+
 [[nodiscard]] glm::mat4 loadNodeLocalTransform(const tinygltf::Node& node)
 {
     if (!node.matrix.empty()) {
@@ -869,6 +912,8 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
         return false;
     };
 
+    std::vector<GltfPunctualLight> lights;
+
     const auto traverseNode = [&](auto&& self, int nodeIndex, const glm::mat4& parentTransform, size_t depth) -> void {
         if (nodeIndex < 0 || static_cast<size_t>(nodeIndex) >= model.nodes.size()) {
             Logger::warn("Skipping out-of-range glTF scene node index " + std::to_string(nodeIndex) + ".");
@@ -895,6 +940,16 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
                 instance.transform = worldTransform;
                 instance.debugName = nodeMeshInstanceDebugName(model, node, static_cast<size_t>(nodeIndex));
                 nodeMeshInstances.push_back(std::move(instance));
+            }
+        }
+
+        if (node.light >= 0) {
+            if (static_cast<size_t>(node.light) >= model.lights.size()) {
+                Logger::warn("Skipping glTF node light reference " + std::to_string(node.light) +
+                             " because it is out of range.");
+            } else if (std::optional<GltfPunctualLight> light =
+                           makePunctualLight(model.lights[static_cast<size_t>(node.light)], worldTransform)) {
+                lights.push_back(std::move(*light));
             }
         }
 
@@ -929,7 +984,20 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
     geometry.nodeMeshInstances = std::move(nodeMeshInstances);
     geometry.materials = std::move(materialInfos);
     geometry.textures = std::move(textureInfos);
+    geometry.lights = std::move(lights);
     return geometry;
+}
+
+float importedLightRange(float intensity, float authoredRange, float cutoffIlluminance, float maxRange)
+{
+    if (authoredRange > 0.0f) {
+        return std::min(authoredRange, maxRange);
+    }
+    if (intensity <= 0.0f || cutoffIlluminance <= 0.0f) {
+        return 0.0f;
+    }
+    // intensity / d^2 == cutoff.
+    return std::min(std::sqrt(intensity / cutoffIlluminance), maxRange);
 }
 
 } // namespace ve::renderer
