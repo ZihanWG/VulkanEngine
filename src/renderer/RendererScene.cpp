@@ -227,6 +227,20 @@ bool sampleSceneAvailable(ScenePreset scene)
     return path.has_value() && std::filesystem::is_regular_file(*path, error);
 }
 
+std::optional<std::filesystem::path> sampleSceneEnvironmentPath(ScenePreset scene)
+{
+    const std::optional<std::filesystem::path> scenePath = sampleScenePath(scene);
+    if (!scenePath) {
+        return std::nullopt;
+    }
+    std::filesystem::path environment = scenePath->parent_path() / "environment.hdr";
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(environment, error)) {
+        return std::nullopt;
+    }
+    return environment;
+}
+
 std::string sampleSceneUnavailableMessage(ScenePreset scene)
 {
     const std::string flag = "--scene " + std::string(scenePresetName(scene));

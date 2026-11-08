@@ -1414,7 +1414,13 @@ void Renderer::createEnvironmentMap()
     // The visible environment cubemap stays dedicated to the skybox. A separate
     // low-frequency cubemap feeds diffuse IBL, while a mipmapped cubemap and 2D
     // BRDF LUT feed split-sum specular IBL.
-    const std::filesystem::path hdrEnvironmentPath = assetPath("environments/studio.hdr");
+    // An imported scene that ships its own sky lights itself with it: an outdoor
+    // street under the default studio environment reads as a set, not a place.
+    std::filesystem::path hdrEnvironmentPath = assetPath("environments/studio.hdr");
+    if (const std::optional<std::filesystem::path> sceneEnvironment =
+            sampleSceneEnvironmentPath(sampleSceneRequested_)) {
+        hdrEnvironmentPath = *sceneEnvironment;
+    }
     bool loadedHdrEnvironment = false;
     if (std::filesystem::exists(hdrEnvironmentPath)) {
         try {

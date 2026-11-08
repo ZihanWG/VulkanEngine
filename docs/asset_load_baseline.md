@@ -348,7 +348,11 @@ rather than copies, is in its header; in short:
   island -- street lamps, wall spots, shop signs, string-light bulbs merged within
   2.5 m -- coloured by the emissive texture, 128 in all, each with a range written
   into `KHR_lights_punctual`. Their intensities are authored in the script, not
-  measured from anything.
+  measured from anything: tuned by eye on the FBX camera's shot, and capped at 20
+  for street lamps because most hang off a facade, a few centimetres from a wall
+  that inverse-square falloff otherwise blows out.
+- **The sky comes along.** The HDR the scene was lit under is copied beside the
+  glTF as `environment.hdr`.
 
 What the renderer takes from the glTF beyond Sponza's set:
 
@@ -359,6 +363,8 @@ What the renderer takes from the glTF beyond Sponza's set:
   inverse-square illuminance falls to 0.01, capped at 64 units, since an unbounded
   light would sit in every froxel's list (`importedLightRange`, unit-tested). The
   first directional light sets the sun's direction and colour, not its intensity.
+- **An `environment.hdr` beside the glTF** replaces the default environment for
+  the skybox and both IBL terms. Sponza ships none and is unchanged.
 - **The first perspective camera** frames the startup shot -- Bistro's own street
   view, where the bounds-derived interior camera put the view against a wall.
   Pose and field of view only; the clip planes stay bounds-derived, since
