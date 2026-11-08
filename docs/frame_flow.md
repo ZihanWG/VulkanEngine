@@ -43,7 +43,7 @@ declared, so it is not recorded either.
 17. With `renderer.enableDepthPrepass` (on by default, and wherever the multi-draw indirect path exists), replay the opaque and masked buckets depth-only into the main depth image as `DepthPrepass`, so the pass below loads that depth instead of clearing it and tests `LESS_OR_EQUAL` against it. Masked geometry runs the same cutout test the shadow path uses; blended geometry is never prepassed. With `renderer.enablePrepassEarlyDepthTest` (on by default, and wherever the bindless heap exists) the pass then replays the same batches once more for their LOD cross-fades only, dithered as the main pass dithers them, so the depth it leaves is final for everything it covered. See `design_decisions.md`. On a frame that traces ray-traced sun shadows into the mask, `RayTracedShadowTrace` and `RayTracedShadowResolve` follow it: the trace unprojects each pixel of that depth (or one per 2x2 block), takes a normal from its neighbours and traces one ray towards the sun's centre or a point on its disc; the resolve writes, per full-resolution pixel, the visibility and the depth bits it is about, which the main pass reads where its fragment's depth matches ([ray_traced_shadows.md](ray_traced_shadows.md#the-screen-space-mask)). With temporal accumulation on, `RayTracedShadowTemporal` follows the trace, keeping each texel's mean over the frames its surface has been seen, reprojected through the camera's motion ([ray_traced_shadows.md](ray_traced_shadows.md#temporal-accumulation)). With a sun of some extent, `RayTracedShadowRadius`, `RayTracedShadowBlurH` and `RayTracedShadowBlurV` run between the two at the trace's resolution: a penumbra radius per screen axis from the hit distances around each texel, then a separable bilateral blur over it, ping-ponging the trace image with the filter image ([ray_traced_shadows.md](ray_traced_shadows.md#the-filter)).
 18. Let the graph transition the HDR scene color image, the thin G-buffer, the velocity buffer, the shadow images and main depth for `MainHDRPass`; begin it, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`. A batch the prepass covered draws, on a frame that wrote its fades too, through a pipeline with depth writes off and early fragment tests, so a fragment the prepass hid is rejected before it is shaded; everything else keeps the depth-writing pipeline.
 19. With two-phase occlusion active, rebuild the pyramid from this frame's depth (`DepthPyramidMidPass`), re-test phase 1's rejects (`MainGpuCullingPhase2`), and draw the rescued items in a load-op pass (`MainHDRPhase2`).
-20. If SSR is active, copy scene colour at half resolution and trace (`SSRCopyPass`, `SSRTracePass`); if GTAO is on, trace and upsample it (`GTAOPass`, `GTAOBlurPass`). Then draw the blended bucket, sorted back to front, in `TransparentPass`.
+20. If SSR is active, copy scene colour at half resolution and trace (`SSRCopyPass`, `SSRTracePass`); with `ssr.rayTracedFallback` on a device with ray query, the trace runs its hybrid variant, which fires a ray query where the screen-space march misses and reads the TLAS from its fragment stage (see [ssr.md](ssr.md)); if GTAO is on, trace and upsample it (`GTAOPass`, `GTAOBlurPass`). Then draw the blended bucket, sorted back to front, in `TransparentPass`.
 21. Run `DepthPyramidPass` to write the max-depth Hi-Z pyramid for the next frame's culling and page marking, unless nothing will read it.
 22. If TAA is enabled, run `TAAResolvePass`, which reconstructs at presentation resolution from the jittered render-resolution samples and so also performs the upscale, drops history that depth says is disoccluded, and records each pixel's view depth in the history's alpha for the next frame; otherwise keep `sceneColor_` as the active post-process source.
 23. Run bloom: the mip-chain downsample and upsample passes by default, or the legacy extract and separable blur when the mip chain is off.
@@ -82,10 +82,13 @@ reads:
   sampler is VUID-vkCmdDrawIndexed-viewType-07752)
 - binding 15 = punctual shadow atlas again, through the same immutable compare
   sampler, sampled as `sampler2DShadow` for the hardware-filtered lookup
-- binding 16 = the scene's top-level acceleration structure, for the main pass's
-  sun shadow rays. In the layout only when the device has ray query, and declared
-  only by the ray-query variant of `simple_bindless.frag`; written once, because
-  the structure is rebuilt in place rather than replaced
+- binding 16 = the scene's top-level acceleration structure. In the layout only
+  when the device has ray query, and declared only by the shaders that trace: the
+  ray-query variant of `simple_bindless.frag` (sun shadow rays),
+  `ray_traced_shadow_trace.comp`, the probe gather's `probe_trace.comp` and
+  `probe_reference.comp`, and `ssr_trace_rq.frag`, the hybrid reflection trace,
+  which binds this set at index 1 rather than 0; written once, because the
+  structure is rebuilt in place rather than replaced
 - binding 17 = the ray-traced shadow mask, a `usampler2D` holding each pixel's
   traced visibility and the depth bits it was traced at. In the layout on the
   same condition as binding 16; rewritten on every resize, because the image is

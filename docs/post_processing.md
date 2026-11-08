@@ -1,6 +1,6 @@
 # Post-Processing
 
-Phase 6A added mip-chain bloom and moved automatic exposure use into a GPU-readable exposure state buffer. Phase 6B added an optional Temporal AA foundation; the motion-vector upgrade later extended it with a main-pass velocity buffer and history reprojection, and it now also upsamples -- the resolve reconstructs at presentation resolution from the jittered low-resolution samples (see taa.md). Reactive masks, FSR2/DLSS/XeSS proper, and ray tracing remain out of scope.
+Phase 6A added mip-chain bloom and moved automatic exposure use into a GPU-readable exposure state buffer. Phase 6B added an optional Temporal AA foundation; the motion-vector upgrade later extended it with a main-pass velocity buffer and history reprojection, and it now also upsamples -- the resolve reconstructs at presentation resolution from the jittered low-resolution samples (see taa.md). Reactive masks, FSR2/DLSS/XeSS proper, and ray tracing in this stack remain out of scope.
 
 ## HDR Scene Color
 
@@ -101,6 +101,10 @@ The ImGui debug UI exposes:
 - Not FSR2/DLSS/XeSS: the upsampling is reconstruction plus neighbourhood and
   depth rejection, without locks or reactive masks.
 - No per-material reactive masks.
-- No ray tracing.
+- No ray tracing in this stack (TAA, bloom, exposure, tone mapping). The renderer's
+  ray-traced paths are elsewhere and opt-in: sun shadows
+  ([ray_traced_shadows.md](ray_traced_shadows.md)), the probe gather
+  ([irradiance_probes.md](irradiance_probes.md)), and the SSR fallback
+  ([ssr.md](ssr.md)).
 - No local exposure.
 - No automatic camera-cut handling.
