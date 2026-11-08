@@ -27,7 +27,14 @@ const char* levelPrefix(Logger::Level level)
 void Logger::log(Level level, std::string_view message)
 {
     std::ostream& stream = (level == Level::Error || level == Level::Warning) ? std::cerr : std::cout;
-    stream << levelPrefix(level) << ' ' << message << '\n';
+    // Flushed per message. std::cerr is unit-buffered already; std::cout is
+    // fully buffered whenever it is redirected to a file, which is how every CI
+    // leg and measurement run captures it, so a crash used to take the last few
+    // kilobytes of [Info] lines with it -- exactly the lines that say how far
+    // the run got. One flush per message is at most one per frame
+    // (--gpu-timings-every-frame logs one block a frame), and it also keeps the
+    // two streams in order when both go to the same file.
+    stream << levelPrefix(level) << ' ' << message << '\n' << std::flush;
 }
 
 void Logger::trace(std::string_view message)
