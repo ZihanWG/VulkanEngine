@@ -668,6 +668,9 @@ struct RenderGraphFrameResources {
     bool depthPyramidBuildEnabled = false;
     // Declares the SSR copy + trace passes for this frame.
     bool ssrEnabled = false;
+    // The trace runs its hybrid variant, which reads the TLAS and the material
+    // set's punctual atlas and probe atlases from its fragment shader.
+    bool ssrRayTracedEnabled = false;
     // Declares the GTAO horizon-search pass for this frame.
     bool gtaoEnabled = false;
     // Number of alpha-blended draw items this frame. Zero skips declaring the

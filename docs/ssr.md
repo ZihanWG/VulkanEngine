@@ -74,7 +74,9 @@ reflections neighborhood clamping and temporal accumulation for free.
 `Screen-Space Reflections` panel / `ssr` settings block: `enabled`, `maxSteps`
 (8–128), `refinementSteps` (0–8), `maxDistance` (view units), `thickness`,
 `intensity`, `maxRoughness` (surfaces rougher than this trace nothing — the
-roughness fade approaches zero there), `screenEdgeFade`. All clamped in
+roughness fade approaches zero there), `screenEdgeFade`, and the hybrid's
+`rayTracedFallback` and `rayTracedMaxDistance` (world units, 1-63: below the
+probe gather's far bound, whose hit shading it shares). All clamped in
 `clampRuntimeSettings` (unit-tested) and persisted with the other settings.
 
 `intensity` scales how far the reflection *replaces* the IBL, and the combined
@@ -114,11 +116,87 @@ scope has a control drift of 0.000 ms. As with the nested-scope rule in
 [profiling.md](profiling.md), that is a property of the device rather than of the
 pass, so do not carry either conclusion across.
 
+## Hybrid: a ray query where the march misses
+
+`ssr.rayTracedFallback`, **off by default**, needs `VK_KHR_ray_query`. With it on,
+the trace runs as `ssr_trace_rq.frag` -- the same source compiled with
+`VE_RAY_QUERY` -- and wherever the screen-space march cannot answer, the fragment
+fires one ray query from the surface instead: off-screen, occluded, near the
+screen edge, or steeply toward the camera, which are exactly the cases listed
+under Limitations below as the screen-space pass's holes.
+
+### How the two shares are split
+
+The screen-space hit keeps the replacement it is confident of, unchanged. The ray
+answers for the remainder of what a fully confident hit would have replaced:
+
+```
+screen   = clamp(confidence * intensity, 0, 1)        // as before
+full     = clamp(roughnessFade * intensity, 0, 1)      // a sure hit's share
+ray      = full - screen
+emit     = ((ssr - env) * screen + (traced - env) * ray) * specularWeight
+```
+
+Where the march is fully confident, `ray` is zero and the pixel is the
+screen-space pass's. Where the ray also finds nothing within
+`ssr.rayTracedMaxDistance`, its term is zero and the IBL stands, as on a miss
+before. A share under 1/512 fires no ray.
+
+### What a traced hit is shaded with
+
+The probe gather's own hit shading (`probe_hit_shading.glsl`): the closest
+opaque hit through the same alpha-tested traversal, its base colour and emissive
+at a texture level chosen from the ray's footprint (a pixel's angle widened by
+roughness squared), lambert from the sun with a traced shadow ray, every punctual
+light with its atlas shadow. One difference: the indirect term is the main
+pass's diffuse irradiance cube rather than the probe capture's constant ambient
+(`VE_PROBE_HIT_AMBIENT`, defined only by this shader), so a surface seen in a
+traced reflection is lit as it is when seen directly. The probe gathers do not
+define it and record exactly what they did.
+
+That shading is diffuse-only. A traced hit carries no specular and no normal
+mapping, and with probe GI on, the hit still takes the irradiance cube rather
+than the grid. The screen-space hit, which samples the lit scene colour, carries
+all of those, so the two can differ across a seam where a shiny surface is
+reflected.
+
+### Bindings and synchronisation
+
+The variant pipeline binds the global material set at index 1 (the TLAS at
+binding 16, the punctual atlas, the diffuse irradiance cube, and the probe
+atlases the shared shading names) and the bindless heap at 2, after this pass's
+own set at 0; addresses arrive in a 56-byte push block
+(`SsrRayQueryPushConstants`). `SSRTracePass` declares the TLAS read at the
+fragment stage, plus the atlases, only on frames the hybrid runs; turning it on
+also puts the scene's TLAS in play the way ray-traced shadows or the probe
+gather do. The screen-space pipeline is untouched: without the setting, or on a
+device without ray query, the frame is bit-identical to before (compared on the
+RTX 3080 Ti, 0 of 921,600 pixels differ, with `--disable-ray-query`).
+
+### What it changes, on screen
+
+Default scene, RTX 3080 Ti Laptop, frame 30, `--deterministic`: the polished
+sphere's lower half, where the screen-space march found nothing and the sky IBL
+stood, now reflects the floor, the box and the sphere behind it, and the share
+the march did hit is unchanged. Low-roughness dielectrics move by a few
+values (1.18% of pixels change by more than 2/255; mean luminance +0.3%). On
+Sponza at the same frame, the change is concentrated on the curtains' gold
+embroidery and rods, which reflected the sky's IBL indoors and now reflect the
+interior (7.0% of pixels beyond 2/255; mean luminance -0.4%). There is no
+ray-traced ground truth for reflections here, so these are observations, not an
+error measurement.
+
+### What it costs
+
+@@COST@@
+
 ## Limitations
 
-- Screen-space only: anything off-screen or occluded contributes nothing. This is
-  now a graceful fallback rather than a hole: the pass emits a *correction* toward
-  the traced colour, so no hit means the IBL specular simply stands.
+- Screen-space only by default: anything off-screen or occluded contributes
+  nothing. This is a graceful fallback rather than a hole: the pass emits a
+  *correction* toward the traced colour, so no hit means the IBL specular simply
+  stands. On a device with ray query, `ssr.rayTracedFallback` fills those holes
+  with a ray (see [Hybrid](#hybrid-a-ray-query-where-the-march-misses)).
 - The thin G-buffer stores no albedo, so the trace weights the swap with a
   grayscale F0 while the main pass used an albedo-tinted one. The two weights do
   not cancel, and a residual `prefilteredEnv * (w_tinted - w_grayscale)` survives

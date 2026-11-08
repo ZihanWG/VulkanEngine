@@ -1938,8 +1938,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // question the batch will, minus the cursor.
     // The reference traces the scene too, whether or not anything else does.
     frameProbeReferenceActive_ = isProbeReferenceSelected();
+    // So do hybrid reflections, which trace where the screen-space march misses.
+    frameSsrRayTracedActive_ = isSsrRayTracedSelected();
     frameRayTracingSceneActive_ = frameRayTracedShadowsActive_ || (isProbeTraceSelected() && isProbeCaptureActive()) ||
-                                  frameProbeReferenceActive_;
+                                  frameProbeReferenceActive_ || frameSsrRayTracedActive_;
     frameRayTracingSceneBuildRequired_ = false;
     if (frameRayTracingSceneActive_) {
         const ScopedCpuTimer timer = cpuScope(CpuScope::RayTracingInstances);
@@ -1968,6 +1970,8 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // scene colour already contains -- and the descriptors would be statically
     // used while unwritten, which validation rejects outright.
     frameSsrActive_ = ssrSettings_.enabled && ssr_.available() && ssr_.isIblBound() && !allDrawItems_.empty();
+    // Already implied by the selector; restated so the two cannot drift apart.
+    frameSsrRayTracedActive_ = frameSsrRayTracedActive_ && frameSsrActive_;
     if (frameSsrActive_) {
         // The trace reconstructs positions from the jitter-rendered depth, so it
         // uses the same jittered projection the rasterizer used.
@@ -2075,6 +2079,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameAsyncComputeActive_ = false;
     frameClusterConsumerStages_ = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     frameSsrActive_ = false;
+    frameSsrRayTracedActive_ = false;
     frameGtaoActive_ = false;
     frameRayTracedShadowsActive_ = false;
     frameRayTracingSceneActive_ = false;

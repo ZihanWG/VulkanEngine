@@ -1,6 +1,18 @@
 #version 460
 #include "sub_rect.glsl"
 
+// Compiled twice (CMakeLists.txt, SHADER_VARIANTS). ssr_trace_rq.frag is this
+// file with VE_RAY_QUERY defined: the hybrid pass, which fires one ray query
+// where the screen-space march below misses or fades out (ssr.rayTracedFallback).
+// A device without ray query never loads it, and without the define this file is
+// the screen-space pass exactly as it was.
+#ifdef VE_RAY_QUERY
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_nonuniform_qualifier : require
+#endif
+
 // Screen-space reflections: march against the main depth buffer with binary
 // refinement, sampling the pre-reflection scene-color copy at the hit point.
 //
@@ -67,6 +79,99 @@ layout(set = 0, binding = 3, std430) readonly buffer SsrParamsBuffer {
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outReflection;
 
+#ifdef VE_RAY_QUERY
+#include "irradiance_probes.glsl"
+
+// The global material set, bound at index 1 here (0 is this pass's own). The
+// same layout the main pass binds at 0, so these are its bindings: the hit is
+// shaded with the scene's own lights, punctual shadows and diffuse irradiance.
+layout(set = 1, binding = 4) uniform samplerCube uDiffuseIrradianceMap;
+layout(set = 1, binding = 7) uniform sampler2D uPunctualShadowAtlas;
+// Declared because the shared capture shading names them; read only when its
+// bounce weight is non-zero, which it never is here.
+layout(set = 1, binding = 9) uniform sampler2D uProbeIrradianceAtlas;
+layout(set = 1, binding = 10) uniform sampler2D uProbeDepthAtlas;
+layout(set = 1, binding = 11) uniform ProbeShadingParams {
+    vec4 gridOrigin;   // xyz = origin, w = intensity
+    vec4 gridSpacing;  // xyz = spacing, w = surface bias
+    vec4 debug;
+    // xyz = this probe's relocation offset from its grid point.
+    vec4 probeOffsets[kProbeCount];
+} probeParams;
+layout(set = 1, binding = 16) uniform accelerationStructureEXT uSceneTopLevel;
+layout(set = 2, binding = 0) uniform sampler2D uBaseColorTextures[];
+
+// A traced hit's indirect light: the main pass's diffuse irradiance, so a
+// surface seen in a traced reflection is lit as it is when seen directly. See
+// VE_PROBE_HIT_AMBIENT in probe_hit_shading.glsl.
+vec3 probeHitAmbient(vec3 normal)
+{
+    return textureLod(uDiffuseIrradianceMap, normal, 0.0).rgb;
+}
+#define VE_PROBE_HIT_AMBIENT 1
+
+#include "probe_capture_shading.glsl"
+#include "ray_traced_shadow_trace.glsl"
+#include "probe_hit_shading.glsl"
+
+// Mirrors ve::renderer::SsrRayQueryPushConstants. Device addresses as uint64_t.
+layout(push_constant) uniform SsrRayQueryPush {
+    FrameConstantsBuffer frameConstants;
+    ObjectFrameDataBuffer objectFrameData;
+    RtGeometryRecordBuffer geometry;
+    LightBuffer lights;
+    ShadowSlotBuffer punctualShadowSlots;
+    uint lightCount;
+    float sunRayLength;
+    // ssr.rayTracedMaxDistance, world units.
+    float maxDistance;
+    uint padding;
+} pc;
+
+// A ray share below this is under half a unit of an 8-bit display value even
+// at full specular weight; not worth a ray.
+const float kRayShareThreshold = 1.0 / 512.0;
+
+// The radiance a reflection ray from this pixel's surface finds, through the
+// probe gather's hit shading. False when nothing is within reach, which leaves
+// that share of the IBL standing.
+bool traceReflection(vec3 viewPos, vec3 normalWS, vec3 directionWS, float roughness, out vec3 radiance)
+{
+    FrameConstantsBuffer frame = pc.frameConstants;
+    vec3 camera = frame.values.cameraPosition.xyz;
+    // The view matrix is a rigid transform -- a rotation after a translation by
+    // the camera -- so its rotation's transpose takes a view-space offset back
+    // to world space. No inverse is needed on top of the one already uploaded.
+    vec3 worldPosition = camera + transpose(mat3(params.view)) * viewPos;
+
+    ProbeRayContext context;
+    context.frame = frame;
+    context.objects = pc.objectFrameData;
+    context.geometry = pc.geometry;
+    context.lighting.sunDirection = frame.values.lightDirection.xyz;
+    context.lighting.sunColor = frame.values.lightColor.rgb;
+    context.lighting.ambient = frame.values.ambientColor.rgb;
+    context.lighting.lights = pc.lights;
+    context.lighting.lightCount = pc.lightCount;
+    context.lighting.shadowSlots = pc.punctualShadowSlots;
+    context.lighting.bounceWeight = 0.0;
+    context.sunRayLength = pc.sunRayLength;
+    // The texture level follows the footprint: a pixel's angle, widened by
+    // the lobe a rough surface reflects into.
+    float pixelAngle = 2.0 / max(params.projection[1][1] * float(textureSize(uDepth, 0).y) * params.subRect.y, 1.0);
+    context.coneSpread = pixelAngle + roughness * roughness;
+
+    // Off the surface by a little more with distance, which is how far depth
+    // reconstruction can put the point inside it (as probe_reference.comp).
+    vec3 origin = worldPosition + normalWS * (kProbeTraceSurfaceOffset + 1.0e-3 * length(camera - worldPosition));
+    // Below the gather's far bound, so a hit and the sky term cannot be confused.
+    float tMax = min(pc.maxDistance, kProbeMaxDistance * 0.99);
+    vec4 traced = probeTraceRadiance(context, origin, directionWS, 0.0, tMax);
+    radiance = traced.rgb;
+    return abs(traced.a) < kProbeMaxDistance;
+}
+#endif
+
 vec3 octDecode(vec2 e)
 {
     e = e * 2.0 - 1.0;
@@ -100,39 +205,10 @@ float screenEdgeFade(vec2 uv)
     return clamp(edge / max(fadeStart, 0.0001), 0.0, 1.0);
 }
 
-void main()
+// The screen-space march: true with the refined hit's UV, false when the ray
+// leaves the screen, runs out of steps, or cannot be projected.
+bool marchScreenSpace(vec3 viewPos, vec3 normalVS, vec3 rayDir, out vec2 hitUV)
 {
-    outReflection = vec4(0.0);
-
-    float depth = texture(uDepth, veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uDepth, 0)))).r;
-    if (depth >= 0.99999) {
-        return; // sky
-    }
-
-    // Past the per-fragment sky return: explicit LOD (see the bindings).
-    vec4 normalRoughness =
-        textureLod(uNormalRoughness, veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uNormalRoughness, 0))), 0.0);
-    float roughness = normalRoughness.z;
-    float metallic = normalRoughness.w;
-    float maxRoughness = max(params.weightParams.y, 0.0001);
-    if (roughness >= maxRoughness) {
-        return;
-    }
-
-    vec3 viewPos = viewPositionFromDepth(vUV, depth);
-    vec3 normalWS = octDecode(normalRoughness.xy);
-    vec3 normalVS = normalize(mat3(params.view) * normalWS);
-
-    vec3 viewDir = normalize(viewPos);
-    vec3 rayDir = normalize(reflect(viewDir, normalVS));
-
-    // Rays bending back toward the camera leave the depth buffer's domain fast;
-    // fade them out instead of producing streaks.
-    float towardCameraFade = clamp(-sign(rayDir.z) * 0.5 + 0.5 + rayDir.z, 0.0, 1.0);
-    if (rayDir.z > 0.9) {
-        return;
-    }
-
     uint maxSteps = uint(max(params.marchParams.x, 1.0));
     float maxDistance = max(params.marchParams.z, 0.01);
     float thickness = max(params.marchParams.w, 0.001);
@@ -179,7 +255,7 @@ void main()
     vec4 startClip = params.projection * vec4(rayOrigin, 1.0);
     vec4 endClip = params.projection * vec4(rayEnd, 1.0);
     if (startClip.w <= 0.0001 || endClip.w <= 0.0001) {
-        return;
+        return false;
     }
     const vec2 startUV = (startClip.xy / startClip.w) * 0.5 + 0.5;
     const vec2 endUV = (endClip.xy / endClip.w) * 0.5 + 0.5;
@@ -191,7 +267,7 @@ void main()
     const float stepFraction = 1.0 / float(maxSteps);
     float u = stepFraction * (0.5 + jitter);
 
-    vec2 hitUV = vec2(-1.0);
+    hitUV = vec2(-1.0);
     bool hit = false;
     float previousU = 0.0;
 
@@ -237,15 +313,56 @@ void main()
         u += stepFraction;
     }
 
-    if (!hit) {
+    return hit;
+}
+
+void main()
+{
+    outReflection = vec4(0.0);
+
+    float depth = texture(uDepth, veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uDepth, 0)))).r;
+    if (depth >= 0.99999) {
+        return; // sky
+    }
+
+    // Past the per-fragment sky return: explicit LOD (see the bindings).
+    vec4 normalRoughness =
+        textureLod(uNormalRoughness, veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uNormalRoughness, 0))), 0.0);
+    float roughness = normalRoughness.z;
+    float metallic = normalRoughness.w;
+    float maxRoughness = max(params.weightParams.y, 0.0001);
+    if (roughness >= maxRoughness) {
         return;
     }
 
-    vec3 reflectedColor =
-        // .zw, not .xy: the scene-colour copy is half size and rounds its own
-        // way, so its written/allocated ratio drifts from the full-size sources.
-        textureLod(uSceneColorCopy, veSubRectUv(hitUV, params.subRect.zw, vec2(textureSize(uSceneColorCopy, 0))), 0.0)
-            .rgb;
+    vec3 viewPos = viewPositionFromDepth(vUV, depth);
+    vec3 normalWS = octDecode(normalRoughness.xy);
+    vec3 normalVS = normalize(mat3(params.view) * normalWS);
+
+    vec3 viewDir = normalize(viewPos);
+    vec3 rayDir = normalize(reflect(viewDir, normalVS));
+
+    // Rays bending back toward the camera leave the depth buffer's domain fast;
+    // fade them out instead of producing streaks.
+    float towardCameraFade = clamp(-sign(rayDir.z) * 0.5 + 0.5 + rayDir.z, 0.0, 1.0);
+    // Too steep toward the camera for the depth buffer to answer: the march is
+    // not even tried.
+    vec2 hitUV = vec2(-1.0);
+    bool hit = rayDir.z <= 0.9 && marchScreenSpace(viewPos, normalVS, rayDir, hitUV);
+#ifndef VE_RAY_QUERY
+    if (!hit) {
+        return;
+    }
+#endif
+
+    vec3 reflectedColor = vec3(0.0);
+    if (hit) {
+        reflectedColor =
+            // .zw, not .xy: the scene-colour copy is half size and rounds its own
+            // way, so its written/allocated ratio drifts from the full-size sources.
+            textureLod(uSceneColorCopy, veSubRectUv(hitUV, params.subRect.zw, vec2(textureSize(uSceneColorCopy, 0))), 0.0)
+                .rgb;
+    }
 
     // Fresnel with a grayscale F0 approximation (metal tint is not stored in
     // the thin G-buffer; documented limitation).
@@ -254,7 +371,7 @@ void main()
     float fresnel = f0 + (1.0 - f0) * pow(1.0 - normalView, 5.0);
 
     float roughnessFade = 1.0 - clamp(roughness / maxRoughness, 0.0, 1.0);
-    float confidence = screenEdgeFade(hitUV) * roughnessFade * towardCameraFade;
+    float confidence = hit ? screenEdgeFade(hitUV) * roughnessFade * towardCameraFade : 0.0;
 
     // Intensity scales how far the reflection *replaces* the IBL, so the combined
     // weight has to saturate at 1. It used to scale a purely additive term, where
@@ -281,5 +398,24 @@ void main()
     // Signed on purpose. Where the traced reflection is darker than the
     // environment the correction is negative, which is what makes this a
     // replacement rather than an addition.
+#ifdef VE_RAY_QUERY
+    // The hybrid: the screen-space hit keeps the share it is confident of, and a
+    // ray query answers for the rest -- off-screen, occluded, near the screen
+    // edge, toward the camera. The two shares sum to the replacement a fully
+    // confident screen-space hit would have had, so where the march is sure the
+    // output is the screen-space pass's to the bit, and where neither finds a
+    // surface the IBL stands as before.
+    float fullReplacement = clamp(roughnessFade * max(params.weightParams.x, 0.0), 0.0, 1.0);
+    float rayShare = fullReplacement - replacement;
+    vec3 tracedTerm = vec3(0.0);
+    if (rayShare > kRayShareThreshold) {
+        vec3 tracedColor;
+        if (traceReflection(viewPos, normalWS, rayDirWS, roughness, tracedColor)) {
+            tracedTerm = (tracedColor - prefilteredColor) * rayShare;
+        }
+    }
+    outReflection = vec4(((reflectedColor - prefilteredColor) * replacement + tracedTerm) * specularWeight, 0.0);
+#else
     outReflection = vec4((reflectedColor - prefilteredColor) * specularWeight * replacement, 0.0);
+#endif
 }

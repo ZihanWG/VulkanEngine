@@ -2032,11 +2032,19 @@ void Renderer::drawSsrDebugUi()
     changed |= ImGui::SliderFloat("Intensity##ssr", &ssrSettings_.intensity, 0.0f, 4.0f, "%.2f");
     changed |= ImGui::SliderFloat("Max roughness##ssr", &ssrSettings_.maxRoughness, 0.05f, 1.0f, "%.2f");
     changed |= ImGui::SliderFloat("Screen edge fade##ssr", &ssrSettings_.screenEdgeFade, 0.01f, 0.49f, "%.2f");
+    if (rayQueryShadingAvailable()) {
+        changed |= ImGui::Checkbox("Ray-traced fallback##ssr", &ssrSettings_.rayTracedFallback);
+        changed |= ImGui::SliderFloat("Ray max distance##ssr", &ssrSettings_.rayTracedMaxDistance, 1.0f, 63.0f, "%.1f");
+    } else {
+        ImGui::TextDisabled("Ray-traced fallback needs VK_KHR_ray_query.");
+    }
     if (changed) {
         clampRuntimeSettings();
     }
 
-    ImGui::Text("Active: %s", frameSsrActive_ ? "yes" : "no");
+    ImGui::Text("Active: %s%s",
+                frameSsrActive_ ? "yes" : "no",
+                frameSsrRayTracedActive_ ? " (hybrid: ray query on misses)" : "");
     ImGui::TextDisabled("Traces the main depth buffer; reflections blend in before TAA. Lower Max");
     ImGui::TextDisabled("roughness for mirror-only, raise Intensity to exaggerate for inspection.");
 }

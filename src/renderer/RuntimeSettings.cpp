@@ -136,6 +136,7 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     ssr.intensity = std::clamp(ssr.intensity, 0.0f, 4.0f);
     ssr.maxRoughness = std::clamp(ssr.maxRoughness, 0.05f, 1.0f);
     ssr.screenEdgeFade = std::clamp(ssr.screenEdgeFade, 0.01f, 0.49f);
+    ssr.rayTracedMaxDistance = std::clamp(ssr.rayTracedMaxDistance, 1.0f, 63.0f);
 
     // Ranges match the GTAO panel's sliders. Slice and step counts bound the
     // shader's nested loops, so a large stored value is a performance cliff
@@ -491,6 +492,8 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*ssr, "intensity", settings.ssr.intensity);
         readFloat(*ssr, "maxRoughness", settings.ssr.maxRoughness);
         readFloat(*ssr, "screenEdgeFade", settings.ssr.screenEdgeFade);
+        readBool(*ssr, "rayTracedFallback", settings.ssr.rayTracedFallback);
+        readFloat(*ssr, "rayTracedMaxDistance", settings.ssr.rayTracedMaxDistance);
     }
 
     if (const Json* ssao = objectMember(json, "ssao")) {
@@ -704,7 +707,9 @@ Json toJson(const RuntimeSettings& settings)
               {"thickness", settings.ssr.thickness},
               {"intensity", settings.ssr.intensity},
               {"maxRoughness", settings.ssr.maxRoughness},
-              {"screenEdgeFade", settings.ssr.screenEdgeFade}}},
+              {"screenEdgeFade", settings.ssr.screenEdgeFade},
+              {"rayTracedFallback", settings.ssr.rayTracedFallback},
+              {"rayTracedMaxDistance", settings.ssr.rayTracedMaxDistance}}},
         {"ssao",
          Json{{"enabled", settings.ssao.enabled},
               {"radius", settings.ssao.radius},

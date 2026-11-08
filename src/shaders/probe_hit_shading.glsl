@@ -203,6 +203,15 @@ vec4 probeTraceRadiance(ProbeRayContext context, vec3 origin, vec3 direction, fl
                                    sunHitDistance) ? 0.0 : 1.0;
     }
 
+#ifdef VE_PROBE_HIT_AMBIENT
+    // The includer answers the hit's indirect light itself. A reflection ray
+    // (ssr_trace_rq.frag) shows the surface it hits to the camera, next to the
+    // same surface seen directly, so it reads the main pass's diffuse irradiance
+    // cube rather than the probes' constant ambient -- otherwise the two would
+    // disagree across every screen-space/traced seam. The probe gathers leave
+    // this undefined, so what they record is unchanged.
+    lighting.ambient = probeHitAmbient(normal);
+#endif
     vec3 radiance = probeCaptureRadiance(lighting, albedo, emissive, worldPosition, normal, origin, sunVisibility);
     // Negative distance marks a back-face hit. The convolution reads the
     // magnitude for visibility, so the depth a probe stores is unchanged.

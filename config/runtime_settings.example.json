@@ -65,7 +65,9 @@
         "thickness": 0.35,
         "intensity": 1.0,
         "maxRoughness": 0.6,
-        "screenEdgeFade": 0.1
+        "screenEdgeFade": 0.1,
+        "rayTracedFallback": false,
+        "rayTracedMaxDistance": 50.0
     },
     "ssao": {
         "enabled": false,
