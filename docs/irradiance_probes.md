@@ -933,7 +933,17 @@ So the grid stays 8x4x8, the 16-bit widening was not kept, and the guess that th
 remaining error is grid resolution did not survive: more uniform resolution is not
 what reduces it here. What the table does show is the update
 rate: the same 8x4x8 grid reads 22.1% at 16 probes a frame and 24.9% at the
-default 4. Whether that is worth the trace cost has not been measured. Anything
+default 4. Its cost, measured: Sponza, traced gather at 768 rays, 1280x720, clocks pinned
+at 800/7001 MHz, A/B/A/B with the control returning within 0.06%, p10 over about
+7000 samples a side. Frame total 4.791 -> 4.877 ms, **+0.086 ms (+1.8%)** for four
+times the probes a frame, attributable. Where it lands is not resolved: the probe
+passes themselves (`ProbeTrace` 0.053 -> 0.052, `IrradianceProbeUpdate`
+0.371 -> 0.372) are inside the harness's noise floor at p10, so they are not
+measured, and the frame-total rise shows in `MainHDRPass` (+0.042 ms). The means
+of the raw samples agree in size and direction (`ProbeTrace` 0.080 -> 0.096 ms,
+`IrradianceProbeUpdate` 0.47 -> 0.49), which is a cross-check and not the
+quoted statistic. It is small because 16 probes at 768 rays is about 12 000 rays
+a frame. Anything
 that would actually resolve the columns is non-uniform (a grid that adapts to
 geometry, or cascades), which this volume does not have.
 
