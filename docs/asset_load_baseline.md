@@ -308,31 +308,64 @@ lossy BC7 textures.
 
 Sponza is one building, lit by one sun and a dozen lamps placed by hand. Amazon
 Lumberyard Bistro (CC BY 4.0, from NVIDIA's Open Research Content Archive) is a
-street with an interior, and it carries its own lights, which is what makes it a
-second measurement scene rather than a second copy of the first.
+street of shopfronts under string lights -- 1296 meshes, 1591 primitives, 2.83
+million triangles and 132 materials over 405 textures, against Sponza's 103
+primitives and 25 materials.
 
-It is not fetched. It ships only as FBX, so the glTF is a conversion made on the
-machine that runs it, and `--scene bistro` loads it from
-`VULKAN_ENGINE_BISTRO_SCENE_FILE` -- by default
-`build/fetched-assets/bistro/Bistro.gltf`, beside Sponza. A build without the file
-refuses the preset with a message naming the path it looked at; the CI sweep does
-not run it.
+It is not fetched. It ships only as FBX with DDS textures, so the glTF is a
+conversion made on the machine that runs it, by Blender (the only free tool that
+reads both):
 
-What the renderer takes from the glTF beyond Sponza's set is `KHR_lights_punctual`:
+```sh
+blender -b --factory-startup --python tools/convert_bistro.py -- \
+    <Bistro_v5_2>/BistroExterior.fbx build/fetched-assets/bistro/Bistro.gltf
+./build/release/vemeshcook build/fetched-assets/bistro/Bistro.gltf
+python3 tools/cook_textures.py build/fetched-assets/bistro/Bistro.gltf
+./build/release/VulkanEngine --scene bistro
+```
 
-- Point and spot lights go to the clustered path every frame, replacing the
-  hand-placed lamps. glTF gives candela, and what that means against this
-  renderer's sun is a per-scene choice, so the debug UI scales it instead of
-  converting it. A light with no authored range is cut where its inverse-square
-  illuminance falls to 0.01, capped at 64 units, since an unbounded light would
-  sit in every froxel's list (`importedLightRange`, unit-tested).
-- The first directional light sets the sun's direction and colour. Not its
-  intensity: lux would need the same per-scene interpretation, and the sun's
-  value is what exposure was tuned against.
+`--scene bistro` loads it from `VULKAN_ENGINE_BISTRO_SCENE_FILE`, by default the
+path above, beside Sponza. A build without the file refuses the preset with a
+message naming the path it looked at; the CI sweep does not run it. The conversion
+takes about two minutes, the mesh cook three seconds and the texture cook about a
+minute, which leaves 1.2 GiB of BC7.
+
+A format conversion alone would not render. What `convert_bistro.py` decides,
+rather than copies, is in its header; in short:
+
+- **Materials are rebuilt.** Blender's FBX importer wires the packed "Specular"
+  texture into a Principled input glTF cannot express. The scene's README defines
+  it as occlusion, roughness and metalness in R, G and B -- glTF's own
+  metallic-roughness layout -- so it becomes the metallic-roughness and occlusion
+  texture unchanged.
+- **Normal maps are DirectX-convention BC5**: green is flipped and Z
+  reconstructed.
+- **Alpha and sidedness.** Foliage, curtains and lettering are cutouts, glass
+  blends, and only foliage stays double-sided: the importer marks every material
+  double-sided, which would have put the whole scene on the un-culled pipeline.
+- **Lights are derived.** The FBX holds one sun. Its lamps are emissive geometry
+  meant for a path tracer, so the conversion places a point light at each emissive
+  island -- street lamps, wall spots, shop signs, string-light bulbs merged within
+  2.5 m -- coloured by the emissive texture, 128 in all, each with a range written
+  into `KHR_lights_punctual`. Their intensities are authored in the script, not
+  measured from anything.
+
+What the renderer takes from the glTF beyond Sponza's set:
+
+- **`KHR_lights_punctual`.** Point and spot lights go to the clustered path every
+  frame, replacing the hand-placed lamps. glTF gives candela, and what that means
+  against this renderer's sun is a per-scene choice, so the debug UI scales it
+  instead of converting it. A light with no authored range is cut where its
+  inverse-square illuminance falls to 0.01, capped at 64 units, since an unbounded
+  light would sit in every froxel's list (`importedLightRange`, unit-tested). The
+  first directional light sets the sun's direction and colour, not its intensity.
+- **The first perspective camera** frames the startup shot -- Bistro's own street
+  view, where the bounds-derived interior camera put the view against a wall.
+  Pose and field of view only; the clip planes stay bounds-derived, since
+  Blender's 1 mm near plane would waste the depth buffer.
 
 The same contract as Sponza otherwise holds: one RenderObject per primitive, no
-portfolio showcase or skinned rig in the shot, and the cooks apply unchanged
-(`vemeshcook` and `tools/cook_textures.py` against the converted glTF).
+portfolio showcase or skinned rig in the shot, and the cooks apply unchanged.
 
 ## Limitations
 

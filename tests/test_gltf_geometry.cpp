@@ -169,3 +169,20 @@ TEST_CASE("An imported light's cull range", "[gltf][lights]")
     // A dark light reaches nothing.
     CHECK(importedLightRange(0.0f, 0.0f, 0.01f, 40.0f) == Approx(0.0f));
 }
+
+TEST_CASE("A glTF camera is placed by its node, scale and all", "[gltf][camera]")
+{
+    // Under the +5 X rig, at +10 Z, with a 0.01 scale on its own node -- the shape
+    // an FBX conversion produces. A pose that read the scaled axes as unit vectors
+    // would come back a hundredth of its length.
+    const GltfGeometry geometry = loadGltfGeometry(lightsFixturePath());
+    REQUIRE(geometry.cameras.size() == 1);
+    const ve::renderer::GltfCameraPose& camera = geometry.cameras.front();
+    CHECK(camera.debugName == "Shot");
+    CHECK(camera.position.x == Approx(5.0f));
+    CHECK(camera.position.z == Approx(10.0f));
+    CHECK(camera.forward.z == Approx(-1.0f));
+    CHECK(camera.up.y == Approx(1.0f));
+    CHECK(camera.verticalFovRadians == Approx(0.6f));
+    CHECK(loadGltfGeometry(fixturePath()).cameras.empty());
+}

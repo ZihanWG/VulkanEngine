@@ -296,7 +296,8 @@ screenshots.
   animation import, and `MASK`/`BLEND` alpha modes drive real cutout and
   transparent passes, and `KHR_lights_punctual` lights import (point and spot
   into the clustered path, the first directional as the sun). Still
-  unsupported: morph targets, cameras, and occlusion maps. Emissive factor +
+  unsupported: morph targets and occlusion maps. The first perspective camera
+  frames an imported scene's startup shot. Emissive factor +
   emissive maps are supported.
 - Upload paths still use one-time command buffers and queue-idle waits for
   initialization, and are not a runtime streaming system. Texture uploads are

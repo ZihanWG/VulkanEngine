@@ -1842,6 +1842,8 @@ private:
     // candela, whose meaning against this renderer's sun is a per-scene choice,
     // so it is scaled by a session-only factor rather than reinterpreted.
     std::vector<renderer::GltfPunctualLight> sampleSceneLights_;
+    // Cameras the imported scene authored; the first frames the startup shot.
+    std::vector<renderer::GltfCameraPose> sampleSceneCameras_;
     float sampleSceneLightIntensityScale_ = 1.0f;
 
     // Point lights cost six tiles each against 64 total, so how many may cast is
