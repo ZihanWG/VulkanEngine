@@ -943,7 +943,17 @@ measured, and the frame-total rise shows in `MainHDRPass` (+0.042 ms). The means
 of the raw samples agree in size and direction (`ProbeTrace` 0.080 -> 0.096 ms,
 `IrradianceProbeUpdate` 0.47 -> 0.49), which is a cross-check and not the
 quoted statistic. It is small because 16 probes at 768 rays is about 12 000 rays
-a frame. Anything
+a frame.
+
+That is the traced gather only, and it is why the default stays 4. The raster
+capture, which is what runs when `rayTracedGather` is off, draws six faces per
+probe and its cost scales with the count: two A/B series of the same change
+there both showed `ProbeCapture` about quadrupling (0.37 -> 1.5 ms-ish), and both
+were voided by the harness, the control drifting 12.9% and 6.7% because the frame
+rate itself changes by half. So no figure is filed for it; a clean one needs a
+lower clock pin. What can be said is that a default of 16 would be paid by every
+raster-path user for a gain only measured on the traced one, so 16 is advice for
+the traced gather, not a default. Anything
 that would actually resolve the columns is non-uniform (a grid that adapts to
 geometry, or cascades), which this volume does not have.
 
