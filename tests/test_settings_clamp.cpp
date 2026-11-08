@@ -199,6 +199,8 @@ TEST_CASE("SSR settings clamp into their valid ranges", "[settings]")
     settings.ssr.intensity = -1.0f;
     settings.ssr.maxRoughness = 2.0f;
     settings.ssr.screenEdgeFade = 0.9f;
+    settings.ssr.rayTracedMaxDistance = 0.0f;
+    settings.ssr.rayTracedMinWeight = 3.0f;
     settings.clamp();
 
     CHECK(settings.ssr.maxSteps == 128);
@@ -208,6 +210,8 @@ TEST_CASE("SSR settings clamp into their valid ranges", "[settings]")
     CHECK(settings.ssr.intensity == 0.0f);
     CHECK(settings.ssr.maxRoughness == 1.0f);
     CHECK(settings.ssr.screenEdgeFade == 0.49f);
+    CHECK(settings.ssr.rayTracedMaxDistance == 1.0f);
+    CHECK(settings.ssr.rayTracedMinWeight == 1.0f);
 }
 
 TEST_CASE("LOD settings clamp into usable ranges", "[settings][lod]")

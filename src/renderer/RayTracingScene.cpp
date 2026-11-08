@@ -475,9 +475,10 @@ RayTracingTopLevelPlan RayTracingScene::writeInstances(uint32_t frameIndex,
         if (input.skinned) {
             if (skinned_.valid() && input.jointPalette != 0 && input.skinnedPose != 0) {
                 bottomLevel = skinned_.bottomLevelAddress();
-                // Positions, not renderer::Vertex: nothing reads this record,
-                // because the skinned caster is opaque and never runs the
-                // alpha test that would.
+                // Positions, not renderer::Vertex. The shadow rays never read
+                // this record -- the caster is opaque and runs no alpha test --
+                // but a gather or reflection ray that hits it does, through
+                // probe_hit_shading.glsl's skinned branch.
                 record = {skinned_.positionsAddress(), skinned_.indexAddress()};
             }
         } else {

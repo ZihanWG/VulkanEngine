@@ -66,6 +66,7 @@ ScreenSpaceReflections::ScreenSpaceReflections(rhi::VulkanContext& context,
 ScreenSpaceReflections::~ScreenSpaceReflections()
 {
     destroyResources();
+    rayQueryPipeline_.reset();
     pipeline_.reset();
     descriptorSetLayout_.reset();
 }
@@ -119,6 +120,33 @@ void ScreenSpaceReflections::createPipeline(const std::filesystem::path& vertexS
     pipelineInfo.enableAdditiveBlend = true;
     pipelineInfo.pipelineCache = context_.pipelineCache();
     pipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "SSRTracePipeline");
+}
+
+void ScreenSpaceReflections::createRayQueryPipeline(const std::filesystem::path& vertexShaderPath,
+                                                    const std::filesystem::path& fragmentShaderPath,
+                                                    VkDescriptorSetLayout materialSetLayout,
+                                                    VkDescriptorSetLayout bindlessSetLayout)
+{
+    rayQueryPipeline_.reset();
+    if (materialSetLayout == VK_NULL_HANDLE || bindlessSetLayout == VK_NULL_HANDLE) {
+        return;
+    }
+    // 0 this pass's own set, as the screen-space pipeline; 1 the global
+    // material set; 2 the bindless heap. See ssr_trace.frag.
+    const std::array<VkDescriptorSetLayout, 3> setLayouts{
+        descriptorSetLayout_.handle(), materialSetLayout, bindlessSetLayout};
+    const VkPushConstantRange pushRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(SsrRayQueryPushConstants))};
+
+    rhi::VulkanPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.vertexShaderPath = vertexShaderPath;
+    pipelineInfo.fragmentShaderPath = fragmentShaderPath;
+    pipelineInfo.colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT; // matches SceneColorHDR
+    pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(setLayouts.data(), setLayouts.size());
+    pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushRange, 1);
+    pipelineInfo.enableAdditiveBlend = true;
+    pipelineInfo.pipelineCache = context_.pipelineCache();
+    rayQueryPipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "SSRTraceRayQueryPipeline");
 }
 
 void ScreenSpaceReflections::createResources(VkImageView normalRoughnessView, uint32_t frameCount)
@@ -351,7 +379,10 @@ void ScreenSpaceReflections::recordCopy(VkCommandBuffer commandBuffer,
     }
 }
 
-void ScreenSpaceReflections::recordTrace(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent)
+void ScreenSpaceReflections::recordTrace(VkCommandBuffer commandBuffer,
+                                         uint32_t frameIndex,
+                                         VkExtent2D extent,
+                                         const SsrRayQueryBinding* rayQuery)
 {
     if (!available_ || frameIndex >= descriptorSets_.size()) {
         return;
@@ -370,15 +401,37 @@ void ScreenSpaceReflections::recordTrace(VkCommandBuffer commandBuffer, uint32_t
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipeline_.layout(),
-                                0,
-                                1,
-                                &descriptorSets_[frameIndex],
-                                0,
-                                nullptr);
+        const bool hybrid = rayQuery != nullptr && rayQueryPipeline_.pipeline() != VK_NULL_HANDLE &&
+                            rayQuery->materialSet != VK_NULL_HANDLE && rayQuery->bindlessSet != VK_NULL_HANDLE;
+        const rhi::PipelineRef& pipeline = hybrid ? rayQueryPipeline_ : pipeline_;
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
+        if (hybrid) {
+            const std::array<VkDescriptorSet, 3> sets{
+                descriptorSets_[frameIndex], rayQuery->materialSet, rayQuery->bindlessSet};
+            vkCmdBindDescriptorSets(commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipeline.layout(),
+                                    0,
+                                    static_cast<uint32_t>(sets.size()),
+                                    sets.data(),
+                                    0,
+                                    nullptr);
+            vkCmdPushConstants(commandBuffer,
+                               pipeline.layout(),
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0,
+                               static_cast<uint32_t>(sizeof(SsrRayQueryPushConstants)),
+                               &rayQuery->push);
+        } else {
+            vkCmdBindDescriptorSets(commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipeline.layout(),
+                                    0,
+                                    1,
+                                    &descriptorSets_[frameIndex],
+                                    0,
+                                    nullptr);
+        }
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
         renderGraph_.endSsrTraceRendering();

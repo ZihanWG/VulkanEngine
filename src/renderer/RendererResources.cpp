@@ -448,6 +448,20 @@ void Renderer::createPipeline()
     postProcess_.createTaaResolvePipeline();
     postProcess_.createCompositePipeline();
     ssr_.createPipeline(shaderPath("fullscreen.vert.spv"), shaderPath("ssr_trace.frag.spv"));
+    // The hybrid variant, on a device that can trace. A failure costs only the
+    // fallback: the screen-space pipeline above stays in charge.
+    ssr_.destroyRayQueryPipeline();
+    if (rayQueryShadingAvailable()) {
+        try {
+            ssr_.createRayQueryPipeline(shaderPath("fullscreen.vert.spv"),
+                                        shaderPath("ssr_trace_rq.frag.spv"),
+                                        materialDescriptorSetLayout_.handle(),
+                                        bindlessTextureHeap_.descriptorSetLayout());
+        } catch (const std::exception& error) {
+            ssr_.destroyRayQueryPipeline();
+            Logger::warn(std::string("Hybrid SSR unavailable: ") + error.what());
+        }
+    }
     gtao_.createPipeline(
         shaderPath("fullscreen.vert.spv"), shaderPath("gtao.frag.spv"), shaderPath("gtao_blur.frag.spv"));
     createComputePipelines();

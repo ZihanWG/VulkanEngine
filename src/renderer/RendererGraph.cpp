@@ -1019,9 +1019,43 @@ void Renderer::declareFrameGraph(MainPassFrameState& mainPassState, uint32_t ima
                                              RGAccess::ColorAttachmentWrite,
                                              "Blends the reflection correction into scene color; additive, and the "
                                              "correction is signed, so it reads what the main pass already wrote.");
+                // The hybrid variant binds the global material set, so it reads
+                // what the main pass reads from it: the TLAS for its rays, and
+                // the atlases its hit shading samples or statically names.
+                if (resources.ssrRayTracedEnabled && board.rayTracingTopLevel.valid()) {
+                    builder.readBuffer(board.rayTracingTopLevel,
+                                       RGAccess::AccelerationStructureRead,
+                                       "Traces a reflection ray where the screen-space march misses.");
+                    if (board.punctualShadowAtlasImported) {
+                        builder.readTexture(board.punctualShadowAtlasDepth,
+                                            RGAccess::ShaderRead,
+                                            "Shadows the punctual lights at a traced reflection hit.");
+                    }
+                    if (board.probeIrradianceAtlas.valid() && board.probeDepthAtlas.valid()) {
+                        builder.readTexture(board.probeIrradianceAtlas,
+                                            RGAccess::ShaderRead,
+                                            "Named by the shared hit shading; kept in its sampled layout.");
+                        builder.readTexture(board.probeDepthAtlas,
+                                            RGAccess::ShaderRead,
+                                            "Named by the shared hit shading; kept in its sampled layout.");
+                    }
+                }
             },
-            {"SSRTracePass", "SSRTrace", [this](RenderGraphPassContext& context) {
-                 ssr_.recordTrace(context.commandBuffer(), currentFrame_, renderResolution_.extent());
+            {"SSRTracePass",
+             "SSRTrace",
+             [this, hybrid = resources.ssrRayTracedEnabled](RenderGraphPassContext& context) {
+                 if (hybrid) {
+                     if (!ssrHybridLogged_) {
+                         ssrHybridLogged_ = true;
+                         Logger::info("Screen-space reflections: hybrid trace recorded (ray query where the march "
+                                      "misses, max distance " +
+                                      std::to_string(ssrSettings_.rayTracedMaxDistance) + ").");
+                     }
+                     const renderer::SsrRayQueryBinding binding = ssrRayQueryBinding();
+                     ssr_.recordTrace(context.commandBuffer(), currentFrame_, renderResolution_.extent(), &binding);
+                 } else {
+                     ssr_.recordTrace(context.commandBuffer(), currentFrame_, renderResolution_.extent());
+                 }
              }});
     }
 

@@ -125,8 +125,8 @@ vec4 probeTraceRadiance(ProbeRayContext context, vec3 origin, vec3 direction, fl
     if (skinned) {
         // The skinned caster's record names its pre-skinned positions, not a
         // renderer::Vertex stream: no normals and no UVs to interpolate. The
-        // face normal stands in, and with no UV area the cone picks level 0 at
-        // the centre of the texture -- its material is untextured.
+        // face normal stands in, and nothing below samples a texture for it --
+        // its material is untextured.
         RtPositionFloats positions = RtPositionFloats(record.vertexAddress);
         p0 = rtSkinnedPosition(positions, corner.x);
         p1 = rtSkinnedPosition(positions, corner.y);
@@ -180,14 +180,23 @@ vec4 probeTraceRadiance(ProbeRayContext context, vec3 origin, vec3 direction, fl
 
     ObjectFrameData object = context.objects.objects[frameDataIndex];
     uvec4 textureIndices = object.textureIndices;
-    float baseLod = probeRayConeTextureLod(hitDistance, dot(faceNormal, direction), worldArea, uvArea,
-                                           textureSize(uBaseColorTextures[nonuniformEXT(textureIndices.x)], 0), context.coneSpread);
-    float emissiveLod = probeRayConeTextureLod(hitDistance, dot(faceNormal, direction), worldArea, uvArea,
-                                               textureSize(uBaseColorTextures[nonuniformEXT(textureIndices.w)], 0), context.coneSpread);
-    vec3 albedo = object.baseColorFactor.rgb *
-                  textureLod(uBaseColorTextures[nonuniformEXT(textureIndices.x)], uv, baseLod).rgb;
-    vec3 emissive = object.emissiveFactor.rgb *
-                    textureLod(uBaseColorTextures[nonuniformEXT(textureIndices.w)], uv, emissiveLod).rgb;
+    vec3 albedo = object.baseColorFactor.rgb;
+    vec3 emissive = object.emissiveFactor.rgb;
+    // The skinned caster has no UVs and an untextured material, so its factors
+    // are its colour. Fetching anyway read the fallback texture at a made-up
+    // (0.5, 0.5), which tinted the hit by whatever texel sits there and
+    // described nothing -- and on lavapipe, from the ray-query fragment shader
+    // of hybrid reflections, that fetch faulted (isolated by elimination: the
+    // crash went with the fetch and stayed with every other part of the
+    // skinned hit, including forcing the indices to a known-good slot).
+    if (!skinned) {
+        float baseLod = probeRayConeTextureLod(hitDistance, dot(faceNormal, direction), worldArea, uvArea,
+                                               textureSize(uBaseColorTextures[nonuniformEXT(textureIndices.x)], 0), context.coneSpread);
+        float emissiveLod = probeRayConeTextureLod(hitDistance, dot(faceNormal, direction), worldArea, uvArea,
+                                                   textureSize(uBaseColorTextures[nonuniformEXT(textureIndices.w)], 0), context.coneSpread);
+        albedo *= textureLod(uBaseColorTextures[nonuniformEXT(textureIndices.x)], uv, baseLod).rgb;
+        emissive *= textureLod(uBaseColorTextures[nonuniformEXT(textureIndices.w)], uv, emissiveLod).rgb;
+    }
 
     ProbeCaptureLighting lighting = context.lighting;
 
@@ -203,6 +212,15 @@ vec4 probeTraceRadiance(ProbeRayContext context, vec3 origin, vec3 direction, fl
                                    sunHitDistance) ? 0.0 : 1.0;
     }
 
+#ifdef VE_PROBE_HIT_AMBIENT
+    // The includer answers the hit's indirect light itself. A reflection ray
+    // (ssr_trace_rq.frag) shows the surface it hits to the camera, next to the
+    // same surface seen directly, so it reads the main pass's diffuse irradiance
+    // cube rather than the probes' constant ambient -- otherwise the two would
+    // disagree across every screen-space/traced seam. The probe gathers leave
+    // this undefined, so what they record is unchanged.
+    lighting.ambient = probeHitAmbient(normal);
+#endif
     vec3 radiance = probeCaptureRadiance(lighting, albedo, emissive, worldPosition, normal, origin, sunVisibility);
     // Negative distance marks a back-face hit. The convolution reads the
     // magnitude for visibility, so the depth a probe stores is unchanged.

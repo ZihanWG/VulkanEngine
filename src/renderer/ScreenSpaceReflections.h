@@ -43,6 +43,31 @@ namespace renderer {
 class RenderGraph;
 class GpuProfiler;
 
+// Mirrors the push block in ssr_trace_rq.frag, the hybrid variant. Device
+// addresses as uint64_t.
+struct SsrRayQueryPushConstants {
+    uint64_t frameConstantsAddress = 0;
+    uint64_t objectFrameDataAddress = 0;
+    uint64_t geometryTableAddress = 0;
+    uint64_t lightBufferAddress = 0;
+    uint64_t punctualShadowSlotAddress = 0;
+    uint32_t lightCount = 0;
+    float sunRayLength = 0.0f;
+    float maxDistance = 0.0f;
+    // ssr.rayTracedMinWeight.
+    float minWeight = 0.0f;
+};
+static_assert(sizeof(SsrRayQueryPushConstants) == 56);
+
+// What the hybrid trace binds on top of the pass's own set: the global material
+// set (TLAS, punctual atlas, diffuse irradiance) at index 1 and the bindless
+// heap at 2, plus the push block above.
+struct SsrRayQueryBinding {
+    SsrRayQueryPushConstants push{};
+    VkDescriptorSet materialSet = VK_NULL_HANDLE;
+    VkDescriptorSet bindlessSet = VK_NULL_HANDLE;
+};
+
 class ScreenSpaceReflections final {
 public:
     ScreenSpaceReflections(rhi::VulkanContext& context,
@@ -60,6 +85,21 @@ public:
     // Created once at startup; survives swapchain recreation.
     void createDescriptorSetLayout();
     void createPipeline(const std::filesystem::path& vertexShaderPath, const std::filesystem::path& fragmentShaderPath);
+    // The hybrid variant (ssr.rayTracedFallback): the same pass, which fires a
+    // ray query where the march misses. Only on a device that can trace; a
+    // failure leaves the screen-space pipeline in charge. Rebuilt with it.
+    void createRayQueryPipeline(const std::filesystem::path& vertexShaderPath,
+                                const std::filesystem::path& fragmentShaderPath,
+                                VkDescriptorSetLayout materialSetLayout,
+                                VkDescriptorSetLayout bindlessSetLayout);
+    void destroyRayQueryPipeline()
+    {
+        rayQueryPipeline_.reset();
+    }
+    [[nodiscard]] bool rayQueryPipelineAvailable() const
+    {
+        return rayQueryPipeline_.pipeline() != VK_NULL_HANDLE;
+    }
 
     // (Re)creates the scene-color copy image, params buffers, and descriptor
     // sets for the current swapchain extent. normalRoughnessView is the thin
@@ -89,7 +129,12 @@ public:
     // barriers, label and profiler scope; the trace opens its own rendering
     // scope.
     void recordCopy(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkImage sceneColorImage, VkExtent2D extent);
-    void recordTrace(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent);
+    // rayQuery non-null runs the hybrid variant with those bindings; the caller
+    // passes it only when rayQueryPipelineAvailable() and the scene is traceable.
+    void recordTrace(VkCommandBuffer commandBuffer,
+                     uint32_t frameIndex,
+                     VkExtent2D extent,
+                     const SsrRayQueryBinding* rayQuery = nullptr);
 
     [[nodiscard]] bool available() const
     {
@@ -135,6 +180,7 @@ private:
     rhi::VulkanDescriptorSetLayout descriptorSetLayout_;
     rhi::VulkanDescriptorPool descriptorPool_;
     rhi::PipelineRef pipeline_;
+    rhi::PipelineRef rayQueryPipeline_;
     rhi::VulkanImage sceneColorCopy_;
     VkImageLayout sceneColorCopyLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 

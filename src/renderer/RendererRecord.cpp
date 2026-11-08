@@ -321,6 +321,32 @@ bool Renderer::isProbeReferenceSelected() const
            irradianceProbes_.descriptorSet() != VK_NULL_HANDLE && !allDrawItems_.empty();
 }
 
+bool Renderer::isSsrRayTracedSelected() const
+{
+    return ssrSettings_.enabled && ssrSettings_.rayTracedFallback && ssr_.available() && ssr_.isIblBound() &&
+           ssr_.rayQueryPipelineAvailable() && rayQueryShadingAvailable() && rayTracingScene_.ready() &&
+           globalMaterialDescriptorSet() != VK_NULL_HANDLE && !allDrawItems_.empty();
+}
+
+renderer::SsrRayQueryBinding Renderer::ssrRayQueryBinding() const
+{
+    renderer::SsrRayQueryBinding binding{};
+    binding.materialSet = globalMaterialDescriptorSet();
+    binding.bindlessSet = bindlessTextureHeap_.descriptorSet();
+    renderer::SsrRayQueryPushConstants& push = binding.push;
+    push.frameConstantsAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
+    push.objectFrameDataAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    push.geometryTableAddress = rayTracingScene_.geometryTableAddress(currentFrame_);
+    push.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+    push.punctualShadowSlotAddress =
+        punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
+    push.lightCount = push.lightBufferAddress != 0 ? clusteredLighting_.lightCount() : 0;
+    push.sunRayLength = frameRayTracedShadowRayLength_;
+    push.maxDistance = ssrSettings_.rayTracedMaxDistance;
+    push.minWeight = ssrSettings_.rayTracedMinWeight;
+    return binding;
+}
+
 void Renderer::recordProbeReferencePass(VkCommandBuffer commandBuffer)
 {
     const VkDescriptorSet globalDescriptorSet = globalMaterialDescriptorSet();
@@ -1410,6 +1436,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .depthPrepassEnabled = frameDepthPrepassActive_,
         .depthPyramidBuildEnabled = frameDepthPyramidBuildRequired_,
         .ssrEnabled = frameSsrActive_,
+        .ssrRayTracedEnabled = frameSsrActive_ && frameSsrRayTracedActive_,
         .gtaoEnabled = frameGtaoActive_,
         // Zero when bindless is off, not only when nothing is blended: the
         // transparent pipeline binds the bindless heap as its second descriptor

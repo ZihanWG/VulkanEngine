@@ -324,6 +324,20 @@ struct SsrSettings {
     // Surfaces rougher than this trace no reflections (mirror-to-glossy fade).
     float maxRoughness = 0.6f;
     float screenEdgeFade = 0.1f;
+    // Hybrid reflections: where the screen-space march misses or fades out, one
+    // ray query from the surface finds what it could not (ssr_trace_rq.frag).
+    // Needs VK_KHR_ray_query; a device without it keeps the screen-space pass.
+    // Off by default.
+    bool rayTracedFallback = false;
+    // How far that ray may go, in world units. Past it the IBL stands. Capped
+    // below the probe gather's far bound (kProbeMaxDistance), whose hit shading
+    // it shares.
+    float rayTracedMaxDistance = 50.0f;
+    // A ray fires only where it can matter: its share of the replacement times
+    // the specular weight it is seen through must reach this. Dielectrics seen
+    // head-on (weight ~0.05) fall below it, metals and grazing angles do not.
+    // Faded in over [half, full] so the cut leaves no edge; 0 traces every miss.
+    float rayTracedMinWeight = 0.1f;
 };
 
 // Discrete mesh level of detail. Selection runs per draw item inside the GPU cull

@@ -616,6 +616,7 @@ if(GLSLC_EXECUTABLE)
         "simple_bindless.frag|simple_bindless_rq.frag|VE_RAY_QUERY=1"
         "simple_bindless.frag|simple_bindless_early.frag|VE_EARLY_FRAGMENT_TESTS=1"
         "simple_bindless.frag|simple_bindless_rq_early.frag|VE_RAY_QUERY=1,VE_EARLY_FRAGMENT_TESTS=1"
+        "ssr_trace.frag|ssr_trace_rq.frag|VE_RAY_QUERY=1"
         "depth_prepass_masked.vert|depth_prepass_fade.vert|VE_LOD_FADES_ONLY=1"
         "shadow_masked.frag|depth_prepass_fade.frag|VE_LOD_FADES_ONLY=1"
     )

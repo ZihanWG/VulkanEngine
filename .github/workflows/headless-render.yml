@@ -446,6 +446,8 @@ jobs:
           irradiance-probes-ray-traced-declined|--settings config/ci/irradiance-probes-ray-traced.json --disable-ray-query
           gtao|--settings config/ci/gtao.json
           ssr-off|--settings config/ci/ssr-off.json
+          ssr-ray-traced|--settings config/ci/ssr-ray-traced.json
+          ssr-ray-traced-declined|--settings config/ci/ssr-ray-traced.json --disable-ray-query
           exposure-manual|--settings config/ci/exposure-manual.json
           exposure-log-average|--settings config/ci/exposure-log-average.json
           taa-on|--settings config/ci/taa-on.json

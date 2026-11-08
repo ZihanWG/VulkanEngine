@@ -989,6 +989,12 @@ private:
     // early-fragment-tests build is for createMainGraphicsPipeline's
     // prepass-covered pair only.
     [[nodiscard]] std::filesystem::path bindlessFragmentShaderPath(bool earlyFragmentTests = false) const;
+    // ssr.rayTracedFallback can run this frame: the SSR pass itself, the hybrid
+    // pipeline, and a scene to trace. Asked ahead of the instance write, like the
+    // probe gather, because it puts the TLAS in play.
+    [[nodiscard]] bool isSsrRayTracedSelected() const;
+    // The hybrid trace's sets and push block for this frame.
+    [[nodiscard]] renderer::SsrRayQueryBinding ssrRayQueryBinding() const;
     // Whether this frame traces sun shadow rays. Latched in frame prep, where
     // the instances are written, and read by the FrameConstants upload, the
     // graph declaration and the recorder, which must all agree.
@@ -2032,6 +2038,10 @@ private:
     // from a compute dispatch that a FRAGMENT_SHADER-only scope leaves unordered.
     VkPipelineStageFlags2 frameClusterConsumerStages_ = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     bool frameSsrActive_ = false;
+    // The SSR trace runs its hybrid variant: a ray query where the march misses.
+    bool frameSsrRayTracedActive_ = false;
+    // Logged once, the first frame the hybrid trace records.
+    bool ssrHybridLogged_ = false;
     bool frameGtaoActive_ = false;
     bool frameRayTracedShadowsActive_ = false;
     // This frame traces and its instances differ from what the TLAS holds, so
