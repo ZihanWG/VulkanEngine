@@ -274,6 +274,7 @@ bool Renderer::buildSampleScene(std::string& status)
         createImportedGltfMaterials(loadedAsset.materials);
         importedMeshes_ = std::move(loadedAsset.meshes);
         sampleSceneLights_ = std::move(loadedAsset.lights);
+        sampleSceneCameras_ = std::move(loadedAsset.cameras);
 
         // One object PER PRIMITIVE, not per node. Sponza is a single node holding
         // 103 primitives, and as one object it gave every per-object decision in
@@ -392,6 +393,19 @@ void Renderer::pinSampleSceneCamera()
     // not a measurement of an interior and not a portfolio screenshot either.
     // See renderer::interiorCamera for why the axis is what makes this safe.
     camera_ = renderer::interiorCamera(sceneBounds);
+    // A scene that authored a shot gets it. Only the pose and field of view: the
+    // clip planes stay the ones derived from the bounds above, since an authoring
+    // tool's near plane is chosen for its viewport, not for this depth buffer.
+    if (!sampleSceneCameras_.empty()) {
+        const renderer::GltfCameraPose& authored = sampleSceneCameras_.front();
+        camera_.position = authored.position;
+        camera_.target = authored.position + authored.forward;
+        camera_.up = authored.up;
+        if (authored.verticalFovRadians > 0.0f) {
+            camera_.verticalFovRadians = authored.verticalFovRadians;
+        }
+        Logger::info("Sample scene camera taken from glTF camera '" + authored.debugName + "'.");
+    }
     editorCamera_.syncFromCamera(camera_);
     csmSettings_.nearPlane = camera_.nearPlane;
     csmSettings_.farPlane = camera_.farPlane;

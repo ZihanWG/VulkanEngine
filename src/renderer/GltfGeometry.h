@@ -121,6 +121,19 @@ struct GltfPunctualLight {
     float outerConeAngle = 0.7853981634f;
 };
 
+// Where a glTF perspective camera stands and looks, placed by its node. Only the
+// pose and the vertical field of view: the clip planes an authoring tool writes
+// (Blender's 1 mm near plane, say) are a poor fit for a depth buffer sized to the
+// scene, so the renderer keeps deriving those from the scene bounds.
+struct GltfCameraPose {
+    std::string debugName;
+    glm::vec3 position{0.0f};
+    // The node's local -Z and +Y, as the glTF camera model defines them.
+    glm::vec3 forward{0.0f, 0.0f, -1.0f};
+    glm::vec3 up{0.0f, 1.0f, 0.0f};
+    float verticalFovRadians = 0.0f;
+};
+
 // The range the clustered light cull uses for an imported light. An authored
 // range wins. An unbounded one (0) is cut where inverse-square illuminance falls
 // to `cutoffIlluminance`, since a light with no range touches every froxel and the
@@ -155,6 +168,8 @@ struct GltfGeometry {
     // Read from the glTF on every load, cooked or not: a .vemesh replaces mesh
     // assembly only, and the scene graph that places these is always parsed.
     std::vector<GltfPunctualLight> lights;
+    // Perspective cameras, in scene-graph order. Orthographic ones are skipped.
+    std::vector<GltfCameraPose> cameras;
 };
 
 // Parses `path`, assembles vertices and indices, and builds every primitive's LOD

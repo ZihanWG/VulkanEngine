@@ -184,6 +184,7 @@ struct LoadedGltfAsset {
     std::vector<GltfMaterialInfo> materials;
     std::vector<GltfTextureInfo> textures;
     std::vector<GltfPunctualLight> lights;
+    std::vector<GltfCameraPose> cameras;
 };
 
 } // namespace ve::renderer

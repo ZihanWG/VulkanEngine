@@ -1,7 +1,7 @@
 {
   "asset": {
     "version": "2.0",
-    "generator": "Hand-authored fixture for KHR_lights_punctual import (tests/test_gltf_geometry.cpp)"
+    "generator": "Hand-authored fixture for KHR_lights_punctual and camera import (tests/test_gltf_geometry.cpp)"
   },
   "scene": 0,
   "scenes": [
@@ -26,7 +26,8 @@
       ],
       "children": [
         2,
-        3
+        3,
+        5
       ]
     },
     {
@@ -68,6 +69,20 @@
           "light": 2
         }
       }
+    },
+    {
+      "name": "ShotNode",
+      "translation": [
+        0.0,
+        0.0,
+        10.0
+      ],
+      "scale": [
+        0.01,
+        0.01,
+        0.01
+      ],
+      "camera": 0
     }
   ],
   "meshes": [
@@ -182,5 +197,16 @@
         }
       ]
     }
-  }
+  },
+  "cameras": [
+    {
+      "name": "Shot",
+      "type": "perspective",
+      "perspective": {
+        "yfov": 0.6,
+        "znear": 0.001,
+        "zfar": 1000
+      }
+    }
+  ]
 }

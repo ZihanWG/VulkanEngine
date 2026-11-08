@@ -520,6 +520,33 @@ loadGltfMaterialInfo(const tinygltf::Model& model, const tinygltf::Material& sou
     return light;
 }
 
+// Places one perspective camera by its node. The node may carry scale -- an FBX
+// conversion parents everything under a centimetre-to-metre root -- so the axes
+// are normalised rather than read as unit vectors.
+[[nodiscard]] std::optional<GltfCameraPose> makeCameraPose(const tinygltf::Camera& source,
+                                                           const glm::mat4& worldTransform)
+{
+    if (source.type != "perspective") {
+        Logger::warn("Skipping glTF camera '" + source.name + "' of type '" + source.type + "'.");
+        return std::nullopt;
+    }
+    const glm::mat3 basis(worldTransform);
+    const glm::vec3 forward = basis * glm::vec3(0.0f, 0.0f, -1.0f);
+    const glm::vec3 up = basis * glm::vec3(0.0f, 1.0f, 0.0f);
+    if (!(glm::length(forward) > 1.0e-6f) || !(glm::length(up) > 1.0e-6f)) {
+        Logger::warn("Skipping glTF camera '" + source.name + "': its node transform has no orientation.");
+        return std::nullopt;
+    }
+
+    GltfCameraPose camera{};
+    camera.debugName = source.name;
+    camera.position = glm::vec3(worldTransform[3]);
+    camera.forward = glm::normalize(forward);
+    camera.up = glm::normalize(up);
+    camera.verticalFovRadians = static_cast<float>(source.perspective.yfov);
+    return camera;
+}
+
 [[nodiscard]] glm::mat4 loadNodeLocalTransform(const tinygltf::Node& node)
 {
     if (!node.matrix.empty()) {
@@ -913,6 +940,7 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
     };
 
     std::vector<GltfPunctualLight> lights;
+    std::vector<GltfCameraPose> cameras;
 
     const auto traverseNode = [&](auto&& self, int nodeIndex, const glm::mat4& parentTransform, size_t depth) -> void {
         if (nodeIndex < 0 || static_cast<size_t>(nodeIndex) >= model.nodes.size()) {
@@ -953,6 +981,16 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
             }
         }
 
+        if (node.camera >= 0) {
+            if (static_cast<size_t>(node.camera) >= model.cameras.size()) {
+                Logger::warn("Skipping glTF node camera reference " + std::to_string(node.camera) +
+                             " because it is out of range.");
+            } else if (std::optional<GltfCameraPose> camera =
+                           makeCameraPose(model.cameras[static_cast<size_t>(node.camera)], worldTransform)) {
+                cameras.push_back(std::move(*camera));
+            }
+        }
+
         for (int childNodeIndex : node.children) {
             self(self, childNodeIndex, worldTransform, depth + 1);
         }
@@ -985,6 +1023,7 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
     geometry.materials = std::move(materialInfos);
     geometry.textures = std::move(textureInfos);
     geometry.lights = std::move(lights);
+    geometry.cameras = std::move(cameras);
     return geometry;
 }
 

@@ -214,7 +214,7 @@ Runtime settings load from `config/runtime_settings.json` when present (user-loc
 
 ### The optional sample scene
 
-Every built-in scene is procedural cubes and spheres. `-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` adds a configure-time download of Sponza (pinned to a commit of `KhronosGroup/glTF-Sample-Assets`, CC BY 4.0), which is the only real authored content here and the one scene with depth complexity that was not built to order:
+Every built-in scene is procedural cubes and spheres. `-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` adds a configure-time download of Sponza (pinned to a commit of `KhronosGroup/glTF-Sample-Assets`, CC BY 4.0), the one scene with depth complexity that was not built to order besides Bistro, which ships only as FBX and is converted locally instead (`--scene bistro`, see [docs/asset_load_baseline.md](docs/asset_load_baseline.md#a-second-imported-scene-bistro)):
 
 ```sh
 cmake --preset release -DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON
@@ -245,7 +245,7 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 - The TAA resolve doubles as the upsampler, reconstructing at presentation resolution from the jittered low-resolution samples, but it is not FSR2 or DLSS: no locks and no reactive masks, and its disocclusion test reprojects the expected depth through the camera only, so an object moving fast along the view direction rejects its own history. With TAA off, render scale upscales bilinearly plus a contrast-adaptive sharpen, which can only re-emphasise what survived. Sub-rect rendering makes a scale change free but costs memory: a 0.5-scale frame owns four times the texels it writes.
 - Screen-space reflections have no Hi-Z acceleration and no roughness-cone blur, and metal reflections use an untinted F0 because the thin G-buffer stores no albedo — which leaves a bounded, one-directional over-subtraction of the environment specular on tinted metals (quantified in [docs/ssr.md](docs/ssr.md), along with why buying the exact fix with a fourth render target is not worth it). The opt-in ray-traced fallback shades its hits diffuse-only (no specular or normal mapping at the hit) and traces one mirror ray per pixel, with no lobe sampling for rough surfaces; there are no planar reflections or glass transmission.
 - GTAO modulates the ambient term only, reprojected along the motion vector from the previous frame; the whole-scene composite multiply remains as an A/B reference path, off by default. It has no multi-bounce term (the thin G-buffer stores no albedo), no specular occlusion (it modulates ambient *diffuse* only and leaves the specular IBL unoccluded, which is also what keeps SSR's replacement conservative -- the trace subtracts the specular IBL it replaces and cannot see an occlusion factor applied after the fact), and no temporal accumulation; it is spatial half-res + joint-bilateral upsample only.
-- glTF import covers static + skinned meshes, base color/normal/metallic-roughness/emissive textures, and `KHR_lights_punctual` scene lights; occlusion textures, morph targets, and cameras are future work.
+- glTF import covers static + skinned meshes, base color/normal/metallic-roughness/emissive textures, `KHR_lights_punctual` scene lights, and perspective cameras (the first frames an imported scene's startup shot); occlusion textures and morph targets are future work.
 - ImGui is a debug UI only (no docking/editor layout); scene editing is limited to existing runtime objects.
 - HDR swapchain output, local exposure, and high-resolution offline capture are not implemented.
 
@@ -256,7 +256,7 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 - BVH/spatial partitioning and mesh/task shader experiments. Discrete mesh LOD has since shipped, and a meshlet builder with it — meshlet culling itself was measured and rejected here, because LOD already removes the geometry it would have found ([docs/mesh_lod.md](docs/mesh_lod.md)).
 - Improved HDR environment prefiltering, color-management policy, local exposure, and HDR swapchain output.
 - Expanded scene editing (object creation/deletion, hierarchy editing, per-scene settings) and asset tooling (texture import/reload, asset browser, material graph, render graph node view). Click-to-pick and a transform gizmo have since shipped.
-- Broader glTF support: occlusion textures, tangent generation, morph targets, and cameras. Alpha modes, emissive handling, and `KHR_lights_punctual` have since shipped.
+- Broader glTF support: occlusion textures, tangent generation, and morph targets. Alpha modes, emissive handling, `KHR_lights_punctual` and cameras have since shipped.
 
 ## Portfolio and Resume Copy
 
