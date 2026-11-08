@@ -43,6 +43,16 @@ GPU frame time on the Sponza sample scene (`--scene sponza`, 103 primitives, 25 
 
 The fps columns are 1000 / GPU frame time: the GPU-bound ceiling, not a presented frame rate. The laptop GPU ran warm throughout (81-85 °C, graphics clock 1550-1970 MHz against a 2100 MHz boost), so these are sustained figures for this machine rather than peak ones. The saving is in `MainHDRPass`, where one ray query replaces the cascade selection and PCF taps per shaded fragment, and it shrinks as the resolution rises: at 3840x2160 the two paths are level, with the traced median 0.1% slower. That pass is 56-71% of the frame and grows with pixel count, though below linearly: 9x the pixels from 720p to 4K costs it about 5x. Each resolution was measured as its own interleaved series (cascaded, traced, cascaded, traced), and the repeated cascaded run came back within 0.17-0.80% at every resolution. Method and harness: [docs/profiling.md](docs/profiling.md); the ray-traced path itself: [docs/ray_traced_shadows.md](docs/ray_traced_shadows.md).
 
+The same protocol across the imported scenes at 1920x1080, on `main` at `bdf109f` (2026-11-08), interleaved Sponza, Bistro, Bistro at night, twice over after a discarded first run:
+
+| Scene | Draw items visible / total | Triangles drawn | `Frame total` p10, run 1 / run 2 | `MainHDRPass` | `DepthPrepass` |
+| --- | --- | --- | --- | --- | --- |
+| `sponza` | 69 / 103 | 177,401 | 3.644 / 3.705 ms | 2.603 / 2.642 ms | 0.069 / 0.073 ms |
+| `bistro` | 763 / 1,591 | 944,463 | 4.628 / 4.738 ms | 3.500 / 3.557 ms | 0.403 / 0.415 ms |
+| `bistro-night` | 763 / 1,591 | 944,463 | 4.719 / 4.735 ms | 3.544 / 3.556 ms | 0.409 / 0.415 ms |
+
+Bistro has 15x Sponza's draw items and draws 5.3x its triangles on these shots, and the frame costs about 1.27x as much. On the FBX's own shot, frustum culling removes 395 draw items, Hi-Z occlusion another 433, and LOD selection leaves 944k of the scene's 2.83M triangles to draw; how much of the gap each of those closes was not measured. The same repeated run moved 1.7% on Sponza and 2.4% on Bistro, so day and night are not distinguishable at this sample count: whatever the 128 clustered lights cost over the sun they replace, it is inside that spread. With the camera still, `CSMShadowPass` reads 0.000 ms in both, because the cascade cache serves every frame, so the zero-intensity sun's cascades cost nothing until the camera moves. CPU frame preparation averages 0.60 ms on Bistro against 0.13 ms on Sponza. The card ran at 82-85 °C, graphics clock 1642-1965 MHz. The logs are not tracked; the command is in [docs/asset_load_baseline.md](docs/asset_load_baseline.md#a-second-imported-scene-bistro).
+
 ## Architecture
 
 The renderer is GPU-driven: visibility, light assignment, and shading are decided on the GPU each frame.

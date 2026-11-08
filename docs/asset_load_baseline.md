@@ -382,7 +382,16 @@ That leaves the 128 derived lights and the emissive surfaces to carry the frame,
 and auto-exposure settles near 4.6, against 0.89 by day. It is a preset of its own
 rather than a toggle because it is a different measurement: the clustered path,
 not the sun, decides the frame, and a log line has to be able to say which one it
-was. The cascades still render with a zero-intensity sun; nothing skips them yet.
+was. The cascades are still declared under a zero-intensity sun -- nothing skips
+them -- but with a still camera the cascade cache serves every frame, so they cost
+nothing measurable until the camera moves.
+
+Measured frame time for all three scenes is in the README's Performance section.
+The series was, per scene and run:
+
+```sh
+python3 tools/dev/measure_gpu.py run --label bistro-1 --warmup 15 --duration 75     --every-frame --freeze-animation --args --scene bistro --window-size 1920x1080
+```
 
 ## Limitations
 
