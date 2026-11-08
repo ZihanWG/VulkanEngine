@@ -2543,8 +2543,14 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
             previousFrameViewProjection_ * (previousSkinnedModelValid_ ? previousSkinnedModelMatrix_ : model);
         skinnedData.baseColorFactor = glm::vec4(0.85f, 0.45f, 0.32f, 1.0f);
         skinnedData.materialParams = {0.1f, 0.55f, 1.0f, renderer::kNoAlphaTestCutoff};
-        skinnedData.textureIndices = {
-            bindlessBaseColorFallbackIndex_, bindlessNormalFallbackIndex_, bindlessMetallicRoughnessFallbackIndex_, 0};
+        // Emissive goes through the base colour heap, so its fallback is the
+        // base colour one, as for every material without an emissive texture
+        // (RendererScene's material setup). It was a literal 0, which is the
+        // same slot only for as long as that fallback registers first.
+        skinnedData.textureIndices = {bindlessBaseColorFallbackIndex_,
+                                      bindlessNormalFallbackIndex_,
+                                      bindlessMetallicRoughnessFallbackIndex_,
+                                      bindlessBaseColorFallbackIndex_};
         objectDataBuffer.upload(std::as_bytes(std::span<const ObjectFrameData>(&skinnedData, 1)),
                                 static_cast<VkDeviceSize>(kSkinnedObjectFrameSlot) * sizeof(ObjectFrameData));
     }
