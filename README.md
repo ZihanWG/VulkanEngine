@@ -214,7 +214,7 @@ Runtime settings load from `config/runtime_settings.json` when present (user-loc
 
 ### The optional sample scene
 
-Every built-in scene is procedural cubes and spheres. `-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` adds a configure-time download of Sponza (pinned to a commit of `KhronosGroup/glTF-Sample-Assets`, CC BY 4.0), the one scene with depth complexity that was not built to order besides Bistro, which ships only as FBX and is converted locally instead (`--scene bistro`, see [docs/asset_load_baseline.md](docs/asset_load_baseline.md#a-second-imported-scene-bistro)):
+Every built-in scene is procedural cubes and spheres. `-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` adds a configure-time download of Sponza (pinned to a commit of `KhronosGroup/glTF-Sample-Assets`, CC BY 4.0), the one scene with depth complexity that was not built to order besides Bistro, which ships only as FBX and is converted locally instead (`--scene bistro`, or `--scene bistro-night` lit only by its lamps; see [docs/asset_load_baseline.md](docs/asset_load_baseline.md#a-second-imported-scene-bistro)):
 
 ```sh
 cmake --preset release -DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON

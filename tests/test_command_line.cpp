@@ -396,6 +396,9 @@ TEST_CASE("bistro parses on a build without the converted scene", "[command-line
     REQUIRE(config.scene == ve::ScenePreset::Bistro);
     CHECK(ve::isSampleScenePreset(config.scene));
     CHECK_FALSE(ve::isSampleScenePreset(ve::ScenePreset::Default));
+    REQUIRE(parse({"--scene", "bistro-night"}, config));
+    CHECK(config.scene == ve::ScenePreset::BistroNight);
+    CHECK(ve::isSampleScenePreset(config.scene));
 }
 
 TEST_CASE("An unknown scene name is rejected", "[command-line][scene]")

@@ -1425,8 +1425,16 @@ void Renderer::createEnvironmentMap()
     if (std::filesystem::exists(hdrEnvironmentPath)) {
         try {
             constexpr uint32_t kHdrEnvironmentFaceSize = 128;
-            const rhi::HdrEnvironmentCubeData hdrCubeData =
+            rhi::HdrEnvironmentCubeData hdrCubeData =
                 rhi::VulkanEnvironmentMap::loadHdrEquirectangularFaces(hdrEnvironmentPath, kHdrEnvironmentFaceSize);
+            const float environmentScale = sampleSceneEnvironmentScale(sampleSceneRequested_);
+            if (environmentScale != 1.0f) {
+                for (float& value : hdrCubeData.rgba32fPixels) {
+                    value *= environmentScale;
+                }
+                Logger::info("HDR environment radiance scaled by " + std::to_string(environmentScale) +
+                             " for this scene.");
+            }
             const std::span<const float> hdrCubePixels(hdrCubeData.rgba32fPixels.data(),
                                                        hdrCubeData.rgba32fPixels.size());
 

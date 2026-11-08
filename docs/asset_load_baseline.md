@@ -351,6 +351,8 @@ rather than copies, is in its header; in short:
   measured from anything: tuned by eye on the FBX camera's shot, and capped at 20
   for street lamps because most hang off a facade, a few centimetres from a wall
   that inverse-square falloff otherwise blows out.
+  Street lamps and wall spots take a warm incandescent colour rather than the
+  emissive texture's, whose brightest texels clip to white.
 - **The sky comes along.** The HDR the scene was lit under is copied beside the
   glTF as `environment.hdr`.
 
@@ -372,6 +374,15 @@ What the renderer takes from the glTF beyond Sponza's set:
 
 The same contract as Sponza otherwise holds: one RenderObject per primitive, no
 portfolio showcase or skinned rig in the shot, and the cooks apply unchanged.
+
+`--scene bistro-night` loads the same files at night. The sun's intensity is
+zero, and the sky is the same HDR with its radiance scaled by 0.02 as it is
+loaded, so the facades between lamps keep a trace of dusk instead of going black.
+That leaves the 128 derived lights and the emissive surfaces to carry the frame,
+and auto-exposure settles near 4.6, against 0.89 by day. It is a preset of its own
+rather than a toggle because it is a different measurement: the clustered path,
+not the sun, decides the frame, and a log line has to be able to say which one it
+was. The cascades still render with a zero-intensity sun; nothing skips them yet.
 
 ## Limitations
 
