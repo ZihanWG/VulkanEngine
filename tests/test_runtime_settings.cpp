@@ -70,6 +70,7 @@ RuntimeSettings makeNonDefaultSettings()
     settings.ssr.screenEdgeFade = 0.2f;
     settings.ssr.rayTracedFallback = true;
     settings.ssr.rayTracedMaxDistance = 90.0f;
+    settings.ssr.rayTracedMinWeight = 0.25f;
 
     settings.ssao.enabled = true;
     settings.ssao.radius = 1.25f;
@@ -219,6 +220,7 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.ssr.screenEdgeFade == Catch::Approx(original.ssr.screenEdgeFade));
     CHECK(loaded.ssr.rayTracedFallback == original.ssr.rayTracedFallback);
     CHECK(loaded.ssr.rayTracedMaxDistance == Catch::Approx(original.ssr.rayTracedMaxDistance));
+    CHECK(loaded.ssr.rayTracedMinWeight == Catch::Approx(original.ssr.rayTracedMinWeight));
 
     CHECK(loaded.ssao.enabled == original.ssao.enabled);
     CHECK(loaded.ssao.radius == Catch::Approx(original.ssao.radius));

@@ -54,7 +54,8 @@ struct SsrRayQueryPushConstants {
     uint32_t lightCount = 0;
     float sunRayLength = 0.0f;
     float maxDistance = 0.0f;
-    uint32_t padding = 0;
+    // ssr.rayTracedMinWeight.
+    float minWeight = 0.0f;
 };
 static_assert(sizeof(SsrRayQueryPushConstants) == 56);
 

@@ -2035,6 +2035,8 @@ void Renderer::drawSsrDebugUi()
     if (rayQueryShadingAvailable()) {
         changed |= ImGui::Checkbox("Ray-traced fallback##ssr", &ssrSettings_.rayTracedFallback);
         changed |= ImGui::SliderFloat("Ray max distance##ssr", &ssrSettings_.rayTracedMaxDistance, 1.0f, 63.0f, "%.1f");
+        changed |=
+            ImGui::SliderFloat("Ray min weight##ssr", &ssrSettings_.rayTracedMinWeight, 0.0f, 1.0f, "%.3f");
     } else {
         ImGui::TextDisabled("Ray-traced fallback needs VK_KHR_ray_query.");
     }

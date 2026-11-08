@@ -125,7 +125,8 @@ layout(push_constant) uniform SsrRayQueryPush {
     float sunRayLength;
     // ssr.rayTracedMaxDistance, world units.
     float maxDistance;
-    uint padding;
+    // ssr.rayTracedMinWeight.
+    float minWeight;
 } pc;
 
 // A ray share below this is under half a unit of an 8-bit display value even
@@ -407,11 +408,19 @@ void main()
     // surface the IBL stands as before.
     float fullReplacement = clamp(roughnessFade * max(params.weightParams.x, 0.0), 0.0, 1.0);
     float rayShare = fullReplacement - replacement;
+    // How much a ray can move this pixel: its share of the replacement, seen
+    // through the specular weight. A dielectric head-on (F0 0.04) sits around
+    // 0.05 and a metal near 1, so the threshold spends the rays where the
+    // reflection is visible -- metals, and dielectrics at grazing angles, where
+    // the Fresnel term rises. Faded in over [half, full] rather than cut, so the
+    // boundary does not show as an edge where the weight crosses it.
+    float rayWeight = rayShare * specularWeight.x;
+    float rayGate = pc.minWeight > 0.0 ? smoothstep(0.5 * pc.minWeight, pc.minWeight, rayWeight) : 1.0;
     vec3 tracedTerm = vec3(0.0);
-    if (rayShare > kRayShareThreshold) {
+    if (rayShare > kRayShareThreshold && rayGate > 0.0) {
         vec3 tracedColor;
         if (traceReflection(viewPos, normalWS, rayDirWS, roughness, tracedColor)) {
-            tracedTerm = (tracedColor - prefilteredColor) * rayShare;
+            tracedTerm = (tracedColor - prefilteredColor) * (rayShare * rayGate);
         }
     }
     outReflection = vec4(((reflectedColor - prefilteredColor) * replacement + tracedTerm) * specularWeight, 0.0);

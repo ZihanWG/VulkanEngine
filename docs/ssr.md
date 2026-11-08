@@ -75,8 +75,9 @@ reflections neighborhood clamping and temporal accumulation for free.
 (8–128), `refinementSteps` (0–8), `maxDistance` (view units), `thickness`,
 `intensity`, `maxRoughness` (surfaces rougher than this trace nothing — the
 roughness fade approaches zero there), `screenEdgeFade`, and the hybrid's
-`rayTracedFallback` and `rayTracedMaxDistance` (world units, 1-63: below the
-probe gather's far bound, whose hit shading it shares). All clamped in
+`rayTracedFallback`, `rayTracedMaxDistance` (world units, 1-63: below the
+probe gather's far bound, whose hit shading it shares) and `rayTracedMinWeight`
+(0-1, see [What it costs](#what-it-costs)). All clamped in
 `clampRuntimeSettings` (unit-tested) and persisted with the other settings.
 
 `intensity` scales how far the reflection *replaces* the IBL, and the combined
@@ -138,7 +139,9 @@ emit     = ((ssr - env) * screen + (traced - env) * ray) * specularWeight
 ```
 
 Where the march is fully confident, `ray` is zero and the pixel is the
-screen-space pass's. Where the ray also finds nothing within
+screen-space pass's. A ray fires only where `ray * specularWeight` reaches
+`rayTracedMinWeight` (faded in from half of it), so the rays go where the
+reflection is visible. Where the ray also finds nothing within
 `ssr.rayTracedMaxDistance`, its term is zero and the IBL stands, as on a miss
 before. A share under 1/512 fires no ray.
 
@@ -189,25 +192,40 @@ error measurement.
 ### What it costs
 
 **RTX 3080 Ti Laptop, `--scene sponza`, 1280x720, clocks pinned 800/7001, lights
-and animation frozen, every frame sampled for 60 s after a 15 s warm-up, p10 over
-29,356 and 26,897 frames, A/B/A/B, control drift 0.85%:**
+and animation frozen, every frame sampled for 60 s after a 15 s warm-up, p10,
+A/B/A/B.** Two series, each against the screen-space pass as its control:
 
-| | screen-space | hybrid | delta |
-| --- | --- | --- | --- |
-| `Frame total` | 3.530 ms | 4.353 ms | **+0.823 ms, +23.3%** |
-| `SSRTrace` | 0.412 ms | 1.174 ms | +0.762 ms |
+| | screen-space | hybrid | delta | `SSRTrace` | control drift |
+| --- | --- | --- | --- | --- | --- |
+| every miss traced (`rayTracedMinWeight` 0) | 3.530 ms | 4.353 ms | +0.823 ms, +23.3% | 0.412 -> 1.174 ms | 0.85% |
+| gated (`rayTracedMinWeight` 0.1, default) | 3.535 ms | 3.902 ms | **+0.367 ms, +10.4%** | 0.412 -> 0.777 ms | 0.82% |
 
-`SSRTrace` carries 0.762 of the 0.823 ms; every other pass moved by less than
-its own control drift, so none of the remainder is attributed. Command:
-`measure_gpu.py ab --b-set ssr.rayTracedFallback=true --repeat 2 --duration 75
---warmup 15 --every-frame --freeze-animation --args --scene sponza`.
+`SSRTrace` carries nearly all of each delta; every other pass moved by less than
+its own control drift, so none of the remainder is attributed. Command for the
+second row: `measure_gpu.py ab --b-set ssr.rayTracedFallback=true --b-set
+ssr.rayTracedMinWeight=0.1 --repeat 2 --duration 75 --warmup 15 --every-frame
+--freeze-animation --args --scene sponza`.
 
-That is expensive for what it changes on Sponza, and it is why the fallback is
-off by default. The cost follows from which pixels fire a ray: every surface
-under `maxRoughness` that the march misses, and on Sponza that is most of the
-stone -- dielectrics whose specular weight is a few percent, so their rays buy
-little. The traced share is not weighted by how much it can change the pixel,
-the trace is full resolution, and each hit traces a sun shadow ray of its own.
+The two rows are separate series. Their controls agree to 0.14%, but they were
+not interleaved with each other, so the gate's own saving -- roughly half the
+hybrid's cost -- is read across series. The direct gated-against-ungated series
+was run twice and voided twice by a 1.0% drift on its heavier side; it is not
+quoted.
+
+**Why the gate.** Ungated, every surface under `maxRoughness` that the march
+misses fires a ray, and on Sponza that is mostly stone: dielectrics seen nearly
+head-on, whose specular weight is a few percent, so their rays buy little. The
+gate (`rayTracedMinWeight`, the ray's share times the specular weight it is seen
+through, faded in over half to full) keeps the rays where the reflection is
+visible. What it gives up, at the same frame 30: on the default scene the gated
+image is within 8/255 of the ungated one on all but 0.06% of pixels, and keeps
+the polished sphere's traced floor and box. On Sponza 0.30% of pixels move by
+more than 8/255, on the curtains' embroidery and rods -- partly metallic,
+fairly rough, so their ray weight sits near the threshold and some of the
+interior that replaced the sky's IBL there goes back to the IBL.
+
+Still on the table, unmeasured: the trace is full resolution, and each hit
+traces a sun shadow ray of its own.
 
 ## Limitations
 

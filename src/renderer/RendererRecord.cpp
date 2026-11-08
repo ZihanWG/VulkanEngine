@@ -343,6 +343,7 @@ renderer::SsrRayQueryBinding Renderer::ssrRayQueryBinding() const
     push.lightCount = push.lightBufferAddress != 0 ? clusteredLighting_.lightCount() : 0;
     push.sunRayLength = frameRayTracedShadowRayLength_;
     push.maxDistance = ssrSettings_.rayTracedMaxDistance;
+    push.minWeight = ssrSettings_.rayTracedMinWeight;
     return binding;
 }
 

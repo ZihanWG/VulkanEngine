@@ -333,6 +333,11 @@ struct SsrSettings {
     // below the probe gather's far bound (kProbeMaxDistance), whose hit shading
     // it shares.
     float rayTracedMaxDistance = 50.0f;
+    // A ray fires only where it can matter: its share of the replacement times
+    // the specular weight it is seen through must reach this. Dielectrics seen
+    // head-on (weight ~0.05) fall below it, metals and grazing angles do not.
+    // Faded in over [half, full] so the cut leaves no edge; 0 traces every miss.
+    float rayTracedMinWeight = 0.1f;
 };
 
 // Discrete mesh level of detail. Selection runs per draw item inside the GPU cull

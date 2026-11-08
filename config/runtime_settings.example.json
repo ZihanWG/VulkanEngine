@@ -67,7 +67,8 @@
         "maxRoughness": 0.6,
         "screenEdgeFade": 0.1,
         "rayTracedFallback": false,
-        "rayTracedMaxDistance": 50.0
+        "rayTracedMaxDistance": 50.0,
+        "rayTracedMinWeight": 0.1
     },
     "ssao": {
         "enabled": false,
