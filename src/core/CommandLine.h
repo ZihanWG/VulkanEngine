@@ -55,6 +55,12 @@ enum class ScenePreset {
     // docs/asset_load_baseline.md#a-second-imported-scene-bistro). A build without
     // that file refuses the preset.
     Bistro,
+    // The same converted Bistro at night: no sun, its sky dimmed to a dusk
+    // remnant, lit by the 128 lights derived from its lamp geometry. A preset of
+    // its own rather than a toggle, because it is a different measurement -- the
+    // clustered path carries the frame instead of the sun -- and a log has to be
+    // able to say which one it was.
+    BistroNight,
 
     // Not a scene. One past the last preset, so a test can walk every value and
     // check it round-trips through its name.
@@ -74,7 +80,7 @@ enum class ScenePreset {
 // named on a build that cannot load it.
 [[nodiscard]] constexpr bool isSampleScenePreset(ScenePreset preset)
 {
-    return preset == ScenePreset::Sponza || preset == ScenePreset::Bistro;
+    return preset == ScenePreset::Sponza || preset == ScenePreset::Bistro || preset == ScenePreset::BistroNight;
 }
 
 // One table, read by both directions, so a name can never parse to one preset

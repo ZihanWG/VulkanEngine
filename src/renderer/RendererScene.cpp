@@ -208,6 +208,7 @@ std::optional<std::filesystem::path> sampleScenePath(ScenePreset scene)
         return std::nullopt;
 #endif
     case ScenePreset::Bistro:
+    case ScenePreset::BistroNight:
 #if defined(VULKAN_ENGINE_BISTRO_SCENE)
         return std::filesystem::path(VULKAN_ENGINE_BISTRO_SCENE);
 #else
@@ -241,6 +242,11 @@ std::optional<std::filesystem::path> sampleSceneEnvironmentPath(ScenePreset scen
     return environment;
 }
 
+float sampleSceneEnvironmentScale(ScenePreset scene)
+{
+    return scene == ScenePreset::BistroNight ? kBistroNightEnvironmentScale : 1.0f;
+}
+
 std::string sampleSceneUnavailableMessage(ScenePreset scene)
 {
     const std::string flag = "--scene " + std::string(scenePresetName(scene));
@@ -255,7 +261,7 @@ std::string sampleSceneUnavailableMessage(ScenePreset scene)
                       "-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON (a configure-time download) and rebuild. "
                       "See docs/asset_load_baseline.md.";
     }
-    if (scene == ScenePreset::Bistro) {
+    if (scene == ScenePreset::Bistro || scene == ScenePreset::BistroNight) {
         return flag + ": " + (path ? path->string() : std::string("the configured Bistro glTF")) +
                " is not there. Bistro ships only as FBX, so it is a local conversion: see "
                "docs/asset_load_baseline.md#a-second-imported-scene-bistro, or point "
@@ -472,6 +478,12 @@ void Renderer::applySampleSceneLighting()
             break;
         }
     }
+    // Night: the sun is gone and the derived lamps carry the frame. Zero rather
+    // than a dim moon, so every light on screen is one the clustered path placed.
+    if (sampleSceneRequested_ == ScenePreset::BistroNight) {
+        directionalLightSettings_.intensity = 0.0f;
+    }
+
     if (!sampleSceneLights_.empty()) {
         Logger::info("Sample scene glTF lights: " + std::to_string(pointCount) + " point, " +
                      std::to_string(spotCount) + " spot, " + std::to_string(directionalCount) +
@@ -1654,6 +1666,7 @@ bool Renderer::loadScenePreset(ScenePreset preset, std::string& status)
         return true;
     case ScenePreset::Sponza:
     case ScenePreset::Bistro:
+    case ScenePreset::BistroNight:
         // Already built, by the constructor -- see
         // RendererStartupOverrides::sampleScene for why it cannot be built
         // here. This is not a no-op though: it confirms that the scene standing

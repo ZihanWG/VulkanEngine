@@ -300,6 +300,9 @@ const glm::vec3 kSampleSceneLampColor{1.0f, 0.68f, 0.38f};
 // cap keeps one very bright light out of every froxel. See importedLightRange.
 constexpr float kImportedLightCutoffIlluminance = 0.01f;
 constexpr float kImportedLightMaxRange = 64.0f;
+// The day sky's radiance at night: enough to keep the facades from going to pure
+// black between lamps, little enough that the lamps decide the exposure.
+constexpr float kBistroNightEnvironmentScale = 0.02f;
 // Portfolio material-slot indices and occlusion-test scene constants now live in
 // renderer/SceneBuilder.h alongside the scene-layout logic that consumes them.
 

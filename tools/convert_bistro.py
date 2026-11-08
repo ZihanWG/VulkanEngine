@@ -45,10 +45,13 @@ import numpy as np
 # glTF candela (export lighting mode RAW); range is metres. Tuned by eye against the
 # FBX camera's shot under the bundled sky: most street lamps hang off a facade, so
 # a light at the lantern sits a few centimetres from the wall, and inverse-square
-# falloff blew it out above 20.
+# falloff blew it out above 20. A "color" overrides the one read from the emissive
+# texture: the lamps' brightest texels are clipped to white, which lit the street
+# cold under amber lanterns -- obvious once --scene bistro-night removed the sun.
+WARM_INCANDESCENT = (1.0, 0.72, 0.42)
 DERIVED_LIGHTS = {
-    "Emissive_StreetLight": {"intensity": 20.0, "range": 14.0, "merge": 0.75},
-    "Spotlight_Glass_Emissive": {"intensity": 6.0, "range": 6.0, "merge": 0.5},
+    "Emissive_StreetLight": {"intensity": 20.0, "range": 14.0, "merge": 0.75, "color": WARM_INCANDESCENT},
+    "Spotlight_Glass_Emissive": {"intensity": 6.0, "range": 6.0, "merge": 0.5, "color": WARM_INCANDESCENT},
     "Shopsign_Book_Store_Emissive": {"intensity": 10.0, "range": 6.0, "merge": 2.0},
     "Shopsign_Pharmacy_Emissive": {"intensity": 10.0, "range": 6.0, "merge": 2.0},
     "Paris_StringLights_01_Blue_Color_Emissive": {"intensity": 3.0, "range": 4.0, "merge": 2.5},
@@ -278,7 +281,10 @@ def derive_lights(converter):
             continue
         emissive = next((n.image for n in material.node_tree.nodes
                          if n.type == "TEX_IMAGE" and n.image is not None), None)
-        color = emissive_color(emissive) if emissive is not None else (1.0, 1.0, 1.0)
+        if "color" in rule:
+            color = rule["color"]
+        else:
+            color = emissive_color(emissive) if emissive is not None else (1.0, 1.0, 1.0)
 
         points = []
         for obj in bpy.data.objects:

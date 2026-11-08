@@ -163,6 +163,11 @@ struct RendererStartupOverrides {
 // `environment.hdr`, when there is one. Bistro's conversion puts its bundled sky
 // there; Sponza has none and keeps the default environment.
 [[nodiscard]] std::optional<std::filesystem::path> sampleSceneEnvironmentPath(ScenePreset scene);
+// What that environment's radiance is multiplied by as it is loaded: 1 except for
+// a night preset, which reuses the day sky as the dim remnant of one. Scaling the
+// texels rather than adding a shader term keeps every other scene's shading code
+// and output byte-identical.
+[[nodiscard]] float sampleSceneEnvironmentScale(ScenePreset scene);
 [[nodiscard]] std::string sampleSceneUnavailableMessage(ScenePreset scene);
 
 class Renderer final {
