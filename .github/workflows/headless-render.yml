@@ -353,7 +353,7 @@ jobs:
         if: matrix.shard == 0
         env:
           PROBE_REFERENCE_FRAMES: 60
-          PROBE_REFERENCE_MAX_ERROR_PERCENT: 45
+          PROBE_REFERENCE_MAX_ERROR_PERCENT: 35
         run: |
           set +e
           timeout 900 xvfb-run -a --server-args="-screen 0 1280x720x24" \

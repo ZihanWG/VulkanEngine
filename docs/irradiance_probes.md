@@ -961,7 +961,7 @@ geometry, or cascades), which this volume does not have.
 
 The headless job runs the Cornell box with the reference on (16 probes a frame,
 the cap, so all 256 are refreshed in 16 frames; 60 frames; 4 reference rays a
-pixel) and fails if the probes' mean absolute error is above 45% of the
+pixel) and fails if the probes' mean absolute error is above 35% of the
 reference. It is a tripwire for gross breakage, not a quality bar, and its limits
 are measured. Locally (RTX, same configuration) a healthy grid reads 28.6%, and:
 
@@ -976,9 +976,12 @@ are measured. Locally (RTX, same configuration) a healthy grid reads 28.6%, and:
 
 So it catches probes that are dark, stale or unconverged, and not a subtler
 regression in the weights or the visibility term: the Cornell box is too uniform
-for its error to move much with them. The cap is deliberately loose because the
-CI value comes from a software rasteriser's ray queries and the first runs set
-the baseline; tighten it once a few runs of that value exist.
+for its error to move much with them. The cap sits 6.4 points above the value:
+CI (a software rasteriser's ray queries) read exactly 28.6% on each of six runs,
+the same as the RTX, so the number is deterministic and the margin is room for a
+deliberate change, not for noise. Of the changes above, 32 rays and hysteresis
+0.98 (32.6% and 34.0%) would still pass; the cap is not tight enough to see
+them.
 
 ## The Cornell box scene
 
