@@ -721,8 +721,8 @@ insets and the hand-fitted row do better, but not monotonically (26.0, 24.9, 20.
 19.6), which says the error is moving with where the probes happen to fall against
 the columns rather than with the inset; picking the best row would be tuning to
 one camera and one frame. What the fit reliably does is stop spending probes
-outside the building and leave none buried. The remaining error is the grid's
-resolution against Sponza's geometry.
+outside the building and leave none buried. The remaining error is not
+simply resolution: see "More probes: measured, not shipped".
 
 ## Probes inside geometry
 
@@ -901,6 +901,61 @@ The error that is left is mostly not bias. 40.8% mean absolute error against
 cannot resolve Sponza's arches and columns, which is what probe GI trades away,
 and it is the number to move with any future change to the grid, the weights or
 the visibility term.
+
+### More probes: measured, not shipped
+
+The remaining Sponza error looked like grid resolution, so the grid was made
+denser and measured. Probe indices had to be widened first -- the trace's push
+block carried them as four 8-bit values to a word, which capped the grid at 256
+probes -- then the grid dimensions were changed at compile time. Sponza,
+fitted grid, traced gather, relocation on, `probesPerFrame` 16 so a larger grid
+still completes several refresh cycles in 300 frames, 8 reference rays a frame
+(single runs, frame 300, RTX):
+
+| grid | probes | inside geometry | bias | mean abs. error |
+| --- | --- | --- | --- | --- |
+| 8x4x8 | 256 | 0 | -5.8% | 22.1% |
+| 10x5x10 | 500 | 14 | +8.4% | 24.6% |
+| 12x4x12 | 576 | 2 | -21.2% | 32.1% |
+| 12x6x12 | 864 | 33 | +7.2% | 18.9% |
+| 16x6x16 | 1536 | 94 | -14.8% | 25.8% |
+| 20x6x20 | 2400 | 205 | -5.8% | 17.6% |
+
+The error does not fall with density. Five denser grids span 17.6% to 32.1%, and
+three of them are worse than the 256-probe grid; the best is 4.5 points better
+for nearly ten times the probes, and 12x4x12 is ten points worse than 8x4x8. What
+moves the number is where the probes happen to fall against Sponza's columns and
+arches, and how many are buried (0, 14, 2, 33, 94, 205), not how many there are.
+A refresh cycle also lengthens with the count: 16 probes a frame refreshes 256 in
+16 frames and 2400 in 150.
+
+So the grid stays 8x4x8, the 16-bit widening was not kept, and the guess that the
+remaining error is grid resolution did not survive: more uniform resolution is not
+what reduces it here. What the table does show is the update
+rate: the same 8x4x8 grid reads 22.1% at 16 probes a frame and 24.9% at the
+default 4. Its cost, measured: Sponza, traced gather at 768 rays, 1280x720, clocks pinned
+at 800/7001 MHz, A/B/A/B with the control returning within 0.06%, p10 over about
+7000 samples a side. Frame total 4.791 -> 4.877 ms, **+0.086 ms (+1.8%)** for four
+times the probes a frame, attributable. Where it lands is not resolved: the probe
+passes themselves (`ProbeTrace` 0.053 -> 0.052, `IrradianceProbeUpdate`
+0.371 -> 0.372) are inside the harness's noise floor at p10, so they are not
+measured, and the frame-total rise shows in `MainHDRPass` (+0.042 ms). The means
+of the raw samples agree in size and direction (`ProbeTrace` 0.080 -> 0.096 ms,
+`IrradianceProbeUpdate` 0.47 -> 0.49), which is a cross-check and not the
+quoted statistic. It is small because 16 probes at 768 rays is about 12 000 rays
+a frame.
+
+That is the traced gather only, and it is why the default stays 4. The raster
+capture, which is what runs when `rayTracedGather` is off, draws six faces per
+probe and its cost scales with the count: two A/B series of the same change
+there both showed `ProbeCapture` about quadrupling (0.37 -> 1.5 ms-ish), and both
+were voided by the harness, the control drifting 12.9% and 6.7% because the frame
+rate itself changes by half. So no figure is filed for it; a clean one needs a
+lower clock pin. What can be said is that a default of 16 would be paid by every
+raster-path user for a gain only measured on the traced one, so 16 is advice for
+the traced gather, not a default. Anything
+that would actually resolve the columns is non-uniform (a grid that adapts to
+geometry, or cascades), which this volume does not have.
 
 ### The CI gate
 
