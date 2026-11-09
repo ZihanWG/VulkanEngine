@@ -1198,6 +1198,7 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
     importedMetallicRoughnessTextures_.resize(textureInfos.size());
 
     std::vector<uint8_t> baseColorNeeded(textureInfos.size(), 0);
+    std::vector<uint8_t> emissiveNeeded(textureInfos.size(), 0);
     std::vector<uint8_t> normalNeeded(textureInfos.size(), 0);
     std::vector<uint8_t> metallicRoughnessNeeded(textureInfos.size(), 0);
 
@@ -1211,8 +1212,10 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
         markNeeded(materialInfo.baseColorTextureIndex, baseColorNeeded);
         markNeeded(materialInfo.normalTextureIndex, normalNeeded);
         markNeeded(materialInfo.metallicRoughnessTextureIndex, metallicRoughnessNeeded);
-        // Emissive maps decode as sRGB into the base-color texture array.
-        markNeeded(materialInfo.emissiveTextureIndex, baseColorNeeded);
+        // Emissive maps decode as sRGB into the base-color texture array, but are
+        // marked apart: the cook names a sidecar by the slot that uses the image,
+        // so an emissive map's is `.emissive.ktx2`, never `.base-color.ktx2`.
+        markNeeded(materialInfo.emissiveTextureIndex, emissiveNeeded);
     }
 
     // Decode the needed textures on worker threads, then upload them here on the
@@ -1283,6 +1286,14 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
                           assets::TextureUsage::BaseColor,
                           "base color",
                           "GltfBaseColorTexture",
+                          importedBaseColorTextures_);
+        } else if (emissiveNeeded[textureIndex] != 0) {
+            // The same array and the same sRGB BC7 format as base colour; only the
+            // sidecar's name differs. An image both slots use loads once, above.
+            enqueueDecode(textureIndex,
+                          assets::TextureUsage::Emissive,
+                          "emissive",
+                          "GltfEmissiveTexture",
                           importedBaseColorTextures_);
         }
         if (normalNeeded[textureIndex] != 0) {
