@@ -1014,8 +1014,12 @@ void main()
         discard;
     }
 
+    // glTF's layout: roughness in green, metalness in BLUE. Red is free, and
+    // packed ORM textures put occlusion there. This read red until Bistro, whose
+    // red channel is zero in every texel: Sponza's and Bistro's metal parts all
+    // shaded as dielectrics, and nothing looked wrong enough to say so.
     vec4 mrSample = texture(uMetallicRoughnessTextures[nonuniformEXT(vTextureIndices.z)], vUV);
-    float textureMetallic = mrSample.r;
+    float textureMetallic = mrSample.b;
     float textureRoughness = mrSample.g;
     float metallic = clamp(vMaterialParams.x * textureMetallic, 0.0, 1.0);
     float roughness = clamp(vMaterialParams.y * textureRoughness, 0.04, 1.0);

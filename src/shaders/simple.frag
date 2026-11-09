@@ -230,8 +230,9 @@ void main()
         discard;
     }
 
+    // glTF's layout: metalness in blue, roughness in green; see simple_bindless.frag.
     vec4 mrSample = texture(uMetallicRoughnessMap, vUV);
-    float textureMetallic = mrSample.r;
+    float textureMetallic = mrSample.b;
     float textureRoughness = mrSample.g;
     float metallic = clamp(vMaterialParams.x * textureMetallic, 0.0, 1.0);
     float roughness = clamp(vMaterialParams.y * textureRoughness, 0.04, 1.0);

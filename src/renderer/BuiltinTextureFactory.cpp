@@ -365,12 +365,10 @@ void BuiltinTextureFactory::createMetallicRoughness(rhi::VulkanContext& context,
         constexpr uint32_t width = 4;
         constexpr uint32_t height = 4;
         std::array<uint8_t, width * height * 4> pixels{};
-        for (size_t offset = 0; offset < pixels.size(); offset += 4) {
-            pixels[offset + 0] = 255;
-            pixels[offset + 1] = 255;
-            pixels[offset + 2] = 0;
-            pixels[offset + 3] = 255;
-        }
+        // Every channel at one, so the material factors pass through whichever
+        // channel a reader takes: glTF metalness (blue), roughness (green), and
+        // the occlusion an ORM texture packs into red.
+        pixels.fill(255);
 
         out.createFromRgba8(context,
                             commandContext,
@@ -400,12 +398,8 @@ void BuiltinTextureFactory::createNeutralMetallicRoughness(rhi::VulkanContext& c
     constexpr uint32_t width = 4;
     constexpr uint32_t height = 4;
     std::array<uint8_t, width * height * 4> pixels{};
-    for (size_t offset = 0; offset < pixels.size(); offset += 4) {
-        pixels[offset + 0] = 255;
-        pixels[offset + 1] = 255;
-        pixels[offset + 2] = 0;
-        pixels[offset + 3] = 255;
-    }
+    // Neutral in every channel; see the procedural fallback above.
+    pixels.fill(255);
 
     out.createFromRgba8(context,
                         commandContext,
