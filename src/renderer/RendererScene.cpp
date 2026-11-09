@@ -215,6 +215,12 @@ std::optional<std::filesystem::path> sampleScenePath(ScenePreset scene)
 #else
         return std::nullopt;
 #endif
+    case ScenePreset::BistroInterior:
+#if defined(VULKAN_ENGINE_BISTRO_INTERIOR_SCENE)
+        return std::filesystem::path(VULKAN_ENGINE_BISTRO_INTERIOR_SCENE);
+#else
+        return std::nullopt;
+#endif
     default:
         return std::nullopt;
     }
@@ -255,6 +261,9 @@ std::size_t Renderer::logAssetInputs(std::string_view label)
     if (const std::optional<std::filesystem::path> bistro = sampleScenePath(ScenePreset::Bistro)) {
         roots.push_back({"bistro", bistro->parent_path()});
     }
+    if (const std::optional<std::filesystem::path> interior = sampleScenePath(ScenePreset::BistroInterior)) {
+        roots.push_back({"bistro-interior", interior->parent_path()});
+    }
 
     const std::vector<std::filesystem::path> paths = assets::AssetInputRecorder::snapshot();
     const std::vector<assets::AssetInputFile> files = assets::assetInputFiles(paths, roots);
@@ -264,7 +273,10 @@ std::size_t Renderer::logAssetInputs(std::string_view label)
 
 float sampleSceneEnvironmentScale(ScenePreset scene)
 {
-    return scene == ScenePreset::BistroNight ? kBistroNightEnvironmentScale : 1.0f;
+    // The interior is lit at dusk, like the street at night: its sky shows only
+    // through the windows, and an unshadowed IBL at full strength floods the room.
+    return scene == ScenePreset::BistroNight || scene == ScenePreset::BistroInterior ? kBistroNightEnvironmentScale
+                                                                                     : 1.0f;
 }
 
 std::string sampleSceneUnavailableMessage(ScenePreset scene)
@@ -281,7 +293,7 @@ std::string sampleSceneUnavailableMessage(ScenePreset scene)
                       "-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON (a configure-time download) and rebuild. "
                       "See docs/asset_load_baseline.md.";
     }
-    if (scene == ScenePreset::Bistro || scene == ScenePreset::BistroNight) {
+    if (scene == ScenePreset::Bistro || scene == ScenePreset::BistroNight || scene == ScenePreset::BistroInterior) {
         return flag + ": " + (path ? path->string() : std::string("the configured Bistro glTF")) +
                " is not there. Bistro ships only as FBX, so it is a local conversion: see "
                "docs/asset_load_baseline.md#a-second-imported-scene-bistro, or point "
@@ -500,7 +512,9 @@ void Renderer::applySampleSceneLighting()
     }
     // Night: the sun is gone and the derived lamps carry the frame. Zero rather
     // than a dim moon, so every light on screen is one the clustered path placed.
-    if (sampleSceneRequested_ == ScenePreset::BistroNight) {
+    // The interior ships no sun at all, and the default one would light the room
+    // through its walls' gaps; it is dusk there too.
+    if (sampleSceneRequested_ == ScenePreset::BistroNight || sampleSceneRequested_ == ScenePreset::BistroInterior) {
         directionalLightSettings_.intensity = 0.0f;
     }
 
@@ -1698,6 +1712,7 @@ bool Renderer::loadScenePreset(ScenePreset preset, std::string& status)
     case ScenePreset::Sponza:
     case ScenePreset::Bistro:
     case ScenePreset::BistroNight:
+    case ScenePreset::BistroInterior:
         // Already built, by the constructor -- see
         // RendererStartupOverrides::sampleScene for why it cannot be built
         // here. This is not a no-op though: it confirms that the scene standing

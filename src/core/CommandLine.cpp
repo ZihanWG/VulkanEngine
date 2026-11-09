@@ -28,6 +28,7 @@ constexpr ScenePresetName kScenePresetNames[] = {
     {"sponza", ScenePreset::Sponza},
     {"bistro", ScenePreset::Bistro},
     {"bistro-night", ScenePreset::BistroNight},
+    {"bistro-interior", ScenePreset::BistroInterior},
 };
 
 // Same one-table rule as the scene presets, for the same reason.
