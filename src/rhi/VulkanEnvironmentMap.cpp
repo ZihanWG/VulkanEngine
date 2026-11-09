@@ -494,7 +494,8 @@ void validateRgba32fFaceData(uint32_t faceSize, std::span<const float> pixels)
 std::vector<float> makeHdrEnvironmentFaces(std::span<const float> equirectangularPixels,
                                            uint32_t width,
                                            uint32_t height,
-                                           uint32_t faceSize)
+                                           uint32_t faceSize,
+                                           JobSystem* jobSystem)
 {
     if (width == 0 || height == 0 || faceSize == 0) {
         throw std::runtime_error("Cannot create an HDR environment cubemap from zero-sized image data.");
@@ -502,8 +503,12 @@ std::vector<float> makeHdrEnvironmentFaces(std::span<const float> equirectangula
 
     std::vector<float> pixels(static_cast<size_t>(faceSize) * faceSize * kCubeFaceCount * kRgbaChannels);
 
-    for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
-        for (uint32_t y = 0; y < faceSize; ++y) {
+    // One task per run of rows across all six faces; every texel is written by
+    // exactly one task, so the result is the same however they are scheduled.
+    const auto resampleRows = [&](size_t begin, size_t end) {
+        for (size_t row = begin; row < end; ++row) {
+            const uint32_t face = static_cast<uint32_t>(row / faceSize);
+            const uint32_t y = static_cast<uint32_t>(row % faceSize);
             const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(faceSize);
             for (uint32_t x = 0; x < faceSize; ++x) {
                 const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(faceSize);
@@ -515,6 +520,12 @@ std::vector<float> makeHdrEnvironmentFaces(std::span<const float> equirectangula
                 writeRgba32f(pixels, offset, color);
             }
         }
+    };
+    const size_t rowCount = static_cast<size_t>(faceSize) * kCubeFaceCount;
+    if (jobSystem != nullptr && rowCount > 1) {
+        jobSystem->parallelFor(rowCount, 1, resampleRows);
+    } else {
+        resampleRows(0, rowCount);
     }
 
     return pixels;
@@ -877,7 +888,29 @@ HdrEnvironmentCubeData VulkanEnvironmentMap::loadHdrEquirectangularFaces(const s
     if (faceSize == 0) {
         throw std::runtime_error("Cannot create a zero-sized HDR environment cubemap.");
     }
+    return cubeFacesFromEquirectangular(loadHdrEquirectangular(path), faceSize);
+}
 
+HdrEnvironmentCubeData VulkanEnvironmentMap::cubeFacesFromEquirectangular(const HdrEquirectangularImage& image,
+                                                                          uint32_t faceSize,
+                                                                          JobSystem* jobSystem)
+{
+    if (faceSize == 0) {
+        throw std::runtime_error("Cannot create a zero-sized HDR environment cubemap.");
+    }
+    HdrEnvironmentCubeData cubeData{};
+    cubeData.faceSize = faceSize;
+    cubeData.rgba32fPixels =
+        makeHdrEnvironmentFaces(std::span<const float>(image.rgba32fPixels.data(), image.rgba32fPixels.size()),
+                                image.width,
+                                image.height,
+                                faceSize,
+                                jobSystem);
+    return cubeData;
+}
+
+HdrEquirectangularImage VulkanEnvironmentMap::loadHdrEquirectangular(const std::filesystem::path& path)
+{
     int loadedWidth = 0;
     int loadedHeight = 0;
     int sourceChannels = 0;
@@ -901,12 +934,11 @@ HdrEnvironmentCubeData VulkanEnvironmentMap::loadHdrEquirectangularFaces(const s
     const uint32_t width = static_cast<uint32_t>(loadedWidth);
     const uint32_t height = static_cast<uint32_t>(loadedHeight);
     const size_t floatCount = static_cast<size_t>(width) * height * kRgbaChannels;
-    std::span<const float> equirectangularPixels(loadedPixels.get(), floatCount);
-
-    HdrEnvironmentCubeData cubeData{};
-    cubeData.faceSize = faceSize;
-    cubeData.rgba32fPixels = makeHdrEnvironmentFaces(equirectangularPixels, width, height, faceSize);
-    return cubeData;
+    HdrEquirectangularImage image{};
+    image.width = width;
+    image.height = height;
+    image.rgba32fPixels.assign(loadedPixels.get(), loadedPixels.get() + floatCount);
+    return image;
 }
 
 void VulkanEnvironmentMap::createProcedural(VulkanContext& context,

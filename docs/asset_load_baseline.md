@@ -367,7 +367,13 @@ What the renderer takes from the glTF beyond Sponza's set:
   light would sit in every froxel's list (`importedLightRange`, unit-tested). The
   first directional light sets the sun's direction and colour, not its intensity.
 - **An `environment.hdr` beside the glTF** replaces the default environment for
-  the skybox and both IBL terms. Sponza ships none and is unchanged.
+  the skybox and both IBL terms. Sponza ships none and is unchanged. The IBL is
+  still precomputed from a 128-texel cube, but the skybox gets its own, a quarter
+  of the source's width a face (capped at 1024): Bistro's sky is a 4096x2048
+  panorama of a Venetian canal, and wherever the street opens out its buildings
+  are the backdrop, which 128 texels a face drew as a smear. One decode feeds
+  both cubes, resampled on the job system: 171 ms for the decode and both
+  resamples on this machine, and 48 MiB of RGBA16F for the sky.
 - **The first perspective camera** frames the startup shot -- Bistro's own street
   view, where the bounds-derived interior camera put the view against a wall.
   Pose and field of view only; the clip planes stay bounds-derived, since

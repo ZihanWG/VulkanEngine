@@ -1417,19 +1417,42 @@ void Renderer::createEnvironmentMap()
     // An imported scene that ships its own sky lights itself with it: an outdoor
     // street under the default studio environment reads as a set, not a place.
     std::filesystem::path hdrEnvironmentPath = assetPath("environments/studio.hdr");
-    if (const std::optional<std::filesystem::path> sceneEnvironment =
-            sampleSceneEnvironmentPath(sampleSceneRequested_)) {
+    const std::optional<std::filesystem::path> sceneEnvironment = sampleSceneEnvironmentPath(sampleSceneRequested_);
+    if (sceneEnvironment) {
         hdrEnvironmentPath = *sceneEnvironment;
     }
     bool loadedHdrEnvironment = false;
     if (std::filesystem::exists(hdrEnvironmentPath)) {
         try {
+            // The IBL is precomputed from this small cube, whatever the sky is
+            // shown at: irradiance averages it and the prefilter integrates over
+            // it, so a larger one would only make both slower and noisier.
             constexpr uint32_t kHdrEnvironmentFaceSize = 128;
+            const auto conversionStart = std::chrono::steady_clock::now();
+            const rhi::HdrEquirectangularImage hdrImage =
+                rhi::VulkanEnvironmentMap::loadHdrEquirectangular(hdrEnvironmentPath);
             rhi::HdrEnvironmentCubeData hdrCubeData =
-                rhi::VulkanEnvironmentMap::loadHdrEquirectangularFaces(hdrEnvironmentPath, kHdrEnvironmentFaceSize);
+                rhi::VulkanEnvironmentMap::cubeFacesFromEquirectangular(hdrImage, kHdrEnvironmentFaceSize, &jobSystem_);
+            // What the skybox shows. A scene that ships its own sky is looked at:
+            // at 128 texels a face, Bistro's 4096-wide sky drew 32 source texels
+            // into each one and read as a blur behind sharp rooftops. A face a
+            // quarter of the source's width matches its density, and the cap
+            // bounds it at 48 MiB of RGBA16F. The studio sky stays as it was: it
+            // is the default scene's backdrop and its golden image.
+            constexpr uint32_t kMaxSkyDisplayFaceSize = 1024;
+            const uint32_t skyFaceSize =
+                sceneEnvironment ? std::clamp(hdrImage.width / 4u, kHdrEnvironmentFaceSize, kMaxSkyDisplayFaceSize)
+                                 : kHdrEnvironmentFaceSize;
+            rhi::HdrEnvironmentCubeData skyCubeData =
+                skyFaceSize == kHdrEnvironmentFaceSize
+                    ? rhi::HdrEnvironmentCubeData{}
+                    : rhi::VulkanEnvironmentMap::cubeFacesFromEquirectangular(hdrImage, skyFaceSize, &jobSystem_);
             const float environmentScale = sampleSceneEnvironmentScale(sampleSceneRequested_);
             if (environmentScale != 1.0f) {
                 for (float& value : hdrCubeData.rgba32fPixels) {
+                    value *= environmentScale;
+                }
+                for (float& value : skyCubeData.rgba32fPixels) {
                     value *= environmentScale;
                 }
                 Logger::info("HDR environment radiance scaled by " + std::to_string(environmentScale) +
@@ -1437,8 +1460,22 @@ void Renderer::createEnvironmentMap()
             }
             const std::span<const float> hdrCubePixels(hdrCubeData.rgba32fPixels.data(),
                                                        hdrCubeData.rgba32fPixels.size());
+            const double conversionMs =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - conversionStart).count();
+            Logger::info("HDR sky: " + std::to_string(hdrImage.width) + "x" + std::to_string(hdrImage.height) +
+                         " source, skybox " + std::to_string(skyFaceSize) + " px a face, IBL source " +
+                         std::to_string(kHdrEnvironmentFaceSize) + " px a face; decode and resample " +
+                         std::to_string(conversionMs) + " ms.");
 
-            environmentMap_.createFromRgba32fFaces(context_, commandContext_, hdrCubeData.faceSize, hdrCubePixels);
+            if (skyCubeData.rgba32fPixels.empty()) {
+                environmentMap_.createFromRgba32fFaces(context_, commandContext_, hdrCubeData.faceSize, hdrCubePixels);
+            } else {
+                environmentMap_.createFromRgba32fFaces(
+                    context_,
+                    commandContext_,
+                    skyCubeData.faceSize,
+                    std::span<const float>(skyCubeData.rgba32fPixels.data(), skyCubeData.rgba32fPixels.size()));
+            }
             nameEnvironmentMapResources(environmentMap_, "HdrEnvironmentCubemap");
 
             diffuseIrradianceMap_.createDiffuseIrradianceFromRgba32fFaces(
