@@ -552,6 +552,14 @@ cmake_path(CONVERT "${VULKAN_ENGINE_BISTRO_SCENE_FILE}" TO_CMAKE_PATH_LIST VULKA
 target_compile_definitions(VulkanEngineRuntime PRIVATE
     "VULKAN_ENGINE_BISTRO_SCENE=\"${VULKAN_ENGINE_BISTRO_SCENE}\""
 )
+# Its interior, converted the same way from the other FBX in the archive.
+set(VULKAN_ENGINE_BISTRO_INTERIOR_SCENE_FILE "${VULKAN_ENGINE_SAMPLE_SCENE_DIR}/bistro-interior/BistroInterior.gltf"
+    CACHE FILEPATH "The converted Bistro interior glTF that --scene bistro-interior loads")
+cmake_path(CONVERT "${VULKAN_ENGINE_BISTRO_INTERIOR_SCENE_FILE}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_BISTRO_INTERIOR_SCENE
+           NORMALIZE)
+target_compile_definitions(VulkanEngineRuntime PRIVATE
+    "VULKAN_ENGINE_BISTRO_INTERIOR_SCENE=\"${VULKAN_ENGINE_BISTRO_INTERIOR_SCENE}\""
+)
 
 # Only defined when the fetch actually produced a complete scene, so the renderer
 # can test for the macro rather than for a path that might not exist.

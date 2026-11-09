@@ -5,6 +5,12 @@ block-compressed DDS textures it references:
 
     blender -b --factory-startup --python tools/convert_bistro.py -- \\
         <Bistro_v5_2/BistroExterior.fbx> <build/fetched-assets/bistro/Bistro.gltf>
+    blender -b --factory-startup --python tools/convert_bistro.py -- \\
+        <Bistro_v5_2/BistroInterior_Wine.fbx> \\
+        <build/fetched-assets/bistro-interior/BistroInterior.gltf>
+
+Which scene it is comes from the FBX's file name (SCENE_PROFILES): each has its
+own derived-light table, and the interior keeps the factors its drinks are made of.
 
 The scene is CC BY 4.0 (NVIDIA ORCA). Nothing it produces is tracked; the output
 sits beside the fetched Sponza under build/fetched-assets.
@@ -51,7 +57,7 @@ import numpy as np
 # texture: the lamps' brightest texels are clipped to white, which lit the street
 # cold under amber lanterns -- obvious once --scene bistro-night removed the sun.
 WARM_INCANDESCENT = (1.0, 0.72, 0.42)
-DERIVED_LIGHTS = {
+EXTERIOR_LIGHTS = {
     "Emissive_StreetLight": {"intensity": 20.0, "range": 14.0, "merge": 0.75, "color": WARM_INCANDESCENT},
     "Spotlight_Glass_Emissive": {"intensity": 6.0, "range": 6.0, "merge": 0.5, "color": WARM_INCANDESCENT},
     "Shopsign_Book_Store_Emissive": {"intensity": 10.0, "range": 6.0, "merge": 2.0},
@@ -62,6 +68,29 @@ DERIVED_LIGHTS = {
     "Paris_StringLights_01_Pink_Color_Emissive": {"intensity": 3.0, "range": 4.0, "merge": 2.5},
     "Paris_StringLights_01_Red_Color_Emissive": {"intensity": 3.0, "range": 4.0, "merge": 2.5},
     "Paris_StringLights_01_White_Color_Emissive": {"intensity": 3.0, "range": 4.0, "merge": 2.5},
+}
+
+# The interior's lamps, by the same rules. Its FBX holds no lights either. The
+# ceiling fixtures are clusters of small emissive pieces, merged into one light
+# per fixture; the wall sconces likewise. Tuned by eye against the FBX camera's
+# shot, as above.
+INTERIOR_LIGHTS = {
+    "Paris_Ceiling_Lamp": {"intensity": 15.0, "range": 10.0, "merge": 0.75, "color": WARM_INCANDESCENT},
+    "Paris_Wall_Light_Interior": {"intensity": 6.0, "range": 6.0, "merge": 0.75, "color": WARM_INCANDESCENT},
+    "Paris_Wall_Bulb_Light": {"intensity": 4.0, "range": 5.0, "merge": 0.3, "color": WARM_INCANDESCENT},
+    "Lightbulb": {"intensity": 4.0, "range": 5.0, "merge": 0.3, "color": WARM_INCANDESCENT},
+    "Wall_Lamp": {"intensity": 4.0, "range": 5.0, "merge": 0.75, "color": WARM_INCANDESCENT},
+}
+
+# Per scene, by the FBX's file name. keep_untextured_factors keeps a material's own
+# base colour, opacity and emission where no texture replaces them: the interior's
+# drinks (wine, beer, water, ice) and its bare bulb are colour and opacity factors
+# only, and rebuilding them from textures alone made them opaque grey. The exterior
+# does not set it, so its conversion is unchanged.
+SCENE_PROFILES = {
+    "BistroExterior": {"lights": EXTERIOR_LIGHTS, "keep_untextured_factors": False},
+    "BistroInterior_Wine": {"lights": INTERIOR_LIGHTS, "keep_untextured_factors": True},
+    "BistroInterior": {"lights": INTERIOR_LIGHTS, "keep_untextured_factors": True},
 }
 
 TEXTURE_KINDS = ("BaseColor", "Specular", "Normal", "Emissive")
@@ -137,7 +166,7 @@ class TextureConverter:
         return self.converted[source]
 
 
-def rebuild_material(material, textures, converter):
+def rebuild_material(material, textures, converter, keep_untextured_factors=False):
     found = {}
     for node in material.node_tree.nodes:
         if node.type == "TEX_IMAGE" and node.image is not None:
@@ -148,6 +177,12 @@ def rebuild_material(material, textures, converter):
     name = material.name
     is_glass = "Glass" in name and "MASKED" not in name
     double_sided = name.endswith(".DoubleSided") or name.startswith("Foliage")
+
+    # The importer's own factors, read before the node tree is cleared.
+    original = next((n for n in material.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    original_base = tuple(original.inputs["Base Color"].default_value) if original else None
+    original_alpha = float(original.inputs["Alpha"].default_value) if original else 1.0
+    original_emission = tuple(original.inputs["Emission Color"].default_value) if original else None
 
     nodes = material.node_tree.nodes
     links = material.node_tree.links
@@ -182,6 +217,11 @@ def rebuild_material(material, textures, converter):
     elif is_glass:
         alpha_mode = "BLEND"
         bsdf.inputs["Alpha"].default_value = 0.25
+    elif keep_untextured_factors and original_base is not None:
+        bsdf.inputs["Base Color"].default_value = original_base
+        if original_alpha < 1.0:
+            alpha_mode = "BLEND"
+            bsdf.inputs["Alpha"].default_value = original_alpha
 
     if "Specular" in found:
         spec, _ = texture_node("Specular")
@@ -202,6 +242,9 @@ def rebuild_material(material, textures, converter):
     if "Emissive" in found:
         emissive, _ = texture_node("Emissive")
         links.new(emissive.outputs["Color"], bsdf.inputs["Emission Color"])
+        bsdf.inputs["Emission Strength"].default_value = 1.0
+    elif keep_untextured_factors and original_emission is not None and max(original_emission[:3]) > 0.0:
+        bsdf.inputs["Emission Color"].default_value = original_emission
         bsdf.inputs["Emission Strength"].default_value = 1.0
 
     material.use_backface_culling = not double_sided
@@ -262,9 +305,9 @@ def merge_points(points, radius):
     return [total / count for total, count in merged]
 
 
-def derive_lights(converter):
+def derive_lights(converter, table):
     lights = []
-    for material_name, rule in DERIVED_LIGHTS.items():
+    for material_name, rule in table.items():
         material = bpy.data.materials.get(material_name)
         if material is None:
             log("no material " + material_name + "; skipping its lights")
@@ -318,6 +361,10 @@ def main():
     if len(args) != 2:
         raise SystemExit("usage: blender -b --python convert_bistro.py -- <scene.fbx> <out.gltf>")
     source, output = (os.path.abspath(a) for a in args)
+    stem = os.path.splitext(os.path.basename(source))[0]
+    if stem not in SCENE_PROFILES:
+        raise SystemExit("no profile for %s; known: %s" % (stem, ", ".join(SCENE_PROFILES)))
+    profile = SCENE_PROFILES[stem]
     output_dir = os.path.dirname(output)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -332,11 +379,11 @@ def main():
     modes = {"OPAQUE": 0, "MASK": 0, "BLEND": 0}
     for material in list(bpy.data.materials):
         if material.node_tree is not None:
-            modes[rebuild_material(material, report, converter)] += 1
+            modes[rebuild_material(material, report, converter, profile["keep_untextured_factors"])] += 1
     log("rebuilt %d material(s) %s from %d texture(s) in %.1f s"
         % (len(report), modes, len(converter.converted), time.time() - start))
 
-    derived = derive_lights(converter)
+    derived = derive_lights(converter, profile["lights"])
 
     bpy.ops.export_scene.gltf(
         filepath=output,

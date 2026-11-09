@@ -61,6 +61,12 @@ enum class ScenePreset {
     // clustered path carries the frame instead of the sun -- and a log has to be
     // able to say which one it was.
     BistroNight,
+    // Bistro's interior, from its own FBX: the restaurant, its bar and some
+    // three hundred glasses and bottles, at dusk. Lit by the lights derived from
+    // its lamp geometry under the canal sky dimmed as at night, with no sun --
+    // the room's IBL is unshadowed, so daylight would flood it flat. Converted
+    // like the exterior, to VULKAN_ENGINE_BISTRO_INTERIOR_SCENE_FILE.
+    BistroInterior,
 
     // Not a scene. One past the last preset, so a test can walk every value and
     // check it round-trips through its name.
@@ -80,7 +86,8 @@ enum class ScenePreset {
 // named on a build that cannot load it.
 [[nodiscard]] constexpr bool isSampleScenePreset(ScenePreset preset)
 {
-    return preset == ScenePreset::Sponza || preset == ScenePreset::Bistro || preset == ScenePreset::BistroNight;
+    return preset == ScenePreset::Sponza || preset == ScenePreset::Bistro || preset == ScenePreset::BistroNight ||
+           preset == ScenePreset::BistroInterior;
 }
 
 // One table, read by both directions, so a name can never parse to one preset

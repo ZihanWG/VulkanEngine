@@ -404,6 +404,40 @@ The series was, per scene and run:
 python3 tools/dev/measure_gpu.py run --label bistro-1 --warmup 15 --duration 75     --every-frame --freeze-animation --args --scene bistro --window-size 1920x1080
 ```
 
+### The interior
+
+`--scene bistro-interior` is the restaurant, from the archive's other FBX
+(`BistroInterior_Wine.fbx`, the revision with filled glasses), converted by the
+same script to `build/fetched-assets/bistro-interior/BistroInterior.gltf`
+(`VULKAN_ENGINE_BISTRO_INTERIOR_SCENE_FILE`) and cooked the same way: 1415 meshes,
+74 materials, 1.29M triangles. The script picks the scene from the FBX's file name
+and differs in two places:
+
+- **Its own lamp table.** The FBX holds no lights either. Twenty-two are derived:
+  eight ceiling fixtures (24 emissive pieces merged within 0.75 m), six wall
+  sconces (84 pieces), six wall bulbs, a bare bulb and a wall lamp, all warm, at
+  4-15 cd. Auto exposure takes up most of a change in them: doubling or tripling the
+  ceiling fixtures barely moved the frame, so the values set the lamps' balance
+  against the sky rather than its brightness.
+- **The drinks keep their factors.** Wine, beer, water and ice are base colour and
+  opacity factors with no texture, and the bare bulb's glow is an emission factor;
+  rebuilt from textures alone they came out opaque grey. For the interior the
+  script keeps a material's own factors where no texture replaces them, so the
+  drinks blend. The exterior's conversion is unchanged.
+
+It is lit at dusk, like the street at night: no sun, and the canal sky dimmed by
+the same 0.02, because the IBL is unshadowed and at full strength it floods a room
+lit through its windows.
+
+On the FBX camera's shot at 1920x1080, same protocol as above (two runs after a
+discarded one): `Frame total` 5.213 / 5.143 ms, of which **`Transparent` 2.447 /
+2.456 ms** and `MainHDRPass` 1.683 / 1.628 ms; 1,415 of 2,247 draw items visible,
+434,708 triangles drawn, CPU frame preparation 0.99 ms. It is the one scene here
+whose transparent pass costs more than its opaque one: some three hundred glasses
+and bottles, drawn one at a time back to front (the GPU cull's compaction would
+destroy the order, see `transparency.md`), each layer shaded in full. The card
+ended the series at 73 °C.
+
 ## Limitations
 
 - `--asset-load-stats` covers `VulkanTexture` only. `VulkanEnvironmentMap`
