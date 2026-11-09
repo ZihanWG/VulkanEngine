@@ -67,7 +67,8 @@ struct FrameConstants {
     // xyz = camera forward, w = cascade count
     vec4 cameraForward;
     // x = normal-offset bias as a fraction of the cascade's world extent,
-    // y = cascade blend band as a fraction of each cascade's depth range.
+    // y = cascade blend band as a fraction of each cascade's depth range,
+    // z = 1 when the sun is dark and the main pass skips its shadow lookup.
     vec4 shadowQuality;
     // --- virtual shadow maps ---
     // Here rather than in the push block because sizeof(ve::PushConstants) is

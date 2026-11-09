@@ -343,6 +343,58 @@ near plane at the slice, and have both caster culls skip it. The price is a
 device feature and its fallback, plus a bias re-tune for the smaller world-space
 bias.
 
+## A dark sun draws no shadow
+
+**Decision.** While the sun's radiance is zero, skip what only serves its
+shadow: the cascade caster cull, the cascade draws, and the main pass's
+sun-shadow lookup. `csm.skipWhenSunDark`, on by default.
+
+**Why.** The sun's visibility is only ever a factor on its radiance -- in the
+main pass's direct term, fog's in-scatter and the raster probe capture's sun
+term -- so with the radiance at zero every product is zero whatever the shadow
+says. Two scenes ship that way: `bistro-night`, lit only by its lamps, and the
+Cornell box, whose sun would swamp the bounce it exists to show. The cascade
+cache hid the waste on a still camera (`CSMShadowPass` read 0.000 ms in the
+Bistro baseline), but the cascades are fitted to the camera, so any camera
+motion redraws all four, and the main pass paid the lookup on every fragment
+either way.
+
+**What still keeps it.** A view of the lookup's own answer keeps the lookup:
+the cascade tint needs the cascade it picked, the VSM level view the level it
+sampled, the ray-traced views the visibility. A view of what the cascades hold
+-- the cascade-versus-ray comparison and the stored-depth view -- keeps them
+drawn, and so does `rayTracedShadows.renderCascades`. Fog and the raster probe
+capture keep nothing: they read the cascades only to shadow the sun's radiance.
+The rule is `renderer::cascadesUnread` in `CascadeShadowCache.h`, which with the
+sun lit reduces exactly to the rule ray tracing already had for skipping the
+cascades, and both are unit-tested over every combination of their inputs. The
+cache's resident keys are left alone, so the frame the sun returns redraws only
+the cascades whose content moved meanwhile.
+
+**Pixels.** None move. With the setting on and off, `cornell` and
+`bistro-night`, still and with the camera orbiting, match at 0/921600 pixels;
+the sun-lit presets and Sponza match `main`.
+
+**Cost.** Measured on `bistro-night` at 1280x720 (RTX 3080 Ti Laptop at
+default clocks, every frame sampled, lights frozen, p10, A/B/A/B). With the
+cascade cache off on both sides, so that every frame redraws all four cascades
+the way a moving camera makes it: frame 4.079 -> 2.612 ms (-1.467 ms, -36.0%),
+of which `CSMShadowPass` goes from 0.845 ms to nothing and `MainHDRPass` from
+2.359 to 1.747 ms (-0.612 ms), at 0.58% control drift. The `MainHDRPass` row is
+the lookup, which the cache does not touch, so that part is what a still camera
+saves as well. The still-camera A/B itself, cache on, failed the drift gate
+twice at default clocks (7.8%, then 1.1%): it moves the frame rate by a quarter,
+which is the kind of A/B that wants a lower clock pin. An orbiting camera was
+tried first and dropped as a method: over a minute the orbit swings the camera
+through the buildings, and the p10 frame becomes a view of a wall.
+
+**Not covered.** The non-bindless fallback shader still looks the shadow up,
+from an image left as it was -- harmless, since the product is zero. The
+virtual shadow map's page passes and the ray-traced shadow mask still run while
+the sun is dark; both are off by default. The CPU half -- cascade fitting, the
+per-cascade caster lists and their keys -- also still runs, as it does when
+tracing replaces the cascades.
+
 ## Graphics pipelines are looked up by state, not by name
 
 **Decision.** `rhi::VulkanPipelineStore` owns every `Renderer`-built graphics

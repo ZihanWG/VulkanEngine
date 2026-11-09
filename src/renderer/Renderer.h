@@ -1012,11 +1012,11 @@ private:
     [[nodiscard]] bool isRayTracedShadowActive() const;
     // Also latches frameRayTracingSceneBuildRequired_ from what it wrote.
     void writeRayTracingInstances(uint32_t frameIndex);
-    // Whether anything besides the main pass reads the cascaded shadow map this
-    // frame: fog injection, probe capture, the ray-traced comparison view, the
-    // VSM cascade-depth view, or the setting that keeps them on purpose. While
-    // tracing, the cascades are skipped exactly when this is false.
-    [[nodiscard]] bool cascadeShadowMapReadBeyondMainPass() const;
+    // What reads the cascaded shadow map this frame besides the main pass's own
+    // lookup: fog injection and the raster probe capture, which only shadow the
+    // sun with it, and the views and setting that need what the images hold.
+    // renderer::cascadesUnread turns it into this frame's decision.
+    [[nodiscard]] renderer::CascadeShadowReaders cascadeShadowReaders() const;
     // The shadow mask's pipeline, on every pipeline rebuild when the main pass
     // can trace. A failure is logged and leaves every fragment tracing inline.
     void createRayTracedShadowMaskPipeline();
@@ -2101,12 +2101,17 @@ private:
     // Whether the mask was active on the last frame that built the TLAS; see
     // renderer::rayTracedShadowMaskNeedsFreshBuild.
     bool rayTracingTopLevelBuiltWithMask_ = false;
-    // This frame traces and nothing else reads the cascades, so they are not
-    // drawn. Gates the cascade pass's declaration and its recording, which have
-    // to agree, and leaves the cascade cache's resident keys alone: the image
-    // still holds what they describe, so turning tracing off redraws only what
-    // changed meanwhile.
-    bool frameCascadesReplacedByRayTracing_ = false;
+    // Nothing reads the cascades this frame -- tracing replaced them, or the sun
+    // is dark -- so they are not drawn (renderer::cascadesUnread). Gates the
+    // cascade pass's declaration and its recording, which have to agree, and
+    // leaves the cascade cache's resident keys alone: the image still holds what
+    // they describe, so the frame they are read again redraws only what changed
+    // meanwhile.
+    bool frameCascadesUnread_ = false;
+    // The sun is dark and no debug view shows its shadow lookup, so the main
+    // pass skips that lookup (renderer::sunShadowLookupSkipped). Latched before
+    // FrameConstants are written, which carry it to the shader.
+    bool frameSunShadowLookupSkipped_ = false;
     // Whether this frame captures probes. Latched during frame prep alongside
     // the batch it refers to, because the graph declaration and the recording
     // have to agree and choosing the batch advances the round-robin cursor.
@@ -2124,6 +2129,9 @@ private:
     // The gather the log last reported: -1 rasterised, 0 traced cube texels, n
     // traced rotated rays, and a value none of those can be before the first.
     int64_t probeGatherLogged_ = -2;
+    // What the log last said about the cascades: 0 drawn, 1 skipped for tracing,
+    // 2 skipped for a dark sun, -1 before the first frame.
+    int cascadesSkippedLogged_ = -1;
     uint32_t ssrFrameCounter_ = 0;
     uint32_t gtaoFrameCounter_ = 0;
     bool useGpuShadowCulling_ = true;

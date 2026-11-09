@@ -846,7 +846,7 @@ bool Renderer::anyCascadeShadowRedrawRequired() const
 {
     // Ahead of the cache-off case: with tracing in charge and no other reader,
     // nothing is drawn even when the cache would have redrawn everything.
-    if (frameCascadesReplacedByRayTracing_) {
+    if (frameCascadesUnread_) {
         return false;
     }
     return !csmSettings_.enableCascadeCache || cascadeShadowCascadesRedrawn_ > 0;
@@ -2112,7 +2112,7 @@ bool Renderer::cascadeNeedsRedraw(uint32_t cascadeIndex) const
     // The same answer anyCascadeShadowRedrawRequired gives the graph, so no
     // cascade scope is opened that was not declared -- and no resident key is
     // committed in finishCascadeShadowFrame for a layer that was not drawn.
-    if (frameCascadesReplacedByRayTracing_) {
+    if (frameCascadesUnread_) {
         return false;
     }
     if (!csmSettings_.enableCascadeCache) {

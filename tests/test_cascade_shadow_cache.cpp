@@ -348,3 +348,53 @@ TEST_CASE("Trailing zero bytes are not the same stream as a shorter one", "[shad
         REQUIRE(hashOf(bytes) != shorter);
     }
 }
+
+// --- Skipping the sun's shadow while the sun is dark --------------------------
+
+TEST_CASE("A dark sun skips its shadow lookup unless a debug view shows it", "[cascade-shadow-cache]")
+{
+    using ve::renderer::sunShadowLookupSkipped;
+
+    // Every combination: the lookup is skipped in exactly one of the eight.
+    for (const bool enabled : {false, true}) {
+        for (const bool sunLit : {false, true}) {
+            for (const bool debugView : {false, true}) {
+                INFO("enabled " << enabled << ", sun lit " << sunLit << ", debug view " << debugView);
+                REQUIRE(sunShadowLookupSkipped(enabled, sunLit, debugView) == (enabled && !sunLit && !debugView));
+            }
+        }
+    }
+}
+
+TEST_CASE("Cascades are drawn whenever something reads them", "[cascade-shadow-cache]")
+{
+    using ve::renderer::CascadeShadowReaders;
+    using ve::renderer::cascadesUnread;
+
+    // A plain frame samples them in the main pass.
+    REQUIRE_FALSE(cascadesUnread(CascadeShadowReaders{}));
+
+    // Content readers win over both reasons to skip: they show what the images
+    // hold, not a product with the sun.
+    REQUIRE_FALSE(cascadesUnread(CascadeShadowReaders{
+        .rayTracingReplaces = true, .sunLookupSkipped = true, .sunShadowReaders = true, .contentReaders = true}));
+
+    // A dark sun's other readers only scale zero radiance, so they keep nothing.
+    REQUIRE(cascadesUnread(CascadeShadowReaders{.sunLookupSkipped = true, .sunShadowReaders = true}));
+    REQUIRE(cascadesUnread(CascadeShadowReaders{.sunLookupSkipped = true}));
+
+    // With the sun lit, the rule is the one tracing has always had: skipped only
+    // when tracing replaces the main pass's read and nothing else reads them.
+    for (const bool tracing : {false, true}) {
+        for (const bool sunReaders : {false, true}) {
+            for (const bool contentReaders : {false, true}) {
+                INFO("tracing " << tracing << ", sun readers " << sunReaders << ", content readers " << contentReaders);
+                const CascadeShadowReaders readers{.rayTracingReplaces = tracing,
+                                                   .sunLookupSkipped = false,
+                                                   .sunShadowReaders = sunReaders,
+                                                   .contentReaders = contentReaders};
+                REQUIRE(cascadesUnread(readers) == (tracing && !sunReaders && !contentReaders));
+            }
+        }
+    }
+}

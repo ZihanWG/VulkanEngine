@@ -145,7 +145,8 @@ struct FrameConstants {
     // x = normal-offset bias as a fraction of the cascade's own world extent, so
     // one number stays sane across cascades that differ in size by an order of
     // magnitude. y = cascade blend band, as a fraction of each cascade's depth
-    // range. Both zero disables. z, w spare.
+    // range. Both zero disables. z = 1 when the main pass skips the sun-shadow
+    // lookup (renderer::sunShadowLookupSkipped), else 0. w spare.
     glm::vec4 shadowQuality{0.0f, 0.0f, 0.0f, 0.0f};
     // --- virtual shadow maps (docs/virtual_shadow_maps.md) ---
     //

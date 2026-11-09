@@ -1921,6 +1921,19 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // digest decides whether its BLAS is refitted.
     frameRayTracedShadowsActive_ = rayTracedShadowSettings_.enabled && rayQueryShadingAvailable() &&
                                    rayTracingScene_.ready() && !allDrawItems_.empty();
+    // Also before the upload, which carries it to the main pass. The views listed
+    // show the lookup's own answer -- the cascade it picked, the VSM level it
+    // sampled, the traced visibility -- so they keep it even in the dark.
+    {
+        const glm::vec3 sunRadiance = glm::vec3(activeDirectionalLightColor());
+        const bool sunLookupDebugView =
+            csmSettings_.enableCascadeDebugColors || vsmSettings_.debugLevelColors ||
+            rayTracedShadowSettings_.debugVisibility || rayTracedShadowSettings_.debugCompareCascades ||
+            rayTracedShadowSettings_.debugMaskSource || rayTracedShadowSettings_.debugHitDistance ||
+            rayTracedShadowSettings_.debugPenumbraRadius || rayTracedShadowSettings_.debugHistoryLength;
+        frameSunShadowLookupSkipped_ = renderer::sunShadowLookupSkipped(
+            csmSettings_.skipWhenSunDark, glm::any(glm::greaterThan(sunRadiance, glm::vec3(0.0f))), sunLookupDebugView);
+    }
     // After the prepass decision, which buildMainCullingFrameData makes, and
     // before the instances: the frame the mask turns on must rebuild.
     frameRayTracedShadowMaskActive_ = renderer::rayTracedShadowMaskActive(
@@ -2066,7 +2079,15 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     }
 
     // After the probe batch above, which is one of the readers this asks about.
-    frameCascadesReplacedByRayTracing_ = frameRayTracedShadowsActive_ && !cascadeShadowMapReadBeyondMainPass();
+    frameCascadesUnread_ = renderer::cascadesUnread(cascadeShadowReaders());
+    // Once per change, so a headless run says which kind of frame it measured.
+    const int cascadesSkipped = !frameCascadesUnread_ ? 0 : (frameSunShadowLookupSkipped_ ? 2 : 1);
+    if (cascadesSkipped != cascadesSkippedLogged_) {
+        cascadesSkippedLogged_ = cascadesSkipped;
+        Logger::info(cascadesSkipped == 2   ? "Cascaded shadows: skipped, the sun is dark."
+                     : cascadesSkipped == 1 ? "Cascaded shadows: skipped, ray tracing replaces them."
+                                            : "Cascaded shadows: drawn.");
+    }
 }
 
 // Called from drawFrame after command recording: both the object-data upload and
@@ -2121,7 +2142,8 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameRayTracedShadowHistoryUsable_ = false;
     rayTracedShadowLastHistoryKey_ = {};
     frameRayTracingSceneBuildRequired_ = false;
-    frameCascadesReplacedByRayTracing_ = false;
+    frameCascadesUnread_ = false;
+    frameSunShadowLookupSkipped_ = false;
     frameProbeCaptureActive_ = false;
     irradianceProbes_.clearCaptureBatch();
     // Same reasoning as the cache flags above: this path never runs buildDrawItems,
@@ -2608,8 +2630,10 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
                                 csmSettings_.depthBiasSlope,
                                 shadowSettings_.enablePcf ? 1.0f : 0.0f,
                                 static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
-    constants.shadowQuality = {
-        std::max(csmSettings_.normalBias, 0.0f), std::clamp(csmSettings_.cascadeBlend, 0.0f, 0.5f), 0.0f, 0.0f};
+    constants.shadowQuality = {std::max(csmSettings_.normalBias, 0.0f),
+                               std::clamp(csmSettings_.cascadeBlend, 0.0f, 0.5f),
+                               frameSunShadowLookupSkipped_ ? 1.0f : 0.0f,
+                               0.0f};
     constants.cameraPosition = glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
     constants.cameraForward =
         glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
@@ -2737,17 +2761,23 @@ bool Renderer::isRayTracedShadowActive() const
     return frameRayTracedShadowsActive_;
 }
 
-bool Renderer::cascadeShadowMapReadBeyondMainPass() const
+renderer::CascadeShadowReaders Renderer::cascadeShadowReaders() const
 {
     // Everything that samples the cascade array other than the main fragment
-    // shader, which traces instead on a frame that traces. The transparent pass
-    // and the skinned draw run that same shader, and the non-bindless one never
-    // traces, so none of them appear here.
+    // shader, which traces instead on a frame that traces and skips the lookup
+    // on a frame whose sun is dark. The transparent pass and the skinned draw run
+    // that same shader. The non-bindless one does neither and keeps sampling,
+    // which is harmless: its product with a dark sun is zero whatever the stale
+    // image holds, and a frame that traces never takes that path.
     // The traced probe gather shadows its hits with rays, so only the raster
     // capture reads the cascades.
-    return rayTracedShadowSettings_.renderCascades || isVolumetricFogActive() ||
-           (frameProbeCaptureActive_ && !frameProbeTraceActive_) || rayTracedShadowSettings_.debugCompareCascades ||
-           vsmSettings_.debugCascadeDepthDelta;
+    return renderer::CascadeShadowReaders{
+        .rayTracingReplaces = frameRayTracedShadowsActive_,
+        .sunLookupSkipped = frameSunShadowLookupSkipped_,
+        .sunShadowReaders = isVolumetricFogActive() || (frameProbeCaptureActive_ && !frameProbeTraceActive_),
+        .contentReaders = rayTracedShadowSettings_.renderCascades || rayTracedShadowSettings_.debugCompareCascades ||
+                          vsmSettings_.debugCascadeDepthDelta,
+    };
 }
 
 // One instance per draw item that casts, in draw-item order. The cascades'
