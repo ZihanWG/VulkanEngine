@@ -383,13 +383,13 @@ That leaves the 128 derived lights and the emissive surfaces to carry the frame,
 and auto-exposure settles near 4.6, against 0.89 by day. It is a preset of its own
 rather than a toggle because it is a different measurement: the clustered path,
 not the sun, decides the frame, and a log line has to be able to say which one it
-was. When the README's table was measured the cascades were still declared under
-the zero-intensity sun, and with a still camera the cascade cache served every
-frame, so they cost nothing measurable until the camera moved. A dark sun now
-skips them outright, and the main pass's sun-shadow lookup with them
-(`csm.skipWhenSunDark`; see `docs/design_decisions.md`). With every cascade
-redrawn, as a moving camera makes them, that takes this scene's frame from 4.079
-to 2.612 ms at 1280x720.
+was. A dark sun skips the cascades outright, and the main pass's sun-shadow
+lookup with them (`csm.skipWhenSunDark`; see `docs/design_decisions.md`). Until
+it did, night measured the same as day: the cascade cache hid the draws on a
+still camera, and the lookup cost what the lamps saved. With every cascade
+redrawn, as a moving camera makes them, the skip takes this scene's frame from
+4.079 to 2.612 ms at 1280x720; in the README's 1080p series, night now runs
+about a fifth cheaper than day.
 
 Measured frame time for all three scenes is in the README's Performance section.
 The series was, per scene and run:
