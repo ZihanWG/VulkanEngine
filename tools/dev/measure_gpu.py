@@ -164,6 +164,21 @@ QUERY_LIMIT_RE = re.compile(r"^ {2,}warning: timestamp query capacity was exceed
 # things docs/profiling.md requires every quoted timing to carry; the other two
 # are the machine and the statistic, which this report already knows.
 SCENE_RE = re.compile(r"^(?:\[\w+\s*\]\s+)?Scene:\s*(\S+)\s+at\s+(\d+x\d+)\s*$")
+# Printed right after the scene stamp: a digest of every asset file startup read
+# ("Asset inputs: 9 files, digest 0xe9d81ee1ad6b5640", see formatAssetInputDigest).
+# The engine reads assets/ from the source tree at run time, so a branch switch
+# or an edited texture changes what an already-built binary renders, and the
+# scene stamp cannot see it. Kept as the engine wrote it, unreadable-file note
+# included, so the report and the log can be grepped for the same text.
+#
+# "Asset inputs at exit:" deliberately does not match: it is printed only when a
+# run read more after startup (a scene loaded from the debug UI), and only on a
+# clean exit, which the harness's own runs never reach -- it kills the renderer.
+# The startup line is the one stamped before any timing block, like the scene.
+ASSET_INPUTS_RE = re.compile(
+    r"^(?:\[\w+\s*\]\s+)?Asset inputs:\s*"
+    r"(\d+ files?, digest 0x[0-9a-fA-F]+(?: \(\d+ no longer readable\))?)\s*$"
+)
 
 
 class MeasureError(RuntimeError):
@@ -198,6 +213,8 @@ class Samples:
     # the failure this exists to catch, so the disagreement has to survive being
     # merged.
     scenes: set[str] = field(default_factory=set)
+    # Every distinct "Asset inputs:" stamp, kept as a set for the same reason.
+    asset_inputs: set[str] = field(default_factory=set)
 
     def add(self, other: "Samples") -> None:
         for name, values in other.scopes.items():
@@ -206,6 +223,7 @@ class Samples:
         self.query_limit_exceeded |= other.query_limit_exceeded
         self.validation_errors.extend(other.validation_errors)
         self.scenes |= other.scenes
+        self.asset_inputs |= other.asset_inputs
         if not self.effective_settings:
             self.effective_settings = other.effective_settings
 
@@ -213,6 +231,11 @@ class Samples:
         if not self.scenes:
             return "unreported"
         return ", ".join(sorted(self.scenes))
+
+    def asset_inputs_label(self) -> str:
+        if not self.asset_inputs:
+            return "unreported"
+        return "; ".join(sorted(self.asset_inputs))
 
     def quoted(self, scope: str) -> float | None:
         values = self.scopes.get(scope)
@@ -250,6 +273,10 @@ def parse_log(text: str, label: str, warmup: int) -> Samples:
             scene_match = SCENE_RE.match(line)
             if scene_match:
                 result.scenes.add(f"{scene_match.group(1)} at {scene_match.group(2)}")
+                continue
+            asset_match = ASSET_INPUTS_RE.match(line)
+            if asset_match:
+                result.asset_inputs.add(asset_match.group(1))
                 continue
             if "error" in line.lower() and "validation" in line.lower():
                 result.validation_errors.append(line.strip())
@@ -671,6 +698,7 @@ def format_single(samples: Samples, release_run: bool = True) -> str:
         f"## {samples.label}",
         "",
         f"Scene: {samples.scene_label()}.",
+        f"Asset inputs: {samples.asset_inputs_label()}.",
         "",
         f"{samples.block_count} samples, {QUOTED_LABEL} in ms.",
         "",
@@ -731,6 +759,7 @@ def format_comparison(
         f"## {a.label} vs {b.label}",
         "",
         f"Scene: {a.scene_label()}.",
+        f"Asset inputs: {a.asset_inputs_label()}.",
         "",
         f"{QUOTED_LABEL} in ms over {a.block_count} and {b.block_count} samples. "
         "The median is not used here: see QUOTED_PERCENTILE.",
@@ -910,6 +939,17 @@ def caveats(samples: Samples, release_run: bool) -> list[str]:
                 "the numbers cannot be filed against one. Rebuild before quoting.",
             ]
         )
+    if not samples.asset_inputs:
+        lines.extend(
+            [
+                "",
+                "**The run reported no asset digest.** A binary older than the "
+                "`Asset inputs:` line cannot say which asset files it read, so nothing "
+                "here shows the runs rendered the same textures and meshes -- the "
+                "renderer reads them from the source tree at launch. Rebuild before "
+                "quoting.",
+            ]
+        )
     return lines
 
 
@@ -934,6 +974,47 @@ def scene_mismatch_error(scenes: set[str]) -> str | None:
         + ". --args is applied to both sides identically, so this means one side was "
         "launched differently, or a binary or its settings changed underneath the "
         "series. Nothing in the comparison is meaningful; rerun."
+    )
+
+
+def asset_inputs_mismatch_error(runs: list[Samples]) -> str | None:
+    """Reject a series whose runs did not all read the same asset files.
+
+    The scene stamp says which preset was built, not what it was built from. The
+    renderer reads assets/ out of the source tree it was configured in every time
+    it starts, so a branch switch or an edited texture in that tree between two
+    launches changes what the same binary renders -- and every other log line,
+    the scene stamp included, stays the same. On 2026-11-09 exactly that was
+    blamed on CPU load for an afternoon.
+
+    Judged per run, not on the pooled set: a run that reports no digest beside
+    runs that do means the binary itself changed underneath the series, which
+    the pooled set would hide. Only a series in which no run reports one is let
+    through, as a caveat -- the binary predates the line, as with the scene stamp.
+    """
+    # In order of first appearance, so the message reads as what happened when.
+    reported: list[str] = []
+    for run in runs:
+        reported.extend(stamp for stamp in sorted(run.asset_inputs) if stamp not in reported)
+    if not reported:
+        return None
+    silent = [run.label for run in runs if not run.asset_inputs]
+    if len(reported) == 1 and not silent:
+        return None
+    groups = [
+        f"{stamp} ({', '.join(run.label for run in runs if stamp in run.asset_inputs)})"
+        for stamp in reported
+    ]
+    if silent:
+        groups.append(f"no digest reported ({', '.join(silent)})")
+    return (
+        "the runs in this series did not read the same asset files: "
+        + "; ".join(groups)
+        + ". The renderer reads assets/ from the tree it was built in each time it "
+        "starts, so a branch switch, a checkout or an edited asset there during the "
+        "series changes what the same binary renders; a run with no digest beside "
+        "runs with one means the binary was rebuilt underneath the series. Nothing "
+        "in the comparison is meaningful; rerun from a tree nothing else touches."
     )
 
 
@@ -969,6 +1050,9 @@ def samples_to_json(samples: Samples) -> dict:
         # well as once per series, so a summary.json read on its own says what was
         # measured rather than requiring the log beside it.
         "scene": sorted(samples.scenes),
+        # The digest of the asset files the run read, as the engine printed it.
+        # Empty for a binary older than the "Asset inputs:" line.
+        "asset_inputs": sorted(samples.asset_inputs),
         "statistic": QUOTED_LABEL,
         "p10_ms": {
             name: round(quoted_value(values), 4) for name, values in samples.scopes.items()
@@ -1010,6 +1094,9 @@ def cmd_ab(args: argparse.Namespace) -> int:
     pooled_b = Samples(label=args.b_label)
     first_a: Samples | None = None
     last_a: Samples | None = None
+    # Every run in launch order, for the checks that must see each run on its
+    # own rather than pooled.
+    runs: list[Samples] = []
 
     # A/B/A/B, not AA/BB: interleaving keeps a slow thermal ramp from landing
     # entirely on one configuration.
@@ -1018,6 +1105,7 @@ def cmd_ab(args: argparse.Namespace) -> int:
             f"{args.a_label}-{index}", args.a_set, args.warmup, args.duration, output_dir, renderer_arguments(args)
         )
         pooled_a.add(run_a)
+        runs.append(run_a)
         first_a = first_a or run_a
         last_a = run_a
 
@@ -1025,6 +1113,7 @@ def cmd_ab(args: argparse.Namespace) -> int:
             f"{args.b_label}-{index}", args.b_set, args.warmup, args.duration, output_dir, renderer_arguments(args)
         )
         pooled_b.add(run_b)
+        runs.append(run_b)
 
     drift = None
     scope_drift: dict[str, float] = {}
@@ -1039,6 +1128,10 @@ def cmd_ab(args: argparse.Namespace) -> int:
     mismatch = scene_mismatch_error(scenes)
     if mismatch:
         raise MeasureError(mismatch)
+    mismatch = asset_inputs_mismatch_error(runs)
+    if mismatch:
+        raise MeasureError(mismatch)
+    asset_inputs = pooled_a.asset_inputs | pooled_b.asset_inputs
 
     print()
     print(format_comparison(pooled_a, pooled_b, drift, scope_drift))
@@ -1048,6 +1141,7 @@ def cmd_ab(args: argparse.Namespace) -> int:
             "mode": "ab",
             "repeat": args.repeat,
             "scene": sorted(scenes),
+            "asset_inputs": sorted(asset_inputs),
             "control_drift": drift,
             "control_drift_limit": CONTROL_DRIFT_LIMIT,
             "scope_control_drift_ms": {k: round(v, 4) for k, v in sorted(scope_drift.items())},

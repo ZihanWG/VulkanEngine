@@ -138,6 +138,23 @@ rendering two different scenes can both be perfectly stable and still be
 uncomparable. A report that says `Scene: unreported` came from a binary older
 than the stamp and should not be quoted.
 
+The scene stamp says which preset was built, not what it was built from. The
+renderer reads `assets/` from the tree it was configured in every time it
+starts, so a branch switch or an edited texture there changes what an
+already-built binary renders, and the scene line does not move. So each run also
+prints `Asset inputs: <N> files, digest 0x<hex>` beside it (see "The inputs it
+does not pin" in `docs/headless_ci.md`), and the harness treats it the same way:
+it goes into the report header and into `summary.json`, per run and per series,
+and **an `ab` series whose runs read different files is refused**, with each
+digest and the runs that read it named. Each run is judged on its own, so a run
+with no digest beside runs with one is refused too; that means the binary was
+rebuilt underneath the series. A series in which no run reports a digest came
+from a binary older than the line, and gets a caveat rather than a refusal, as
+with the scene. The `Asset inputs at exit:` line is not read: it appears only
+when a run read more after startup, and only on a clean exit, which the harness
+never gives the renderer. The digest does not cover compiled shaders or the
+settings file; `summary.json` records the effective settings separately.
+
 ### `--scene sponza`: the only preset that is content rather than construction
 
 Every other preset is procedural cubes and spheres laid out to provoke a
