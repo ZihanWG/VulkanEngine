@@ -6,6 +6,7 @@
 #include "renderer/Renderer.h"
 #include "renderer/RendererInternal.h"
 
+#include "assets/AssetInputs.h"
 #include "core/Logger.h"
 #include "renderer/Bounds.h"
 #include "rhi/VulkanDebugUtils.h"
@@ -240,6 +241,25 @@ std::optional<std::filesystem::path> sampleSceneEnvironmentPath(ScenePreset scen
         return std::nullopt;
     }
     return environment;
+}
+
+std::size_t Renderer::logAssetInputs(std::string_view label)
+{
+    // Named roots rather than absolute paths: a worktree and the shared
+    // checkout hold the same files at different places, and the digest is
+    // about the files. Bistro and its night preset load the same directory.
+    std::vector<assets::AssetInputRoot> roots{{"assets", assetDirectory()}};
+    if (const std::optional<std::filesystem::path> sponza = sampleScenePath(ScenePreset::Sponza)) {
+        roots.push_back({"sponza", sponza->parent_path()});
+    }
+    if (const std::optional<std::filesystem::path> bistro = sampleScenePath(ScenePreset::Bistro)) {
+        roots.push_back({"bistro", bistro->parent_path()});
+    }
+
+    const std::vector<std::filesystem::path> paths = assets::AssetInputRecorder::snapshot();
+    const std::vector<assets::AssetInputFile> files = assets::assetInputFiles(paths, roots);
+    Logger::info(assets::formatAssetInputDigest(assets::digestAssetInputs(files, &jobSystem_), label));
+    return paths.size();
 }
 
 float sampleSceneEnvironmentScale(ScenePreset scene)
@@ -2060,6 +2080,7 @@ void Renderer::loadSceneFromUi()
         if (!sceneJson.is_object()) {
             throw std::runtime_error("scene root must be a JSON object");
         }
+        assets::AssetInputRecorder::record(sceneDocumentPath_);
 
         if (const Json* cameraJson = jsonObjectMember(sceneJson, "camera")) {
             readJsonVec3(*cameraJson, "position", camera_.position);

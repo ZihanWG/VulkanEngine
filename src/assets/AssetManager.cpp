@@ -1,5 +1,7 @@
 #include "assets/AssetManager.h"
 
+#include "assets/AssetInputs.h"
+
 #include <json.hpp>
 
 #include <cmath>
@@ -219,6 +221,7 @@ MaterialAssetHandle AssetManager::loadMaterialAsset(const std::filesystem::path&
 
         const Json root = Json::parse(input);
         MaterialAsset material = parseMaterialAssetJson(root, path);
+        AssetInputRecorder::record(path);
         material.handle = stableMaterialHandleForPath(path);
         materialAssets_[material.handle.id] = std::move(material);
         return MaterialAssetHandle{material.handle.id};

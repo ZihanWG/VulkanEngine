@@ -254,6 +254,7 @@ target_include_directories(bc7enc SYSTEM PUBLIC external/bc7enc)
 find_package(Threads REQUIRED)
 
 add_library(VulkanEngineCore STATIC
+    src/assets/AssetInputs.cpp
     src/assets/AssetManager.cpp
     src/assets/Ktx2.cpp
     src/assets/TextureCook.cpp

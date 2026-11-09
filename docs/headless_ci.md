@@ -220,6 +220,59 @@ every one off by a single unit. Determinism here means the engine's inputs are a
 function of the frame number; it does not mean every driver rasterizes those
 inputs bit-identically every time. See [Why a tolerance of one](#why-a-tolerance-of-one).
 
+### The inputs it does not pin
+
+`--deterministic` makes the image a function of the frame number and of the
+files the run read. The second half is outside its reach: the engine reads
+`assets/` from the source tree it was configured in, at run time, so an
+already-built binary renders whatever that checkout holds *now*. A branch switch
+or an uncommitted asset edit in a shared checkout changes what a binary nobody
+rebuilt draws.
+
+So every run logs one line beside the scene stamp:
+
+```
+[Info ] Scene: sunlit at 1280x720
+[Info ] Asset inputs: 9 files, digest 0xe9d81ee1ad6b5640
+```
+
+It covers the asset files the run actually read, as each loader opened them:
+textures (or the cooked KTX2 sidecar, where one was used instead of its source),
+glTF files and their external buffers, cooked mesh sidecars, material JSON and
+environment HDRs. The digest is FNV-1a over each file's name, size and bytes,
+sorted so load order does not matter, with names taken relative to `assets/` or
+the sample-scene directory -- two checkouts holding the same files print the
+same line, wherever they sit on disk. A run that reads more after startup (a
+scene loaded from the debug UI) also logs `Asset inputs at exit:`.
+
+Taking the digest re-reads those files once, at the end of startup, in 4 MiB
+blocks spread over the job system. Measured 2026-11-09 on the RTX 3080 Ti Laptop
+machine's CPU (23 workers), Release: ~1 ms on the default scene, ~24 ms on
+Sponza (81 files, 122 MB), ~0.24 s on Bistro (418 files, 1.7 GB, against a
+1.85 s renderer init) -- most of that is reading the files back out of the OS
+cache, not the hash.
+
+**Before reading anything into two captures that differ, diff this line.** If
+it differs, the runs rendered different inputs and the pixels say nothing about
+the code. That was the whole of a 2026-11-09 report of "deterministic captures
+that differ under CPU load": main's binary had run while the shared checkout held
+PR #110's re-encoded `assets/textures/checker_mr.png`, and its logs matched a
+clean run's in every line but the pipeline-cache one. Replayed with this line,
+main's `checker_mr.png` against PR #110's:
+
+| scene | pixels | `Asset inputs:` digest |
+| --- | --- | --- |
+| sunlit, stress, occlusion | differ | `0xe9d81ee1ad6b5640` vs `0xabb451c0e08456fe` |
+| default | identical | `0xe9d81ee1ad6b5640` vs `0xabb451c0e08456fe` |
+
+The default scene barely samples that texture, so its pixels do not move, but
+its digest does: the line reports what was read, not what was visible.
+
+Not covered, because they are not asset files: the compiled shaders (the build
+directory, which is shared by every binary built in it), and the persisted
+`config/runtime_settings.json` -- the log names that file and whether it loaded,
+not what it held. A scripted comparison should pass `--settings` explicitly.
+
 ## Golden-image regression
 
 The job renders 30 deterministic frames, captures frame 30, and compares it

@@ -351,6 +351,14 @@ public:
     // the debug UI that shows the same counts, so a scripted run needs this.
     void logRayTracingSceneSummary() const;
 
+    // One line naming how many asset files this run has read so far and a
+    // digest of their contents (assets/AssetInputs.h), keyed relative to
+    // assets/ and the sample-scene directories so two checkouts holding the
+    // same files print the same line. Two logs whose lines differ ran on
+    // different inputs. Hashes on the job system; returns how many files the
+    // line covered, so a later caller can tell whether anything was read since.
+    std::size_t logAssetInputs(std::string_view label = "Asset inputs");
+
 private:
     static constexpr uint32_t kMaxShadowCascades = renderer::kMaxShadowCascades;
     static constexpr size_t kDebugHistoryCapacity = 240;

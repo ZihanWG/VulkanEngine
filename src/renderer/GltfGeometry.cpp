@@ -1,5 +1,6 @@
 #include "renderer/GltfGeometry.h"
 
+#include "assets/AssetInputs.h"
 #include "core/JobSystem.h"
 #include "core/Logger.h"
 
@@ -645,6 +646,16 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
     }
     if (!loaded) {
         throw std::runtime_error("Failed to load glTF file '" + filename + "': " + error);
+    }
+    {
+        // tinygltf read the external buffers too; they are inputs as much as
+        // the JSON is.
+        std::vector<std::string> bufferUris;
+        bufferUris.reserve(model.buffers.size());
+        for (const tinygltf::Buffer& buffer : model.buffers) {
+            bufferUris.push_back(buffer.uri);
+        }
+        assets::AssetInputRecorder::recordGltf(path, bufferUris);
     }
     if (model.meshes.empty()) {
         throw std::runtime_error("glTF file contains no meshes: " + filename);

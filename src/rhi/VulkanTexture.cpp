@@ -1,5 +1,6 @@
 #include "rhi/VulkanTexture.h"
 
+#include "assets/AssetInputs.h"
 #include "assets/Ktx2.h"
 #include "assets/TextureCook.h"
 #include "renderer/AssetLoadStats.h"
@@ -419,6 +420,10 @@ DecodedImage VulkanTexture::decodeImageFile(const std::filesystem::path& path)
     if (loadedWidth <= 0 || loadedHeight <= 0) {
         throw std::runtime_error("Texture file has invalid dimensions: " + filename);
     }
+    // Every on-disk PNG/JPEG reaches the GPU through here, cooked or not: the
+    // cooked path records the sidecar in createFromKtx2 instead, so the digest
+    // also says which of the two a run sampled.
+    assets::AssetInputRecorder::record(path);
 
     const uint32_t width = static_cast<uint32_t>(loadedWidth);
     const uint32_t height = static_cast<uint32_t>(loadedHeight);
@@ -589,6 +594,8 @@ void VulkanTexture::createFromKtx2(VulkanContext& context,
     const std::span<const uint8_t> fileBytes =
         preloadedBytes.empty() ? std::span<const uint8_t>(ownedBytes) : preloadedBytes;
     const assets::Ktx2Info info = assets::parseKtx2(fileBytes);
+    // Whether the caller prefetched the bytes or not, they came from `path`.
+    assets::AssetInputRecorder::record(path);
 
     // Re-checked here and not only at the call site: this is the last point
     // before the format reaches a descriptor, and a file cooked for a different
