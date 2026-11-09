@@ -22,6 +22,15 @@ struct HdrEnvironmentCubeData {
     std::vector<float> rgba32fPixels;
 };
 
+// An equirectangular HDR as decoded, RGBA32F. Kept apart from the cube built
+// from it so one decode can feed cubes of several sizes: the sky's own, sized
+// to the source, and the small one the IBL precomputation reads.
+struct HdrEquirectangularImage {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::vector<float> rgba32fPixels;
+};
+
 class VulkanEnvironmentMap final {
 public:
     VulkanEnvironmentMap() = default;
@@ -34,6 +43,13 @@ public:
 
     [[nodiscard]] static HdrEnvironmentCubeData loadHdrEquirectangularFaces(const std::filesystem::path& path,
                                                                             uint32_t faceSize = 128);
+    [[nodiscard]] static HdrEquirectangularImage loadHdrEquirectangular(const std::filesystem::path& path);
+    // Bilinear resample of the equirectangular image onto six faces. Rows are
+    // spread over the job system when one is given; each row is written by one
+    // task, so the result does not depend on scheduling.
+    [[nodiscard]] static HdrEnvironmentCubeData cubeFacesFromEquirectangular(const HdrEquirectangularImage& image,
+                                                                             uint32_t faceSize,
+                                                                             JobSystem* jobSystem = nullptr);
 
     void createProcedural(VulkanContext& context, const VulkanCommandContext& commandContext, uint32_t faceSize = 32);
     void createProceduralDiffuseIrradiance(VulkanContext& context,
