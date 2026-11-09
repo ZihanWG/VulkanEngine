@@ -336,8 +336,9 @@ rather than copies, is in its header; in short:
 - **Materials are rebuilt.** Blender's FBX importer wires the packed "Specular"
   texture into a Principled input glTF cannot express. The scene's README defines
   it as occlusion, roughness and metalness in R, G and B -- glTF's own
-  metallic-roughness layout -- so it becomes the metallic-roughness and occlusion
-  texture unchanged.
+  metallic-roughness layout -- so it becomes the metallic-roughness texture
+  unchanged. It is not exported as occlusion too: red is zero in every texel of
+  all 131, so a viewer reading it as occlusion would light nothing ambiently.
 - **Normal maps are DirectX-convention BC5**: green is flipped and Z
   reconstructed.
 - **Alpha and sidedness.** Foliage, curtains and lettering are cutouts, glass
