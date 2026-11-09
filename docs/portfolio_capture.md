@@ -85,6 +85,14 @@ changed in four places:
 These are the clip's settings, not new defaults: the defaults feed the golden
 pixel gate and every measured number.
 
+[`screenshots/bistro_night.gif`](../screenshots/bistro_night.gif) is the same
+recipe on `--scene bistro-night` -- same orbit, frames, settings and encode --
+except `manualExposure` 6.5: under ACES that leaves the street at 34.5/255 mean
+luma with the lamps short of clipping, where 4.6 (about where auto exposure
+settles under Reinhard) read 26.1. Both clips were recorded on 2026-11-09, after
+metalness moved to glTF's blue channel; the Sponza embroidery reads darker than in
+earlier clips because it now shades as metal.
+
 Render well above the GIF's size and let `--width` downscale: that is
 supersampling, and it is what makes the clip sharp, at almost no cost in GIF
 size. Edge variance of the same 800x450 frame, against the file it came from:
