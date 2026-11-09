@@ -4,6 +4,10 @@ _Moved out of the top-level README to keep it scannable. These notes preserve th
 
 _Timings in Milestones 85 and later were taken on an RTX 3080 Ti Laptop; in 84 and earlier, on an Apple M3 through MoltenVK, unless an entry says otherwise. Each figure's full conditions -- scene, resolution, clock pin, statistic -- are in the subsystem document it came from, and `docs/profiling.md` records how the figures whose machine was not written down at the time were attributed._
 
+## Milestone 101: Metalness From the Blue Channel
+
+The main pass read metalness from the red channel of the metallic-roughness texture. glTF keeps it in blue -- red is left free, and packed ORM textures put occlusion there -- and the built-in checker and neutral fallback had been authored to suit the shader rather than the format. Sponza's red channel is almost empty and Bistro's is zero in every texel, so the metal in both scenes shaded as a dielectric: Sponza's gold embroidery, curtain rods and trims, and Bistro's lamp posts, drainpipes, window grilles and railings. The shaders now read blue, and the two built-in textures moved their metalness from red to blue, so `default`, `fragment-stress`, `cornell`, `sunlit`, `stress` and `occlusion` render bit-identically and the golden image is unchanged. On Sponza 11.2% of pixels move by more than 2/255 and 1.1% by more than 32/255; on Bistro, 2.4% and 0.8%. The embroidery is darker, because as a metal it has no diffuse term and reflects a dim atrium. The committed Sponza captures predate the fix. The Bistro conversion also stopped exporting that empty red channel as glTF occlusion, which any viewer that honours it would render without ambient light.
+
 ## Milestone 100: Early Depth Testing Behind the Prepass
 
 The depth prepass was meant to let early-Z reject what the main pass would otherwise shade, and it did so only in part. The main fragment shader can discard -- the LOD dither and the alpha cutout -- and the main pass wrote depth, which lets a driver run the depth test after shading. `--overdraw` showed it on Sponza: with the prepass on, 1.421 fragments shaded per pixel, of which about a quarter were fragments the prepass had already hidden. Batches the prepass covered now draw with depth writes off and `early_fragment_tests`, which brings that to 1.041, and the prepass replays their LOD cross-fades through a dithered pass of its own, so the depth it leaves is final. On Sponza (RTX 3080 Ti Laptop, 1280x720, clocks pinned) that took the frame median from 7.054 to 5.767 ms, -18.2%, for a prepass that got 0.001 ms dearer. `default`, `sunlit`, `stress` and Sponza render bit-identically with it on and off, still and orbiting, and removing the fade replay was shown to break that. `renderer.enablePrepassEarlyDepthTest`, on by default.
@@ -553,7 +557,7 @@ Descriptor set 0 is still the material/shadow texture set:
 - set 0 binding 2 = normal map combined image sampler
 - set 0 binding 3 = metallic-roughness combined image sampler
 
-The metallic-roughness texture uses the R channel as the metallic factor and the G channel as the roughness factor. B and A are unused by the shader. The fragment shader multiplies the sampled texture values by the scalar material factors:
+The metallic-roughness texture uses the R channel as the metallic factor and the G channel as the roughness factor. B and A are unused by the shader. (Milestone 101 moved metalness to B, where glTF keeps it.) The fragment shader multiplies the sampled texture values by the scalar material factors:
 
 ```glsl
 metallic = clamp(materialMetallic * textureMetallic, 0.0, 1.0);

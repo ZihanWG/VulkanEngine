@@ -15,7 +15,9 @@ What the conversion has to decide, rather than copy:
   Principled BSDF's Specular IOR Level, which the glTF exporter cannot express. The
   scene's own README defines that texture as occlusion (R), roughness (G) and
   metalness (B) -- glTF's metallicRoughness layout exactly -- so every material is
-  rebuilt from the four textures its name carries.
+  rebuilt from the four textures its name carries. Occlusion is not exported: red
+  is zero in every texel of every one of them, and a viewer that reads it as
+  glTF occlusion renders the whole scene without ambient light.
 * Normal maps are DirectX-convention BC5, two channels. Green is flipped to the
   OpenGL convention glTF specifies and Z is reconstructed, so the PNG is a complete
   normal map for any consumer rather than only for one that rebuilds Z.
@@ -135,15 +137,6 @@ class TextureConverter:
         return self.converted[source]
 
 
-def gltf_output_group():
-    """The node group the glTF exporter reads occlusion from."""
-    group = bpy.data.node_groups.get("glTF Material Output")
-    if group is None:
-        group = bpy.data.node_groups.new("glTF Material Output", "ShaderNodeTree")
-        group.interface.new_socket(name="Occlusion", in_out="INPUT", socket_type="NodeSocketFloat")
-    return group
-
-
 def rebuild_material(material, textures, converter):
     found = {}
     for node in material.node_tree.nodes:
@@ -196,9 +189,6 @@ def rebuild_material(material, textures, converter):
         links.new(spec.outputs["Color"], split.inputs["Color"])
         links.new(split.outputs["Green"], bsdf.inputs["Roughness"])
         links.new(split.outputs["Blue"], bsdf.inputs["Metallic"])
-        occlusion = nodes.new("ShaderNodeGroup")
-        occlusion.node_tree = gltf_output_group()
-        links.new(split.outputs["Red"], occlusion.inputs["Occlusion"])
     else:
         bsdf.inputs["Metallic"].default_value = 0.0
         bsdf.inputs["Roughness"].default_value = 0.5
