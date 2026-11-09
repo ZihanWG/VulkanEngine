@@ -2,6 +2,7 @@
 
 #include "renderer/PrimitiveGeometry.h"
 
+#include "assets/AssetInputs.h"
 #include "core/Logger.h"
 #include "renderer/MeshCache.h"
 #include "rhi/VulkanCommandContext.h"
@@ -299,6 +300,9 @@ LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
             try {
                 cookedMeshes = readMeshCache(blob);
                 haveCooked = true;
+                // Only a sidecar that was used: a stale one is read, rejected,
+                // and has no say in what is drawn.
+                assets::AssetInputRecorder::record(cookedPath);
                 Logger::info("Using cooked mesh geometry: " + cookedPath.string());
             } catch (const std::exception& error) {
                 Logger::warn("Cooked mesh geometry '" + cookedPath.string() +

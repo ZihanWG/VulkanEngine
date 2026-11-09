@@ -1,5 +1,6 @@
 #include "rhi/VulkanEnvironmentMap.h"
 
+#include "assets/AssetInputs.h"
 #include "core/JobSystem.h"
 
 #include "rhi/VulkanBuffer.h"
@@ -895,6 +896,7 @@ HdrEnvironmentCubeData VulkanEnvironmentMap::loadHdrEquirectangularFaces(const s
     if (sourceChannels < 3) {
         throw std::runtime_error("HDR environment must contain at least RGB channels: " + filename);
     }
+    assets::AssetInputRecorder::record(path);
 
     const uint32_t width = static_cast<uint32_t>(loadedWidth);
     const uint32_t height = static_cast<uint32_t>(loadedHeight);

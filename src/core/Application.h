@@ -2,6 +2,7 @@
 
 #include "core/CommandLine.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -70,6 +71,10 @@ private:
     // Measured in initialize(), consumed in mainLoop() once the first frame has
     // also been timed. Meaningless unless config_.assetLoadStats is set.
     double rendererInitMs_ = 0.0;
+
+    // How many asset files the startup "Asset inputs:" line covered; mainLoop
+    // logs the line again at exit only if the run has read more since.
+    std::size_t assetInputsLogged_ = 0;
 
     // Latched in mainLoop, because reportValidationTally runs after the renderer
     // has already been destroyed.

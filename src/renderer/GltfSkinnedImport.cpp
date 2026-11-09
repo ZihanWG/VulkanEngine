@@ -1,5 +1,7 @@
 #include "renderer/GltfSkinnedImport.h"
 
+#include "assets/AssetInputs.h"
+
 // This is the single tinygltf implementation translation unit for the whole
 // build; other users (e.g. Mesh.cpp) include the header without the define.
 #define TINYGLTF_IMPLEMENTATION
@@ -223,6 +225,14 @@ SkinnedGltf loadSkinnedGltf(const std::filesystem::path& path)
     if (!loaded) {
         result.error = error.empty() ? ("failed to load glTF: " + pathString) : error;
         return result;
+    }
+    {
+        std::vector<std::string> bufferUris;
+        bufferUris.reserve(model.buffers.size());
+        for (const tinygltf::Buffer& buffer : model.buffers) {
+            bufferUris.push_back(buffer.uri);
+        }
+        assets::AssetInputRecorder::recordGltf(path, bufferUris);
     }
 
     // Find the first node that has both a mesh and a skin.

@@ -76,6 +76,7 @@ add_executable(VulkanEngineTests
     test_object_transform_cache.cpp
     test_frame_capacity.cpp
     test_asset_load_stats.cpp
+    test_asset_inputs.cpp
     test_frame_clock.cpp
     test_command_line.cpp
     test_frame_capture_request.cpp

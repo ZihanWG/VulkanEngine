@@ -1,5 +1,6 @@
 #include "core/Application.h"
 
+#include "assets/AssetInputs.h"
 #include "core/Logger.h"
 #include "core/Window.h"
 #include "renderer/AssetLoadStats.h"
@@ -167,6 +168,12 @@ void Application::initialize()
     }
     Logger::info("Scene: " + std::string(scenePresetName(config_.scene)) + (config_.freezeAnimation ? "+frozen" : "") +
                  " at " + std::to_string(config_.width) + "x" + std::to_string(config_.height));
+    // Beside the scene stamp, and for the same reason: the inputs are the other
+    // thing two runs can silently disagree about. assets/ is read from the
+    // source tree at run time, so a branch switch in the checkout changes what
+    // an already-built binary renders, and until this line no other log line
+    // moved when it did. After the preset, so every startup read is covered.
+    assetInputsLogged_ = renderer_->logAssetInputs();
 
     // Independent of --capture-frame: the analysis reports into the log every
     // second and has nothing to do with capturing a frame.
@@ -279,6 +286,12 @@ void Application::mainLoop()
     // time, so two builds can be compared by diffing this one line.
     Logger::info(renderer_->renderGraphFrameTrace());
     renderer_->logRayTracingSceneSummary();
+    // Only when something was read after startup (a scene or material loaded
+    // from the debug UI): a scripted run reads everything up front, and its log
+    // should carry the one line, not two copies of it.
+    if (assets::AssetInputRecorder::count() != assetInputsLogged_) {
+        renderer_->logAssetInputs("Asset inputs at exit");
+    }
 
     if (config_.assetLoadStats) {
         renderer_->finalizeAssetLoadStats(rendererInitMs_, firstFrameMs);
