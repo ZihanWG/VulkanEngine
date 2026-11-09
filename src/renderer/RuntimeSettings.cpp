@@ -549,6 +549,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*csm, "depthBiasSlope", settings.csm.depthBiasSlope);
         readFloat(*csm, "cascadeBlend", settings.csm.cascadeBlend);
         readBool(*csm, "enableCascadeCache", settings.csm.enableCascadeCache);
+        readBool(*csm, "skipWhenSunDark", settings.csm.skipWhenSunDark);
         readBool(*csm, "enableStableCascadeFit", settings.csm.enableStableCascadeFit);
         readInt(*csm, "debugOnlyShadowCasterObject", settings.csm.debugOnlyShadowCasterObject);
     }
@@ -750,6 +751,7 @@ Json toJson(const RuntimeSettings& settings)
               {"depthBiasSlope", settings.csm.depthBiasSlope},
               {"cascadeBlend", settings.csm.cascadeBlend},
               {"enableCascadeCache", settings.csm.enableCascadeCache},
+              {"skipWhenSunDark", settings.csm.skipWhenSunDark},
               {"enableStableCascadeFit", settings.csm.enableStableCascadeFit},
               {"shadowDistance", settings.csm.shadowDistance},
               {"enableTexelSnapping", settings.csm.enableTexelSnapping},

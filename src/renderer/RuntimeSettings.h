@@ -36,6 +36,13 @@ struct CsmSettings {
     // redrew unconditionally until now. Off restores that, and is the A/B
     // reference the cached path has to match pixel for pixel.
     bool enableCascadeCache = true;
+    // While the sun's radiance is zero, skip what only serves its shadow: the
+    // caster cull and the cascade draws, and the main pass's sun-shadow lookup.
+    // Every reader multiplies that shadow by the sun's radiance, so nothing
+    // changes on screen; a debug view that shows a shadow lookup or a cascade's
+    // contents keeps both on. Off is the A/B reference, and pays for a shadow
+    // nobody can see, as the renderer always did.
+    bool skipWhenSunDark = true;
     // Fits cascades to their slice's bounding sphere instead of its light-space
     // AABB. Off by default: it removes the rotation-driven shimmer the AABB fit
     // has, but a sphere circumscribing the slice is wider than the slice, so the

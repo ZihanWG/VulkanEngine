@@ -194,4 +194,51 @@ struct CascadeShadowPassState {
 [[nodiscard]] uint64_t computeCascadeShadowKey(const CascadeShadowPassState& state,
                                                std::span<const CascadeShadowCaster> casters);
 
+// --- Whether the sun's shadow is wanted at all --------------------------------
+//
+// The sun's visibility is only ever a factor on its radiance: the main pass's
+// direct term, fog's in-scatter, the raster probe capture's sun term. With the
+// radiance at zero every one of those products is zero whatever the shadow
+// says, so a dark sun can skip its shadow outright. Bistro at night and the
+// Cornell box both ship that way. The cache alone cannot save it: the cascades
+// are fitted to the camera, so any camera motion redraws all of them.
+
+// Whether the main pass skips its sun-shadow lookup -- cascades, virtual
+// shadow map pages and inline rays alike. A debug view that shows the
+// lookup's own answer keeps it: the cascade tint needs the cascade it picked,
+// the VSM level view the level it sampled, the ray-traced views the visibility.
+[[nodiscard]] constexpr bool sunShadowLookupSkipped(bool skipWhenSunDark, bool sunLit, bool lookupDebugView)
+{
+    return skipWhenSunDark && !sunLit && !lookupDebugView;
+}
+
+// Who reads the cascade images this frame, beyond the main pass.
+struct CascadeShadowReaders {
+    // The main pass traces the sun instead of sampling the cascades.
+    bool rayTracingReplaces = false;
+    // The main pass skips the sun-shadow lookup (sunShadowLookupSkipped).
+    bool sunLookupSkipped = false;
+    // Fog and the raster probe capture: each reads the cascades to shadow the
+    // sun's radiance, so neither needs them while that radiance is zero.
+    bool sunShadowReaders = false;
+    // Views of what the cascades hold -- the cascade-versus-ray comparison and
+    // the stored-depth view -- and the setting that keeps them drawn while
+    // tracing. These read the images themselves and always need them.
+    bool contentReaders = false;
+};
+
+// Whether this frame draws no cascade at all: no caster cull, no cascade pass.
+// The images keep what they last held, and so does the cache's record of it, so
+// the frame the sun returns redraws only what moved meanwhile.
+[[nodiscard]] constexpr bool cascadesUnread(const CascadeShadowReaders& readers)
+{
+    if (readers.contentReaders) {
+        return false;
+    }
+    if (readers.sunLookupSkipped) {
+        return true;
+    }
+    return readers.rayTracingReplaces && !readers.sunShadowReaders;
+}
+
 } // namespace ve::renderer

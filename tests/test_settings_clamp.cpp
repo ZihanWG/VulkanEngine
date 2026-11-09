@@ -375,6 +375,7 @@ TEST_CASE("Applying CSM settings at startup transfers every field", "[settings-a
     incoming.normalBias = 0.0075f;
     incoming.cascadeBlend = 0.25f;
     incoming.enableCascadeCache = false;
+    incoming.skipWhenSunDark = false;
 
     // Defaults, so nothing below can pass by already holding the right value.
     ve::CsmSettings current{};

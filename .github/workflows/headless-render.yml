@@ -497,6 +497,7 @@ jobs:
           ray-traced-shadows-frozen|--settings config/ci/ray-traced-shadows.json --freeze-animation
           scene-sunlit|--scene sunlit
           scene-cornell|--scene cornell
+          cornell-sun-dark-cascades-drawn|--scene cornell --settings config/ci/sun-dark-cascades-drawn.json
           scene-occlusion|--scene occlusion
           lod-crossfade-orbit|--scene stress --camera-orbit 0.05
           cornell-with-gi|--scene cornell --settings config/ci/irradiance-probes.json

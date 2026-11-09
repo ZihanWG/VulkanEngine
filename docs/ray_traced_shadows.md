@@ -44,7 +44,9 @@ plain shader -- pinned below.
 On a frame that traces, the main pass, the phase-two re-draw, the transparent
 pass and the skinned draw all run the ray-query shader and never sample the
 cascades. Five things still can, and any one of them keeps the cascades drawn
-(`Renderer::cascadeShadowMapReadBeyondMainPass`):
+(`Renderer::cascadeShadowReaders`, decided by `renderer::cascadesUnread` in
+`CascadeShadowCache.h`, which also skips them while the sun is dark -- see
+`csm.skipWhenSunDark` in `docs/design_decisions.md`):
 
 - volumetric fog, whose injection shadows the froxels from the cascades;
 - probe capture, on a frame that captures;

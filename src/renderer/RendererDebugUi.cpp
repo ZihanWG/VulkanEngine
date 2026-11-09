@@ -910,6 +910,16 @@ void Renderer::drawShadowsDebugUi()
                           "path must match pixel for pixel.");
     }
 
+    ImGui::Checkbox("Skip while the sun is dark", &csmSettings_.skipWhenSunDark);
+    ImGui::SetItemTooltip("With the sun's radiance at zero, skips the caster cull, the cascade\n"
+                          "draws and the main pass's sun-shadow lookup: every reader multiplies\n"
+                          "that shadow by zero. The cascade tint, the VSM level view and the\n"
+                          "ray-traced views keep it on. Off is the A/B reference.");
+    if (frameSunShadowLookupSkipped_) {
+        ImGui::TextDisabled(frameCascadesUnread_ ? "Sun dark: lookup and cascades skipped."
+                                                 : "Sun dark: lookup skipped; a debug view keeps the cascades drawn.");
+    }
+
     // The hit rate, not just the on/off state. The cascades are fitted to the
     // camera, so this number is the thing to read before assuming the cache
     // ever fires: a fit that moves with the camera dirties every cascade on any
@@ -1221,7 +1231,7 @@ void Renderer::drawShadowsDebugUi()
                               "cascade-reading debug view needs them. This keeps them on regardless,\n"
                               "for the A/B that separates tracing's cost from what skipping saves.");
         if (isRayTracedShadowActive()) {
-            ImGui::TextDisabled(frameCascadesReplacedByRayTracing_
+            ImGui::TextDisabled(frameCascadesUnread_
                                     ? "Cascades: skipped this frame; their preview shows the last drawn."
                                     : "Cascades: still rendered, something else reads them.");
         }

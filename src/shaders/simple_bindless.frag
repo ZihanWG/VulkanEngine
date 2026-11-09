@@ -1078,7 +1078,12 @@ void main()
 #ifdef VE_RAY_QUERY
     rayTracedFlags = pc.frameConstants.values.rayTracedShadow.z;
 #endif
-    if ((rayTracedFlags & kRtShadowFlagEnabled) != 0u) {
+    if (vShadowQuality.z > 0.5) {
+        // The sun is dark: whatever any of the lookups below returned would
+        // scale zero radiance, so none of them runs and shadowFactor stays 1.
+        // Uniform per frame (renderer::sunShadowLookupSkipped), and never set
+        // while a debug view shows the lookup's own answer.
+    } else if ((rayTracedFlags & kRtShadowFlagEnabled) != 0u) {
 #ifdef VE_RAY_QUERY
         // Where nothing faces the sun the term multiplies zero, so the ray is
         // skipped -- unless a debug view is about to show the term itself.

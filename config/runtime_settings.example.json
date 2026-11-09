@@ -110,6 +110,7 @@
         "depthBiasSlope": 0.005,
         "cascadeBlend": 0.0,
         "enableCascadeCache": true,
+        "skipWhenSunDark": true,
         "enableStableCascadeFit": false,
         "shadowDistance": 40.0,
         "enableTexelSnapping": true,
