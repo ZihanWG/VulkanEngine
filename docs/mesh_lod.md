@@ -515,7 +515,7 @@ Selecting by error at 1 px is what the default spends of it (see above).
 
 ## Limitations
 
-- **Transparent draws bypass LOD selection entirely** (see below).
+- **Blended draws take a level on the CPU, and switch outright** (see below).
 - **Selection is per draw item, not per cluster.** Large meshes switch as a whole,
   so a big object popping between levels is visible at the silhouette. Meshlet-
   granular selection is the direction modern engines went.
@@ -535,10 +535,13 @@ Selecting by error at 1 px is what the default spends of it (see above).
 - **The error projection is conservative.** It uses the object's largest axis
   scale and its nearest bounds point for the whole object, so a long object seen
   end-on keeps the detail its nearest end needs.
-- **Transparent draws bypass LOD selection entirely.** They are issued as direct
-  draws to preserve back-to-front sort order (see
-  [docs/transparency.md](transparency.md)), so they never pass through the cull
-  shader and always render level 0.
+- **Blended draws take a level on the CPU, and switch outright.** They are issued
+  as direct draws to preserve back-to-front sort order, so they never pass
+  through the cull shader. The same rule is applied to them during frame
+  preparation instead, through the C++ mirror above (`lod.blended`, on by
+  default; see [transparency.md](transparency.md#what-the-cull-would-have-decided-is-decided-on-the-cpu)).
+  They get no cross-fade, since the fade lives in the commands they do not use.
+  Until this was added they always rendered level 0.
 
 ## Meshlets, and why meshlet culling was rejected
 

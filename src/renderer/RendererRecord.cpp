@@ -1442,9 +1442,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         // transparent pipeline binds the bindless heap as its second descriptor
         // set, so the pass's callback records nothing without one.
         // Declaring it anyway had the graph modelling a pass that never ran.
-        .transparentDrawCount = isBindlessMaterialTextureActive()
-                                    ? frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count()
-                                    : 0u,
+        .transparentDrawCount =
+            isBindlessMaterialTextureActive() ? static_cast<uint32_t>(frameTransparentDraws_.size()) : 0u,
         // Zero on a cache hit, which stops the graph declaring the atlas write
         // pass at all. The main pass still declares its read, so the image keeps
         // the layout it already has and no barrier is emitted for it.
@@ -3021,8 +3020,7 @@ void Renderer::recordTransparentPass(VkCommandBuffer commandBuffer, const MainPa
     const VkRect2D& scissor = state.scissor;
     const VkDescriptorSet globalDescriptorSet = state.globalDescriptorSet;
     const PushConstants& basePushConstants = state.basePushConstants;
-    const RenderBucketRange blendRange = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)];
-    if (blendRange.empty() || transparentPipeline_.pipeline() == VK_NULL_HANDLE ||
+    if (frameTransparentDraws_.empty() || transparentPipeline_.pipeline() == VK_NULL_HANDLE ||
         globalDescriptorSet == VK_NULL_HANDLE || !state.bindlessMaterialTexturesActive) {
         return;
     }
@@ -3055,14 +3053,17 @@ void Renderer::recordTransparentPass(VkCommandBuffer commandBuffer, const MainPa
     // visible commands within a batch, and compaction is by definition
     // order-destroying -- it would undo the back-to-front sort these draws
     // depend on. firstInstance still carries the object-data slot exactly as
-    // the indirect path does, so the vertex shader is unchanged.
+    // the indirect path does, so the vertex shader is unchanged. What the cull
+    // would have decided for these items -- in view or not, and at which level
+    // -- buildTransparentDrawList decided on the CPU instead.
+    if (overdrawReadoutEnabled_) {
+        const VkExtent2D overdrawExtent = renderResolution_.extent();
+        transparentOverdrawQuery_.begin(
+            currentFrame_, commandBuffer, static_cast<uint64_t>(overdrawExtent.width) * overdrawExtent.height);
+    }
+    TransparentSubmission submission{};
     const renderer::Mesh* boundTransparentMesh = nullptr;
-    for (uint32_t drawIndex = blendRange.begin; drawIndex < blendRange.end; ++drawIndex) {
-        const DrawItem& drawItem = visibleDrawItems_[drawIndex];
-        if (!drawItem.mesh || drawItem.indexCount == 0 || drawItem.frameDataIndex >= kMaxDrawItems) {
-            continue;
-        }
-
+    for (const DrawItem& drawItem : frameTransparentDraws_) {
         if (boundTransparentMesh != drawItem.mesh) {
             const VkBuffer vertexBuffers[] = {drawItem.mesh->vertexBuffer()};
             const VkDeviceSize vertexOffsets[] = {0};
@@ -3073,6 +3074,14 @@ void Renderer::recordTransparentPass(VkCommandBuffer commandBuffer, const MainPa
 
         vkCmdDrawIndexed(
             commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, drawItem.vertexOffset, drawItem.frameDataIndex);
+        ++submission.draws;
+        submission.triangles += drawItem.indexCount / 3;
+    }
+    if (overdrawReadoutEnabled_) {
+        transparentOverdrawQuery_.end(currentFrame_, commandBuffer);
+        if (currentFrame_ < transparentSubmissions_.size()) {
+            transparentSubmissions_[currentFrame_] = submission;
+        }
     }
 
     renderGraph_.endTransparentRendering();
@@ -3302,6 +3311,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // inside a render pass, and the pair brackets draws that are inside one.
     if (overdrawReadoutEnabled_) {
         overdrawQuery_.resetFrame(currentFrame_, commandBuffer);
+        transparentOverdrawQuery_.resetFrame(currentFrame_, commandBuffer);
     }
 
     // The probe-only view is a view of a linear radiance value, so it bypasses

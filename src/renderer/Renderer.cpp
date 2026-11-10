@@ -184,6 +184,8 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     screenshotCapture_.initialize(context_, static_cast<uint32_t>(frames_.size()), portfolioScreenshotDirectory());
     gpuProfiler_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     overdrawQuery_.initialize(context_, static_cast<uint32_t>(frames_.size()));
+    transparentOverdrawQuery_.initialize(context_, static_cast<uint32_t>(frames_.size()));
+    transparentSubmissions_.assign(frames_.size(), {});
     swapchain_.initialize(context_, window_.framebufferExtent());
     // Before anything screen-sized is created below: every one of those targets
     // reads its size from renderResolution_.
@@ -644,6 +646,7 @@ void Renderer::drawFrame()
 
     gpuProfiler_.markFrameSubmitted(currentFrame_);
     overdrawQuery_.markFrameSubmitted(currentFrame_);
+    transparentOverdrawQuery_.markFrameSubmitted(currentFrame_);
     capturePreviousFrameMatrices();
 
     VkPresentInfoKHR presentInfo{};
@@ -1496,6 +1499,20 @@ void Renderer::emitOverdrawReadout(uint32_t frameIndex)
             << " fragment shader invocations per rendered pixel (" << overdraw.fragmentInvocations
             << " invocations over " << overdraw.renderedPixels << " pixels, opaque scene geometry only)";
     Logger::info(message.str());
+
+    renderer::OverdrawQuery::FrameResult transparent{};
+    if (!transparentOverdrawQuery_.readFrame(frameIndex, transparent) || !transparent.valid ||
+        frameIndex >= transparentSubmissions_.size()) {
+        return;
+    }
+    const TransparentSubmission& submission = transparentSubmissions_[frameIndex];
+    std::ostringstream transparentMessage;
+    transparentMessage << std::fixed << std::setprecision(3)
+                       << "Transparent overdraw: " << transparent.invocationsPerPixel()
+                       << " fragment shader invocations per rendered pixel (" << transparent.fragmentInvocations
+                       << " invocations over " << transparent.renderedPixels << " pixels, " << submission.draws
+                       << " draws, " << submission.triangles << " triangles submitted)";
+    Logger::info(transparentMessage.str());
 }
 
 void Renderer::logRayTracingSceneSummary() const

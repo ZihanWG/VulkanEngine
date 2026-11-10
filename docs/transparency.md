@@ -145,8 +145,57 @@ batch, and compaction is by definition order-destroying.** It would undo the sor
 these draws depend on. So the transparent pass issues direct `vkCmdDrawIndexed`
 calls instead of replaying the indirect buffer. `firstInstance` still carries the
 object-data slot exactly as the indirect path does, so the vertex shader is
-unchanged. Blended items are still CPU frustum-culled; they just skip the GPU
-culling round trip.
+unchanged.
+
+### What the cull would have decided is decided on the CPU
+
+Skipping the dispatch's commands means inheriting neither of the two things the
+dispatch decides: whether a draw is in view, and which LOD level it draws. For a
+long time this page said blended items were still frustum-culled on the CPU. That
+was true only of the CPU-culled fallback. With GPU culling on, which is the
+default, the visible list is every draw item in the scene, each at its authored
+index range -- so the pass drew all of a scene's glass every frame, at full
+detail, wherever the camera looked. Nothing showed it until a scene had enough
+glass to matter: on Bistro's interior (`--scene bistro-interior`, 1920x1080, the
+glTF camera's shot) that was 800 draws and 523,262 triangles a frame, in a pass
+that cost more than `MainHDRPass` while shading about half as many fragments.
+
+`Renderer::buildTransparentDrawList` now makes both decisions during frame
+preparation, in the order the sort left:
+
+- **Frustum.** The object's world bounds against the camera frustum, the test the
+  CPU-culled path already applied. 800 draws become 533 on that shot. It changes
+  no pixel, and on its own it was not measurable in GPU time either: the
+  rejected draws were being clipped cheaply already.
+- **Level.** The rule `cull.comp` applies on the main dispatch, through its C++
+  mirror in `renderer/MeshLod.h`, with the same inputs -- render extent, bias,
+  error budget, forced level. 333,000 triangles become 194,385. `lod.blended`
+  turns it off, which draws every blended item at level 0 as before.
+
+Per frame, on that shot (`--overdraw`, which now reports this pass on its own
+line):
+
+| | draws | triangles submitted | fragment shader invocations |
+| --- | --- | --- | --- |
+| before | 800 | 523,262 | 1,138,121 |
+| frustum only (`lod.blended` off) | 533 | 333,000 | 1,138,121 |
+| frustum and level | 533 | 194,385 | 1,138,091 |
+
+The fragment count does not move, and the pass gets cheaper anyway: what the
+level removes is per-triangle work -- vertex shading, setup, and the quad
+overshading of triangles a few pixels across -- which is the same split
+[mesh_lod.md](mesh_lod.md#what-lod-is-worth-on-real-content) measured on opaque
+geometry. With `lod.blended` off the frame is pixel-identical to the one before
+the change; with it on, 1.26% of that frame's pixels differ.
+
+No time is quoted for it yet. Two interleaved series on an RTX 3080 Ti Laptop
+put the saving near a quarter of the pass, and each failed the 1% control-drift
+gate at default clocks, so they are not evidence
+([profiling.md](profiling.md)).
+
+Still not decided here, because only depth knows it: occlusion. A glass behind a
+wall is submitted, depth-tested against the opaque scene, and rejected fragment
+by fragment.
 
 The opaque main pass skips `Blend` batches. The GPU cull still emits commands for
 them into the compacted buffer — those slots are simply never replayed.
@@ -207,7 +256,14 @@ shows whether back-to-front ordering actually holds.
   would stop the first; it is a look decision and has not been made.
 - **No order-independent transparency.** Sorting is per object, not per triangle,
   so intersecting or concave transparent geometry can still composite wrongly.
-  Weighted-blended OIT would remove the sort entirely and is the natural follow-up.
+  Weighted-blended OIT would remove the sort entirely. It is a correctness
+  feature rather than a cost one: the pass is bound by its fragments and its
+  small triangles, neither of which a different blend removes.
+- **A blended draw's level switches outright.** The cross-fade the opaque buckets
+  get is a pair of dithered commands written by the cull dispatch, which these
+  draws do not use, and a dither is the wrong tool on a surface that is already
+  partly transparent. The error budget is the same one pixel, so the switch is
+  small; it is not hidden.
 - **The two-phase Hi-Z re-test used to submit blended batches, and no longer does.**
   Phase 1 skips them with a comment saying why: the GPU cull emits commands for
   blended geometry into the compacted buffer and those slots are simply never
@@ -237,3 +293,9 @@ shows whether back-to-front ordering actually holds.
   the transparent pass keeps culling off for every material rather than trusting a
   flag that authoring tools set inconsistently on exactly that kind of surface. The
   shadow pipelines are unchanged for the same reason plus peter-panning.
+
+  Bistro's interior is the measured case for it. None of its blended materials is
+  marked double-sided, and culling their back faces halves the pass's fragment
+  shader invocations on the startup shot (1,138,121 to 575,147). It also removes
+  the body of the wine from every glass, leaving the liquid's top surface
+  floating in an outline: the asset relies on both faces. Rejected on the image.

@@ -481,6 +481,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*lod, "screenSpaceError", settings.lod.screenSpaceError);
         readFloat(*lod, "maxErrorPixels", settings.lod.maxErrorPixels);
         readFloat(*lod, "transitionSeconds", settings.lod.transitionSeconds);
+        readBool(*lod, "blended", settings.lod.blended);
         readBool(*lod, "normalAwareSimplification", settings.lod.normalAwareSimplification);
     }
 
@@ -701,6 +702,7 @@ Json toJson(const RuntimeSettings& settings)
               {"screenSpaceError", settings.lod.screenSpaceError},
               {"maxErrorPixels", settings.lod.maxErrorPixels},
               {"transitionSeconds", settings.lod.transitionSeconds},
+              {"blended", settings.lod.blended},
               {"normalAwareSimplification", settings.lod.normalAwareSimplification}}},
         {"ssr",
          Json{{"enabled", settings.ssr.enabled},

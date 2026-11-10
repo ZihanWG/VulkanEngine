@@ -1286,6 +1286,67 @@ void Renderer::sortTransparentDrawItems()
     }
 }
 
+void Renderer::buildTransparentDrawList(const renderer::Frustum& cameraFrustum)
+{
+    // The transparent pass issues direct draws in sorted order, so it never
+    // replays the cull dispatch's commands -- and so inherits neither of the two
+    // things that dispatch decides. With GPU culling on, visibleDrawItems_ is
+    // every draw item in the scene, each at its authored index range: the pass
+    // drew all of a scene's glass every frame, at full detail, wherever the
+    // camera looked. Both decisions are made here instead, in the order the sort
+    // left, which is the one thing the dispatch could not preserve.
+    frameTransparentDraws_.clear();
+    const RenderBucketRange blendRange = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)];
+    if (blendRange.empty()) {
+        return;
+    }
+    frameTransparentDraws_.reserve(blendRange.count());
+
+    // The main dispatch's own inputs (uploadGpuCullFrameParams): no shadow bias,
+    // and the render extent rather than the window's.
+    const VkExtent2D renderExtent = renderResolution_.extent();
+    const float projScaleY = 0.5f * static_cast<float>(renderExtent.height) * std::abs(frameJitteredProjection_[1][1]);
+    renderer::LodSelectionSettings lodSelection{};
+    lodSelection.referenceRadiusPixels = lodSettings_.referenceRadiusPixels;
+    lodSelection.bias = lodSettings_.bias;
+    lodSelection.forcedLod = lodSettings_.enabled ? lodSettings_.forcedLod : 0;
+    lodSelection.screenSpaceError = lodSettings_.screenSpaceError;
+    lodSelection.maxErrorPixels = lodSettings_.maxErrorPixels;
+    const bool selectLevels = lodSettings_.enabled && lodSettings_.blended;
+
+    for (uint32_t drawIndex = blendRange.begin; drawIndex < blendRange.end; ++drawIndex) {
+        DrawItem drawItem = visibleDrawItems_[drawIndex];
+        if (!drawItem.mesh || drawItem.indexCount == 0 || drawItem.frameDataIndex >= kMaxDrawItems) {
+            continue;
+        }
+        // Already applied on the CPU-culled path, where it rejects nothing a
+        // second time. An object without valid bounds is kept, as it is there.
+        if (drawItem.objectIndex < frameWorldBounds_.size()) {
+            const renderer::Aabb& worldBounds = frameWorldBounds_[drawItem.objectIndex];
+            if (worldBounds.valid() && !cameraFrustum.testAabb(worldBounds)) {
+                continue;
+            }
+        }
+
+        // frameDataIndex is the item's index in allDrawItems_ (buildDrawItems
+        // hands it out after the sort), which is what the LOD ranges are keyed
+        // by on both the GPU- and the CPU-culled path.
+        const size_t sourceIndex = drawItem.frameDataIndex;
+        if (selectLevels && sourceIndex < allDrawItems_.size() && sourceIndex < frameDrawItemLodRanges_.size()) {
+            const glm::uvec2 lodRange = frameDrawItemLodRanges_[sourceIndex];
+            const uint32_t level = selectedShadowLodLevel(allDrawItems_[sourceIndex], projScaleY, lodSelection);
+            if (level > 0 && level < lodRange.y &&
+                static_cast<size_t>(lodRange.x) + level < frameMeshLodTable_.size()) {
+                const renderer::MeshLod& lod = frameMeshLodTable_[lodRange.x + level];
+                drawItem.firstIndex = lod.firstIndex;
+                drawItem.indexCount = lod.indexCount;
+            }
+        }
+
+        frameTransparentDraws_.push_back(drawItem);
+    }
+}
+
 void Renderer::buildMeshDrawBatches()
 {
     meshDrawBatches_.clear();
@@ -1910,6 +1971,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     {
         const ScopedCpuTimer timer = cpuScope(CpuScope::MainCullingFrameData);
         buildMainCullingFrameData(frameIndex, cameraFrustum);
+        // After the bucket ranges above and the LOD table further up, both of
+        // which it reads; before the graph is declared, which asks it whether
+        // there is a transparent pass at all.
+        buildTransparentDrawList(cameraFrustum);
     }
     // Deliberately OUTSIDE every CPU scope: it is an instrument, off by default,
     // and folding its cost into frame prep would make the numbers it exists to

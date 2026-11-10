@@ -383,6 +383,12 @@ struct LodSettings {
     // split sweeps from one to the other (renderer/LodTransition.h). 0 pops.
     // Main pass only; the shadow maps switch outright.
     float transitionSeconds = 0.25f;
+    // Blended draws take a level too. They are drawn directly, in sorted order,
+    // rather than from the cull dispatch's commands, so the same rule is applied
+    // to them on the CPU (Renderer::buildTransparentDrawList). They switch
+    // outright: the cross-fade's dither lives in the commands they do not use.
+    // Off draws every blended item at level 0, as it was before.
+    bool blended = true;
     // Build the LOD chains counting bent normals as error, not just moved
     // positions (renderer::kLodNormalWeight). Off simplifies by position alone:
     // more triangles removed, and curved normal-mapped surfaces shade visibly

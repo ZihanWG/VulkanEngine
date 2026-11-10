@@ -1,7 +1,8 @@
 #pragma once
 
 // Counts fragment shader invocations over the main opaque geometry, so the
-// engine can report how many times an average covered pixel is shaded.
+// engine can report how many times an average covered pixel is shaded. A second
+// instance brackets the transparent pass, which no depth prepass covers.
 //
 // It exists to answer one question the repository has been unable to answer:
 // whether a depth prepass is worth building. docs/design_decisions.md records
