@@ -165,8 +165,9 @@ preparation, in the order the sort left:
 
 - **Frustum.** The object's world bounds against the camera frustum, the test the
   CPU-culled path already applied. 800 draws become 533 on that shot. It changes
-  no pixel, and on its own it was not measurable in GPU time either: the
-  rejected draws were being clipped cheaply already.
+  no pixel, and on its own it moved GPU time by less than a default-clock series
+  could resolve -- consistent with the rejected draws having been clipped
+  cheaply all along, which is not the same as having measured that.
 - **Level.** The rule `cull.comp` applies on the main dispatch, through its C++
   mirror in `renderer/MeshLod.h`, with the same inputs -- render extent, bias,
   error budget, forced level. 333,000 triangles become 194,385. `lod.blended`
@@ -188,9 +189,24 @@ overshading of triangles a few pixels across -- which is the same split
 geometry. With `lod.blended` off the frame is pixel-identical to the one before
 the change; with it on, 1.26% of that frame's pixels differ.
 
-No time is quoted for it yet. Two interleaved series on an RTX 3080 Ti Laptop
-put the saving near a quarter of the pass, and each failed the 1% control-drift
-gate at default clocks, so they are not evidence
+In time, `lod.blended` on against off, interleaved (on, off, on, off) after a
+discarded first run -- RTX 3080 Ti Laptop, clocks pinned 800/7001, lights and
+animation frozen, every frame sampled for 60 s after a 15 s warm-up, p10:
+
+| | level 0 | level selected | delta |
+| --- | --- | --- | --- |
+| `Transparent` | 4.094 ms | 3.026 ms | **-1.068 ms (-26.1%)** |
+| `Frame total` | 8.662 ms | 7.518 ms | -1.144 ms (-13.2%) |
+
+The repeated control came back within 0.76% on the frame and 0.001 ms on the
+pass. `MainHDRPass` read 0.069 ms lower with the selection on, which nothing in
+this change reaches -- the opaque pass draws the same commands either way -- so
+the frame figure carries that much that is not the change's; the pass figure is
+the one to quote. The absolutes are a card held at 800 MHz and are not
+comparable with the default-clock tables in the README; the ratios are. Both
+sides of the comparison already have the frustum test. Two earlier series at
+default clocks had put the saving at the same quarter of the pass and failed the
+1% control gate at 3.2% and 6.1%, which is why they are not the ones quoted
 ([profiling.md](profiling.md)).
 
 Still not decided here, because only depth knows it: occlusion. A glass behind a
