@@ -55,6 +55,7 @@
         "screenSpaceError": true,
         "maxErrorPixels": 1.0,
         "transitionSeconds": 0.25,
+        "blended": true,
         "normalAwareSimplification": true
     },
     "ssr": {

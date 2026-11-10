@@ -823,6 +823,10 @@ private:
     // per-frame back-to-front reorder the blend range needs.
     void updateVisibleBucketRanges();
     void sortTransparentDrawItems();
+    // Fills frameTransparentDraws_: the blend range in its sorted order, minus
+    // what the camera cannot see, each item at the level the cull dispatch
+    // would have picked for it.
+    void buildTransparentDrawList(const renderer::Frustum& cameraFrustum);
     void buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frustum& lightFrustum);
     void updateOcclusionYield(uint32_t frameIndex);
     void buildUnionShadowDrawItems(uint32_t cascadeCount);
@@ -1367,6 +1371,16 @@ private:
     std::vector<renderer::FrameResources> frames_;
     renderer::GpuProfiler gpuProfiler_;
     renderer::OverdrawQuery overdrawQuery_;
+    // The same count over the transparent pass, which no depth prepass covers:
+    // blended fragments test against opaque depth but never against each other.
+    renderer::OverdrawQuery transparentOverdrawQuery_;
+    // What the transparent pass submitted in the frame being recorded, kept per
+    // frame slot so the readout pairs it with the query result of that frame.
+    struct TransparentSubmission {
+        uint32_t draws = 0;
+        uint64_t triangles = 0;
+    };
+    std::vector<TransparentSubmission> transparentSubmissions_;
     bool overdrawReadoutEnabled_ = false;
     bool overdrawUnavailableReported_ = false;
     rhi::VulkanSwapchain swapchain_;
@@ -1546,6 +1560,11 @@ private:
     std::vector<renderer::RenderObject> renderObjects_;
     std::vector<DrawItem> allDrawItems_;
     std::vector<DrawItem> visibleDrawItems_;
+    // What the transparent pass draws this frame, back to front. Its own list
+    // because the pass replays no indirect buffer, so nothing the GPU cull
+    // decides reaches it: with GPU culling on, visibleDrawItems_ is every draw
+    // item in the scene at its authored index range.
+    std::vector<DrawItem> frameTransparentDraws_;
     std::vector<DrawItem> shadowDrawItems_;
     std::array<std::vector<DrawItem>, kMaxShadowCascades> shadowCascadeDrawItems_;
     std::vector<MeshDrawBatch> meshDrawBatches_;

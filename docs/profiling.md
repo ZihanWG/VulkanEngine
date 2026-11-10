@@ -411,6 +411,17 @@ printed once a second as its own log line:
 Overdraw: 2.187 fragment shader invocations per rendered pixel (2015242 invocations over 921600 pixels, opaque scene geometry only)
 ```
 
+A second line counts the transparent pass the same way, with what it submitted,
+when the frame has one:
+
+```
+Transparent overdraw: 0.549 fragment shader invocations per rendered pixel (1138091 invocations over 2073600 pixels, 533 draws, 194385 triangles submitted)
+```
+
+No depth prepass covers that pass -- blended fragments test against opaque depth
+and never against each other -- so its count is every layer of glass in front of
+the opaque scene.
+
 Off unless asked for, and diagnostic only — nothing in the frame path reads it,
 and it is verified not to change the frame (0 of 921600 pixels differ with it on
 and off). `pipelineStatisticsQuery` is optional in Vulkan; a device without it

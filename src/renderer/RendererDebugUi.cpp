@@ -1556,8 +1556,9 @@ void Renderer::drawMeshLodDebugUi()
     }
 
     // Selection runs inside the GPU cull dispatch, so every control here is a
-    // field of GpuCullFrameParams::lodSettings uploaded next frame -- nothing is
-    // recomputed on the CPU.
+    // field of GpuCullFrameParams::lodSettings uploaded next frame. The one CPU
+    // reader is the transparent draw list, which applies the same rule to the
+    // blended draws the dispatch's commands never reach.
     ImGui::Checkbox("LOD selection enabled", &lodSettings_.enabled);
     ImGui::SameLine();
     ImGui::TextDisabled("(off pins every draw to level 0)");
@@ -1582,6 +1583,10 @@ void Renderer::drawMeshLodDebugUi()
     ImGui::SetItemTooltip("How long a level switch cross-fades instead of popping: both levels are\n"
                           "drawn, dithered into complementary halves of the pixels. 0 pops.\n"
                           "Main pass only -- the shadow maps switch outright.");
+    ImGui::Checkbox("Blended draws take a level", &lodSettings_.blended);
+    ImGui::SetItemTooltip("Select a level for alpha-blended geometry too, on the CPU, by the same rule.\n"
+                          "Those draws switch outright -- they have no cross-fade. Off draws them all\n"
+                          "at level 0.");
     // Startup-only: the chains are built when meshes load, so the checkbox
     // writes the setting for the next launch and the line below it says what
     // this session was built with.

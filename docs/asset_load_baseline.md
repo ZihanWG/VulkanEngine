@@ -438,6 +438,12 @@ and bottles, drawn one at a time back to front (the GPU cull's compaction would
 destroy the order, see `transparency.md`), each layer shaded in full. The card
 ended the series at 73 °C.
 
+Those figures predate the level selection for blended draws. The pass was
+drawing every blended item in the scene at level 0 -- 800 draws a frame, 533 of
+them in view on this shot -- and selecting a level for them took 26.1% off it in
+a pinned series of its own (`transparency.md`). It still costs more than the
+opaque pass.
+
 ## Limitations
 
 - `--asset-load-stats` covers `VulkanTexture` only. `VulkanEnvironmentMap`

@@ -1162,8 +1162,7 @@ void Renderer::declareFrameGraph(MainPassFrameState& mainPassState, uint32_t ima
                                              "Written because the shared fragment shader emits it; SSR and GTAO, its "
                                              "only readers, already ran earlier this frame.");
             },
-            {"Transparent " +
-                 std::to_string(frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count()) + " draws",
+            {"Transparent " + std::to_string(frameTransparentDraws_.size()) + " draws",
              "Transparent",
              [this, &mainPassState](RenderGraphPassContext& context) {
                  recordTransparentPass(context.commandBuffer(), mainPassState);

@@ -374,6 +374,7 @@ TEST_CASE("The example settings file documents the current defaults", "[settings
     CHECK(loaded.lod.shadowBias == Catch::Approx(defaults.lod.shadowBias));
     CHECK(loaded.lod.forcedLod == defaults.lod.forcedLod);
     CHECK(loaded.lod.debugHeatmap == defaults.lod.debugHeatmap);
+    CHECK(loaded.lod.blended == defaults.lod.blended);
 
     CHECK(loaded.gi.enabled == defaults.gi.enabled);
     CHECK(loaded.gi.probesPerFrame == defaults.gi.probesPerFrame);
